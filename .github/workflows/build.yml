@@ -2,7 +2,12 @@ name: Build Apps
 
 on:
   push:
+    tags:
+      - "v*"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   macos:
@@ -16,12 +21,23 @@ jobs:
         run: ./packaging/build_macos.sh
       - name: Build yt-dlr (macOS)
         run: ./packaging/build_yt_dlr_macos.sh
+      - name: Package release assets (macOS)
+        run: |
+          set -euo pipefail
+          mkdir -p release_assets
+          ditto -c -k --sequesterRsrc --keepParent "dist/SP Show Control.app" "release_assets/SP-Show-Control-macos.zip"
+          ditto -c -k --sequesterRsrc --keepParent "dist/yt-dlr.app" "release_assets/yt-dlr-macos.zip"
       - name: Upload artifacts (macOS)
         uses: actions/upload-artifact@v4
         with:
           name: macos-builds
           path: |
             dist/*.app
+      - name: Upload release assets (macOS)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-macos
+          path: release_assets/*.zip
 
   windows:
     runs-on: windows-latest
@@ -36,6 +52,12 @@ jobs:
       - name: Build yt-dlr (Windows)
         shell: pwsh
         run: .\packaging\build_yt_dlr_windows.ps1
+      - name: Package release assets (Windows)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release_assets | Out-Null
+          Compress-Archive -Force -Path "dist\SP Show Control\*" -DestinationPath "release_assets\SP-Show-Control-windows.zip"
+          Compress-Archive -Force -Path "dist\yt-dlr\*" -DestinationPath "release_assets\yt-dlr-windows.zip"
       - name: Upload artifacts (Windows)
         uses: actions/upload-artifact@v4
         with:
@@ -43,4 +65,24 @@ jobs:
           path: |
             dist\SP Show Control\*
             dist\yt-dlr\*
+      - name: Upload release assets (Windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-windows
+          path: release_assets/*.zip
 
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          merge-multiple: true
+          path: release_assets
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release_assets/*.zip
