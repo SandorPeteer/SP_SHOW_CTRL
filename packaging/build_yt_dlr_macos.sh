@@ -21,18 +21,23 @@ if [[ -f "assets/app_icon.icns" ]]; then
   ICON_ARGS=(--icon "assets/app_icon.icns")
 fi
 
-pyinstaller \
-  --noconfirm \
-  --clean \
-  --windowed \
-  --name "yt-dlr" \
-  "${ICON_ARGS[@]}" \
-  --collect-data certifi \
-  --add-data "assets/logo.png:assets" \
-  --collect-submodules PyQt6.QtMultimedia \
-  --collect-submodules PyQt6.QtMultimediaWidgets \
-  --workpath "build/pyinstaller_yt_dlr" \
-  --distpath "dist" \
-  ytdlr_app.py
+PYI_ARGS=(
+  --noconfirm
+  --clean
+  --windowed
+  --name "yt-dlr"
+  --collect-data certifi
+  --add-data "assets/logo.png:assets"
+  --collect-submodules PyQt6.QtMultimedia
+  --collect-submodules PyQt6.QtMultimediaWidgets
+  --workpath "build/pyinstaller_yt_dlr"
+  --distpath "dist"
+)
+
+if [[ -f "assets/app_icon.icns" ]]; then
+  PYI_ARGS+=(--icon "assets/app_icon.icns")
+fi
+
+pyinstaller "${PYI_ARGS[@]}" ytdlr_app.py
 
 echo "Built: dist/yt-dlr.app"

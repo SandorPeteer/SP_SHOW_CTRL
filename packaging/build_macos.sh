@@ -17,12 +17,6 @@ python -m pip install --upgrade --quiet pip
 python -m pip install --upgrade --quiet pyinstaller certifi
 python -m pip install --upgrade --quiet -r requirements.txt screeninfo
 
-MPV_ARGS=()
-if command -v mpv >/dev/null 2>&1; then
-  MPV_PATH="$(command -v mpv)"
-  MPV_ARGS=(--add-binary "${MPV_PATH}:tools/mpv")
-fi
-
 ICON_PNG="assets/logo.png"
 ICON_ICNS="assets/app_icon.icns"
 if [[ -f "$ICON_PNG" && ! -f "$ICON_ICNS" ]]; then
@@ -62,15 +56,24 @@ if [[ -f "$ICON_ICNS" ]]; then
   ICON_ARGS=(--icon "$ICON_ICNS")
 fi
 
-pyinstaller \
-  --noconfirm \
-  --windowed \
-  --name "SP Show Control" \
-  "${ICON_ARGS[@]}" \
-  "${MPV_ARGS[@]}" \
-  --collect-data certifi \
-  --collect-all tkinterdnd2 \
-  --add-data "assets/logo.png:assets" \
-  player.py
+PYI_ARGS=(
+  --noconfirm
+  --windowed
+  --name "SP Show Control"
+  --collect-data certifi
+  --collect-all tkinterdnd2
+  --add-data "assets/logo.png:assets"
+)
+
+if [[ -f "$ICON_ICNS" ]]; then
+  PYI_ARGS+=(--icon "$ICON_ICNS")
+fi
+
+if command -v mpv >/dev/null 2>&1; then
+  MPV_PATH="$(command -v mpv)"
+  PYI_ARGS+=(--add-binary "${MPV_PATH}:tools/mpv")
+fi
+
+pyinstaller "${PYI_ARGS[@]}" player.py
 
 echo "Built: dist/SP Show Control.app"
