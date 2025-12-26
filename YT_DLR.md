@@ -1,100 +1,69 @@
-# yt-dlr
+# yt-dlr (DJ)
 
-Egyszerű parancssori wrapper a `yt-dlp` köré, YouTube tartalmak letöltéséhez **újrakódolás/konvertálás nélkül**.
+YouTube keresés → beágyazott preview → rekordbox-kompatibilis audio letöltés (m4a/AAC prefer) `yt-dlp`-vel.
 
-## Előfeltételek
-
-- `yt-dlp`
-- `ffmpeg` (csak a legjobb A/V letöltéshez, amikor a videó és a hang külön stream)
-
-macOS (Homebrew):
-
-```bash
-brew install yt-dlp ffmpeg
-```
-
-## Használat
-
-## GUI (keresés + letöltés)
-
-## Qt DJ GUI (ajánlott)
+## Ajánlott indítás (Qt GUI)
 
 ```bash
 ./yt-dlr --qt
 ```
 
-- Keresés (felső lista), dupla katt a találatra → formátumlista (m4a/AAC, rekordbox kompatibilis) + preview.
-- `DJ Download (m4a)` a beállított `Watch folder`-be ment.
-- Preview: beágyazott (Qt Multimedia), seek/progress csúszkával; alapból a legjobb elérhető audio (m4a/AAC, ha van).
-- Letöltés: progress bar + státusz sor a GUI-ban.
-- yt-dlp frissítés: `Tools → Update yt-dlp` (standalone binárist tölt le a user app-data alá, pl. macOS: `~/Library/Application Support/yt-dlr/tools/`).
-- Aktív yt-dlp választás: `Tools → Use system yt-dlp` vagy `Tools → Use managed yt-dlp (app data)`, ellenőrzés: `Tools → Show active yt-dlp`.
-- Ha a terminált teleírja a preview backend, indítsd így: `./yt-dlr --qt` (alapból log fájlba megy); debughoz: `./yt-dlr --qt --debug`.
-- Ha az updater SSL hibával leáll (`CERTIFICATE_VERIFY_FAILED`): most már megpróbálja a system `curl`-t fallbackként; ha mégis gond van, telepíts CA bundle-t: `python3 -m pip install certifi`.
+Alternatíva:
 
-Keresés opciók (felső sáv):
+```bash
+python3 ytdlr_entry.py --qt
+```
+
+## Qt DJ GUI – mit tud
+
+- Keresés a felső listában (cím/csatorna/hossz/nézettség).
+- Katt a találatra: formátumok + auto-preview indul (alapból audio).
+- Preview: beágyazott (Qt Multimedia), seek/progress csúszkával.
+- `DJ Download (m4a)`: letöltés a beállított `Watch folder`-be, progress bar + státusz sor.
+- Formátumlista: rekordbox-barát audio opciók (m4a/AAC), alapból a “best” kerül kiválasztásra.
+
+### Keresés opciók (felső sáv)
 
 - `Limit`: hány találatot kérjen le (max 200).
-- `Newest`: a “legújabb feltöltések” között keres (yt-dlp `ytsearchdate`).
-- `DJ filter`: igyekszik kiszűrni a hosszú seteket / többórás mixeket és előresorolja a DJ-barát találatokat (remix/edit/extended, official audio, Topic/VEVO).
-- `Max`: maximum hossz (ha nincs kifejezetten “mix/set/live” a keresésben).
-- `Prefer official`: “official audio / Topic / VEVO” találatok feljebb kerülnek.
+- `Newest`: a legújabb feltöltések között keres (yt-dlp `ytsearchdate`).
+- `DJ filter`: próbálja kiszűrni a többórás seteket/long mixeket és előresorolni a DJ-barát címeket (remix/edit/extended/club/mashup).
+- `Max`: maximum hossz (ha a keresésben nincs kifejezetten “mix/set/live”).
+- `Prefer official`: “official audio / Topic / VEVO” találatokat feljebb sorol.
 
-Indítás:
+### yt-dlp választás + frissítés
 
-```bash
-./yt-dlr --gui
-```
+- `Tools → Use system yt-dlp (recommended)`
+- `Tools → Use managed yt-dlp (app data)`
+- `Tools → Update yt-dlp` (standalone bináris letöltése a user app-data alá)
+- `Tools → Show active yt-dlp`
 
-Alternatíva (ha nem futtatható a wrapper):
-
-```bash
-python3 ytdlr_entry.py --gui
-```
-
-Direkt a GUI fájl:
+SSL hiba updaternél (`CERTIFICATE_VERIFY_FAILED`) esetén megpróbálja a system `curl` fallbackot; ha mégis gond, telepíts CA bundle-t:
 
 ```bash
-python3 ytdlr_gui.py
+python3 -m pip install certifi
 ```
 
-Itt elég beírnod egy keresőkifejezést, kiválasztod a találatot, és `Download`.
+### Logok
 
-### Preview
+- `./yt-dlr --qt` alapból némítja a Qt Multimedia zajt és log fájlba terel.
+- Debug mód: `./yt-dlr --qt --debug`
+- macOS log fájl: `~/Library/Logs/yt-dlr/yt-dlr.log`
 
-- `Preview` gomb: a kiválasztott videót lejátsza külső playerben (ajánlott: `mpv`).
-- Ha nincs `mpv`, megpróbálja `ffplay`-jel (ehhez a GUI `yt-dlp -g`-vel kér egy direct stream URL-t egyfájlos preview-hoz).
-- `Embed preview (mpv)`: ha be van kapcsolva, a preview megpróbál a GUI-n belül megjelenni (mpv `--wid`).
+## CLI mód (közvetlen letöltés)
 
-### DJ Rush (Rekordbox)
-
-- Állítsd be a `Watch folder`-t a Rekordbox automatikus import mappájára.
-- `DJ Download (m4a)`: audio-only letöltés, m4a/AAC preferálva (`-f` bestaudio m4a), hogy Rekordbox-barát legyen.
-
-### Rendezés
-
-- A találatok és a formátumlista oszlopfejléceire kattintva rendezhetsz (fel/le).
-
-### Recordbox / mp4
-
-- A GUI-ban van `List formats` gomb: kiválasztott videónál kilistázza az elérhető formátumokat (alapból csak `mp4/m4a`).
-- Dupla katt a formátumlistán: betölti a `-f` mezőbe a kiválasztott `format_id`-t.
-- Ha videó+hangot külön streamben ad a YouTube, jelöld ki 1 videó (`Type=v`) és 1 hang (`Type=a`) sort (több kijelölés), majd `Use selected` → automatikusan `VID+AID` lesz.
-- `Prefer Recordbox (mp4/h264+aac)` bekapcsolva: a letöltés megpróbál mp4/H.264/AAC verziót választani, és csak ha nincs, akkor eshet vissza másra.
-
-Legjobb elérhető A/V (bestvideo+bestaudio, szükség esetén csak mux/merge):
+Legjobb elérhető A/V (ha kell merge, `ffmpeg` szükséges):
 
 ```bash
 ./yt-dlr "https://www.youtube.com/watch?v=VIDEO_ID" -P ~/Downloads
 ```
 
-Ha *szigorúan* egyetlen, eredetileg is egy fájlként elérhető formátumot szeretnél (nincs merge):
+Egyfájlos (nincs merge):
 
 ```bash
 ./yt-dlr "https://www.youtube.com/watch?v=VIDEO_ID" --single-file -P ~/Downloads
 ```
 
-Csak hang (eredeti formátumban, nincs audio-konvertálás):
+Csak hang (eredeti formátumban, nincs konvert):
 
 ```bash
 ./yt-dlr "https://www.youtube.com/watch?v=VIDEO_ID" --mode audio -P ~/Downloads
@@ -106,8 +75,17 @@ Playlist letöltés tiltása:
 ./yt-dlr "https://www.youtube.com/playlist?list=..." --no-playlist -P ~/Downloads
 ```
 
-További `yt-dlp` kapcsolók átadása (pl. `--cookies-from-browser`), a `yt-dlr` kapcsolói után:
+További `yt-dlp` kapcsolók átadása (pl. cookie):
 
 ```bash
 ./yt-dlr "https://www.youtube.com/watch?v=VIDEO_ID" -P ~/Downloads --cookies-from-browser chrome
 ```
+
+## Legacy Tk GUI (régi)
+
+Ha valamiért nem működik a Qt GUI, elérhető a régi Tkinter-es GUI is (`mpv` / `ffplay` alapú preview-val):
+
+```bash
+./yt-dlr --gui
+```
+

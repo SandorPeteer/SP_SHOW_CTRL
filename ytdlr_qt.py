@@ -824,7 +824,7 @@ class YtDlrQt(QMainWindow):
 
             p = local_ytdlp_path()
             if not p.exists():
-                self._show_error("Bundled yt-dlp not found yet. Use Tools → Update yt-dlp first.")
+                self._show_error("Managed yt-dlp not found yet. Use Tools → Update yt-dlp first.")
                 return
             os.environ["YTDLR_YTDLP"] = str(p)
             self.statusBar().showMessage(f"Using managed yt-dlp: {p}", 7000)
