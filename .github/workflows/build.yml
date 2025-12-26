@@ -1,0 +1,46 @@
+name: Build Apps
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build SP Show Control (macOS)
+        run: ./packaging/build_macos.sh
+      - name: Build yt-dlr (macOS)
+        run: ./packaging/build_yt_dlr_macos.sh
+      - name: Upload artifacts (macOS)
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-builds
+          path: |
+            dist/*.app
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build SP Show Control (Windows)
+        shell: pwsh
+        run: .\packaging\build_windows.ps1
+      - name: Build yt-dlr (Windows)
+        shell: pwsh
+        run: .\packaging\build_yt_dlr_windows.ps1
+      - name: Upload artifacts (Windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-builds
+          path: |
+            dist\SP Show Control\*
+            dist\yt-dlr\*
+

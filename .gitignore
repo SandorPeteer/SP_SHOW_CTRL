@@ -1,0 +1,17 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# Local build artifacts
+build/
+dist/
+
+# Local virtualenvs
+.venv/
+.venv_build/
+
+# Binaries (yt-dlp standalone managed outside the repo)
+tools/ytdlp/
+
+# Local tooling
+.claude/

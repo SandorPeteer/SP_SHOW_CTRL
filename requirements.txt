@@ -1,0 +1,10 @@
+# SP Show Control Requirements
+
+# GUI
+tkinterdnd2>=0.3.0
+
+# Image processing
+Pillow>=10.0.0
+
+# macOS screen detection (optional but recommended for iPad extended display support)
+pyobjc-framework-Quartz>=12.0; sys_platform == 'darwin'
