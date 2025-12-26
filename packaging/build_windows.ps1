@@ -13,6 +13,7 @@ $Pi = Join-Path $Venv "Scripts\pyinstaller.exe"
 
 & $Py -m pip install --upgrade --quiet pip
 & $Py -m pip install --upgrade --quiet pyinstaller pillow certifi
+& $Py -m pip install --upgrade --quiet -r requirements.txt screeninfo
 
 $MpvExe = ""
 try {
@@ -24,7 +25,7 @@ try {
 $IconPng = "assets\logo.png"
 $IconIco = "assets\app_icon.ico"
 if ((Test-Path $IconPng) -and !(Test-Path $IconIco)) {
-  & $Py - <<'PY'
+  @'
 from pathlib import Path
 try:
     from PIL import Image
@@ -41,7 +42,7 @@ img.paste(img0, ((size - w) // 2, (size - h) // 2), img0)
 sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
 img.save(ico, format="ICO", sizes=sizes)
 print("Generated", ico)
-PY
+'@ | & $Py -
 }
 
 $Args = @(
@@ -49,10 +50,14 @@ $Args = @(
   "--clean",
   "--noconsole",
   "--name", "SP Show Control",
-  "--icon", "$IconIco",
   "--collect-data", "certifi",
+  "--collect-all", "tkinterdnd2",
   "--add-data", "assets\\logo.png;assets"
 )
+
+if (Test-Path $IconIco) {
+  $Args += @("--icon", "$IconIco")
+}
 
 if ($MpvExe) {
   $Args += @("--add-binary", "$MpvExe;tools\\mpv")
