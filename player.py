@@ -1083,6 +1083,7 @@ class Settings:
     presentation_active: bool = False
     playback_engine: str = "auto"  # auto | mpv | ffplay
     mpv_persistent_output: bool = True
+    mpv_offer_shown: bool = False
     startup_volume: int = 100
     downloads_dir: str = ""
     normalize_enabled: bool = False
@@ -1097,6 +1098,7 @@ class Settings:
             "macos_native_fullscreen": self.macos_native_fullscreen,
             "playback_engine": self.playback_engine,
             "mpv_persistent_output": self.mpv_persistent_output,
+            "mpv_offer_shown": self.mpv_offer_shown,
             "startup_volume": self.startup_volume,
             "downloads_dir": self.downloads_dir,
             "normalize_enabled": self.normalize_enabled,
@@ -1121,6 +1123,7 @@ class Settings:
             engine = "auto"
         s.playback_engine = engine
         s.mpv_persistent_output = bool(data.get("mpv_persistent_output", s.mpv_persistent_output))
+        s.mpv_offer_shown = bool(data.get("mpv_offer_shown", s.mpv_offer_shown))
         s.startup_volume = int(data.get("startup_volume", s.startup_volume))
         try:
             s.downloads_dir = str(data.get("downloads_dir", s.downloads_dir) or "")
@@ -3711,11 +3714,44 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         return Path.cwd() / "show_preset.json"
 
     def _ensure_dependencies_async(self, on_ready: Callable[[], None]) -> None:
-        # Decide playback backend; mpv is preferred in "auto", but we do not auto-download mpv yet.
+        # Decide playback backend; mpv is preferred in "auto". If missing, offer install help once.
         try:
             pref = str(getattr(self.settings, "playback_engine", "auto") or "").strip().lower()
         except Exception:
             pref = "auto"
+
+        try:
+            mpv_missing = _resolve_mpv() is None
+        except Exception:
+            mpv_missing = True
+
+        try:
+            offer_shown = bool(getattr(self.settings, "mpv_offer_shown", False))
+        except Exception:
+            offer_shown = True
+
+        if mpv_missing and (pref in ("auto", "mpv")) and (not offer_shown):
+            try:
+                self.settings.mpv_offer_shown = True
+                self._save_persistent_settings()
+            except Exception:
+                pass
+            try:
+                wants = messagebox.askyesno(
+                    "mpv recommended",
+                    "For the best and smoothest video output, mpv is recommended.\n\n"
+                    "mpv is not installed on this machine.\n\n"
+                    "Do you want to open the mpv install help now?",
+                    parent=self,
+                )
+            except Exception:
+                wants = False
+            if wants:
+                try:
+                    self._install_mpv_prompt()
+                except Exception:
+                    pass
+
         if pref == "mpv" and _resolve_mpv() is None:
             # Auto-fallback to ffplay so the app remains usable without mpv installed.
             try:
@@ -4408,6 +4444,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             cb.configure(takefocus=0)
         except Exception:
             pass
+        ttk.Button(disp, text="Install mpv…", command=self._install_mpv_prompt).grid(
+            row=1, column=2, sticky="w", padx=(14, 0), pady=(10, 0)
+        )
 
         var_mpv_persist = tk.BooleanVar(value=bool(getattr(self.settings, "mpv_persistent_output", True)))
 
@@ -7938,6 +7977,139 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             path.write_text(json.dumps(self.settings.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
         except Exception:
             return
+
+    def _install_mpv_prompt(self) -> None:
+        existing = _resolve_mpv()
+        if existing:
+            try:
+                messagebox.showinfo("mpv", f"mpv already available:\n\n{existing}", parent=self)
+            except Exception:
+                pass
+            return
+
+        install_url = "https://mpv.io/installation/"
+        sysname = platform.system()
+
+        if sysname == "Darwin":
+            brew = shutil.which("brew")
+            if not brew:
+                for p in (Path("/opt/homebrew/bin/brew"), Path("/usr/local/bin/brew")):
+                    try:
+                        if p.exists():
+                            brew = str(p)
+                            break
+                    except Exception:
+                        continue
+
+            if brew:
+                try:
+                    ok = messagebox.askyesno(
+                        "Install mpv (Homebrew)",
+                        "mpv is recommended for the smoothest output.\n\n"
+                        "Homebrew detected.\n\n"
+                        "Install mpv now via Homebrew? (brew install mpv)",
+                        parent=self,
+                    )
+                except Exception:
+                    ok = False
+                if ok:
+                    win = tk.Toplevel(self)
+                    win.title("Installing mpv…")
+                    try:
+                        win.configure(bg="#2b2b2b")
+                    except Exception:
+                        pass
+                    win.resizable(False, False)
+                    try:
+                        win.transient(self)
+                    except Exception:
+                        pass
+
+                    status_var = tk.StringVar(value="Running: brew install mpv …")
+                    body = tk.Frame(win, bg="#2b2b2b", padx=14, pady=12)
+                    body.pack(fill="both", expand=True)
+                    tk.Label(body, textvariable=status_var, bg="#2b2b2b", fg="#e8e8e8").pack(anchor="w")
+                    pb = ttk.Progressbar(body, mode="indeterminate")
+                    pb.pack(fill="x", expand=True, pady=(10, 0))
+                    pb.start(10)
+
+                    def _finish(success: bool, details: str) -> None:
+                        def _apply() -> None:
+                            try:
+                                pb.stop()
+                            except Exception:
+                                pass
+                            try:
+                                win.destroy()
+                            except Exception:
+                                pass
+                            if success and _resolve_mpv():
+                                try:
+                                    messagebox.showinfo("mpv", "mpv installed successfully.", parent=self)
+                                except Exception:
+                                    pass
+                            else:
+                                try:
+                                    messagebox.showwarning(
+                                        "mpv install",
+                                        "mpv could not be installed automatically.\n\n"
+                                        "I will open the install page with options.\n\n"
+                                        f"Details:\n{details}",
+                                        parent=self,
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    webbrowser.open(install_url)
+                                except Exception:
+                                    pass
+
+                        self._ui_tasks.put(_apply)
+
+                    def _worker() -> None:
+                        try:
+                            proc = subprocess.run([str(brew), "install", "mpv"], capture_output=True, text=True, check=False)
+                            out = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+                            if proc.returncode == 0:
+                                _finish(True, out.strip()[-1200:])
+                            else:
+                                _finish(False, out.strip()[-1200:] or f"brew exit={proc.returncode}")
+                        except Exception as e:
+                            _finish(False, str(e))
+
+                    threading.Thread(target=_worker, daemon=True).start()
+                    return
+
+            # No Homebrew: open instructions page.
+            try:
+                messagebox.showinfo(
+                    "Install mpv",
+                    "mpv is not installed. I will open the installation page.\n\n"
+                    "Tip (macOS): the easiest is Homebrew: https://brew.sh/ then `brew install mpv`.",
+                    parent=self,
+                )
+            except Exception:
+                pass
+            try:
+                webbrowser.open(install_url)
+            except Exception:
+                pass
+            return
+
+        # Windows/Linux: open instructions page (package managers / downloads).
+        try:
+            messagebox.showinfo(
+                "Install mpv",
+                "mpv is not installed. I will open the installation page.\n\n"
+                "Tip (Windows): if you have a package manager, mpv installs easily (e.g. Scoop/winget/choco).",
+                parent=self,
+            )
+        except Exception:
+            pass
+        try:
+            webbrowser.open(install_url)
+        except Exception:
+            pass
 
     def _on_cue_autoplay_changed(self, deck: str) -> None:
         """Called when cue auto-play checkbox is toggled"""
