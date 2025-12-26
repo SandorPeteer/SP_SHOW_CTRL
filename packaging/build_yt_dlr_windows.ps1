@@ -19,6 +19,8 @@ $Args = @(
   "--clean",
   "--noconsole",
   "--name", "yt-dlr",
+  "--collect-data", "PyQt6",
+  "--collect-binaries", "PyQt6",
   "--collect-data", "certifi",
   "--collect-submodules", "PyQt6.QtMultimedia",
   "--collect-submodules", "PyQt6.QtMultimediaWidgets",
@@ -32,4 +34,3 @@ if (Test-Path "assets\app_icon.ico") {
 & $Pi @Args "ytdlr_app.py"
 
 Write-Host "Built: dist\yt-dlr\yt-dlr.exe"
-
