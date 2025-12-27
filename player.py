@@ -464,26 +464,66 @@ def _resolve_mpv() -> str | None:
             bundled = _resource_path("tools", "mpv", "mpv.exe")
         else:
             bundled = _resource_path("tools", "mpv", "mpv")
-        if bundled.exists():
+        if bundled.exists() and _is_probably_executable_binary(bundled):
             return str(bundled)
     except Exception:
         pass
 
     # Prefer user-installed/downloaded mpv in our tool dir.
     try:
-        p = _mpv_bin_dir() / (_tool_exe_name("mpv"))
-        if p.exists():
+        p = _mpv_bin_dir() / (_tool_exe_name("mpv"))  # tools/mpv/bin/mpv(.exe)
+        if p.exists() and _is_probably_executable_binary(p):
             return str(p)
     except Exception:
         pass
 
+    sysname = platform.system()
+    if sysname == "Windows":
+        # Common install locations (helps when PATH isn't updated for GUI apps).
+        candidates: list[Path] = []
+        try:
+            candidates.append(Path(os.environ.get("ProgramData") or "C:\\ProgramData") / "chocolatey" / "lib" / "mpv" / "tools" / "mpv.exe")
+        except Exception:
+            pass
+        try:
+            up = Path(os.environ.get("USERPROFILE") or str(Path.home()))
+            candidates.append(up / "scoop" / "apps" / "mpv" / "current" / "mpv.exe")
+        except Exception:
+            pass
+        candidates += [
+            Path("C:/Program Files/mpv/mpv.exe"),
+            Path("C:/Program Files (x86)/mpv/mpv.exe"),
+        ]
+        for c in candidates:
+            try:
+                if c.exists() and _is_probably_executable_binary(c):
+                    return str(c)
+            except Exception:
+                continue
+
     try:
         found = shutil.which(tool)
         if found:
-            return str(found)
+            # Prefer the real binary over shims when possible (Chocolatey/Scoop).
+            try:
+                fp = Path(found)
+                s = str(fp).replace("/", "\\").lower()
+                if s.endswith("\\chocolatey\\bin\\mpv.exe"):
+                    real = Path(os.environ.get("ProgramData") or "C:\\ProgramData") / "chocolatey" / "lib" / "mpv" / "tools" / "mpv.exe"
+                    if real.exists() and _is_probably_executable_binary(real):
+                        return str(real)
+                if s.endswith("\\scoop\\shims\\mpv.exe"):
+                    up = Path(os.environ.get("USERPROFILE") or str(Path.home()))
+                    real = up / "scoop" / "apps" / "mpv" / "current" / "mpv.exe"
+                    if real.exists() and _is_probably_executable_binary(real):
+                        return str(real)
+                if _is_probably_executable_binary(fp):
+                    return str(found)
+            except Exception:
+                return str(found)
     except Exception:
         pass
-    if platform.system() == "Darwin":
+    if sysname == "Darwin":
         for base in (Path("/opt/homebrew/bin"), Path("/usr/local/bin")):
             try:
                 p = base / tool
@@ -8013,6 +8053,18 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 pass
             return
 
+        def _windows_mpv_help_text() -> str:
+            return (
+                "Windows mpv telepítés (ajánlott):\n\n"
+                "1) Telepítsd a Microsoft 'App Installer'-t (ez adja a winget-et):\n"
+                "   https://apps.microsoft.com/detail/9nblggh4nns1\n\n"
+                "2) Utána nyiss egy PowerShell-t és futtasd:\n"
+                "   winget install -e --id shinchiro.mpv --accept-source-agreements --accept-package-agreements\n\n"
+                "Ellenőrzés:\n"
+                "   mpv --version\n\n"
+                "Ha így sem látja az app, használd: Tools → Install mpv… → 'Select mpv.exe' (importálja a mappát)."
+            )
+
         install_url = "https://mpv.io/installation/"
         sysname = platform.system()
 
@@ -8148,12 +8200,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 installers.append(("scoop", [scoop, "install", "mpv"]))
 
             if installers:
-                name, cmd = installers[0]
                 try:
                     ok = messagebox.askyesno(
                         "Install mpv",
                         "mpv is recommended for the smoothest output.\n\n"
-                        f"I can try to install it automatically using: {name}\n\n"
+                        "I can try to install it automatically using:\n"
+                        + "\n".join(f"- {n}" for (n, _cmd) in installers)
+                        + "\n\n"
                         "Install now?",
                         parent=self,
                     )
@@ -8172,7 +8225,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     except Exception:
                         pass
 
-                    status_var = tk.StringVar(value=f"Running: {' '.join(cmd)}")
+                    status_var = tk.StringVar(value="Preparing…")
                     body = tk.Frame(win, bg="#2b2b2b", padx=14, pady=12)
                     body.pack(fill="both", expand=True)
                     tk.Label(body, textvariable=status_var, bg="#2b2b2b", fg="#e8e8e8", justify="left").pack(anchor="w")
@@ -8207,6 +8260,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                                 except Exception:
                                     pass
                                 try:
+                                    # Give a concrete Windows path too (winget + import).
+                                    messagebox.showinfo("mpv (Windows)", _windows_mpv_help_text(), parent=self)
                                     webbrowser.open(install_url)
                                 except Exception:
                                     pass
@@ -8215,12 +8270,19 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
                     def _worker() -> None:
                         try:
-                            proc = subprocess.run(cmd, capture_output=True, text=True, check=False, **_no_console_subprocess_kwargs())
-                            out = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
-                            if proc.returncode == 0:
-                                _finish(True, out.strip()[-1200:])
-                            else:
-                                _finish(False, out.strip()[-1200:] or f"{name} exit={proc.returncode}")
+                            details: list[str] = []
+                            for name, cmd in installers:
+                                try:
+                                    self._ui_tasks.put(lambda n=name, c=cmd: status_var.set(f"Running: {n}\n\n{' '.join(c)}"))
+                                except Exception:
+                                    pass
+                                proc = subprocess.run(cmd, capture_output=True, text=True, check=False, **_no_console_subprocess_kwargs())
+                                out = ((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")).strip()
+                                if proc.returncode == 0 and _resolve_mpv():
+                                    _finish(True, out[-1200:])
+                                    return
+                                details.append(f"[{name}] exit={proc.returncode}\n{out[-1200:]}")
+                            _finish(False, ("\n\n".join(details)).strip()[-4000:] or "All installers failed.")
                         except Exception as e:
                             _finish(False, str(e))
 
@@ -8272,8 +8334,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             try:
                 messagebox.showinfo(
                     "Install mpv",
-                    "mpv is not installed. I will open the installation page.\n\n"
-                    "Tip (Windows): winget/choco/scoop can install mpv easily.",
+                    "mpv is not installed.\n\n" + _windows_mpv_help_text(),
                     parent=self,
                 )
             except Exception:
