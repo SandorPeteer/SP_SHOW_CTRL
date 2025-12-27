@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
 )
 
 import ytdlr_core as core
+from ytdlr_tools import no_console_subprocess_kwargs
 
 
 def _split_args(text: str) -> list[str]:
@@ -533,7 +534,7 @@ class YtDlrQt(QMainWindow):
                         fast=True,
                         search_kind=kind,
                     )
-                    proc = subprocess.run(cmd, check=False, text=True, capture_output=True, env=os.environ.copy())
+                    proc = subprocess.run(cmd, check=False, text=True, capture_output=True, env=os.environ.copy(), **no_console_subprocess_kwargs())
                     if proc.returncode != 0:
                         raise RuntimeError((proc.stderr or proc.stdout or "").strip() or f"yt-dlp exit={proc.returncode}")
                     lines = [ln for ln in (proc.stdout or "").splitlines() if ln.strip().startswith("{")]
@@ -573,7 +574,7 @@ class YtDlrQt(QMainWindow):
                 try:
                     ytdlp = core.resolve_ytdlp("")
                     cmd = core.build_info_cmd(ytdlp=ytdlp, url=url, no_playlist=True)
-                    proc = subprocess.run(cmd, check=False, text=True, capture_output=True, env=os.environ.copy())
+                    proc = subprocess.run(cmd, check=False, text=True, capture_output=True, env=os.environ.copy(), **no_console_subprocess_kwargs())
                     if proc.returncode != 0:
                         raise RuntimeError((proc.stderr or proc.stdout or "").strip() or f"yt-dlp exit={proc.returncode}")
                     info = core.parse_info_json(proc.stdout or "")
@@ -592,7 +593,7 @@ class YtDlrQt(QMainWindow):
                         no_playlist=True,
                         passthrough=list(passthrough),
                     )
-                    proc = subprocess.run(cmd, check=False, text=True, capture_output=True, env=os.environ.copy())
+                    proc = subprocess.run(cmd, check=False, text=True, capture_output=True, env=os.environ.copy(), **no_console_subprocess_kwargs())
                     if proc.returncode != 0:
                         raise RuntimeError((proc.stderr or proc.stdout or "").strip() or f"yt-dlp exit={proc.returncode}")
                     direct = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
@@ -624,6 +625,7 @@ class YtDlrQt(QMainWindow):
                         text=True,
                         bufsize=1,
                         env=os.environ.copy(),
+                        **no_console_subprocess_kwargs(),
                     )
                     self._results.put(("download_status", "Starting…"))
                     final_path = ""

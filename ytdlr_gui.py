@@ -16,6 +16,7 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 import ytdlr_core as core
+from ytdlr_tools import no_console_subprocess_kwargs
 
 
 @dataclass
@@ -556,7 +557,15 @@ class YtDlrGui(tk.Tk):
             try:
                 cmd = core.build_info_cmd(ytdlp=ytdlp, url=url, no_playlist=True)
                 self._events.put(_UiEvent("log", core.quote_cmd(cmd)))
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=os.environ.copy())
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    env=os.environ.copy(),
+                    **no_console_subprocess_kwargs(),
+                )
                 self._info_proc = proc
                 out = proc.stdout
                 text = ""
@@ -621,7 +630,15 @@ class YtDlrGui(tk.Tk):
             try:
                 cmd = core.build_search_cmd(ytdlp=ytdlp, query=query, limit=limit, fast=fast)
                 self._events.put(_UiEvent("log", core.quote_cmd(cmd)))
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=os.environ.copy())
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    env=os.environ.copy(),
+                    **no_console_subprocess_kwargs(),
+                )
                 self._search_proc = proc
                 lines: list[str] = []
                 out = proc.stdout
@@ -724,7 +741,15 @@ class YtDlrGui(tk.Tk):
                     passthrough=extra,
                 )
                 self._events.put(_UiEvent("log", core.quote_cmd(cmd)))
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=os.environ.copy())
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    env=os.environ.copy(),
+                    **no_console_subprocess_kwargs(),
+                )
                 self._download_proc = proc
 
                 out = proc.stdout
@@ -850,7 +875,14 @@ class YtDlrGui(tk.Tk):
                         no_playlist=True,
                     )
                     self._events.put(_UiEvent("log", core.quote_cmd(get_url_cmd)))
-                    p = subprocess.run(get_url_cmd, check=False, text=True, capture_output=True, env=os.environ.copy())
+                    p = subprocess.run(
+                        get_url_cmd,
+                        check=False,
+                        text=True,
+                        capture_output=True,
+                        env=os.environ.copy(),
+                        **no_console_subprocess_kwargs(),
+                    )
                     if p.returncode != 0:
                         msg = (p.stderr or p.stdout or "").strip()
                         raise RuntimeError(f"Cannot resolve preview URL (exit={p.returncode}). {msg[:240] if msg else ''}".strip())
@@ -878,6 +910,7 @@ class YtDlrGui(tk.Tk):
                             text=True,
                             bufsize=1,
                             env=os.environ.copy(),
+                            **no_console_subprocess_kwargs(),
                         )
                         self._preview_proc = proc
                         tail: list[str] = []
@@ -940,7 +973,14 @@ class YtDlrGui(tk.Tk):
                         no_playlist=True,
                     )
                     self._events.put(_UiEvent("log", core.quote_cmd(get_url_cmd)))
-                    p = subprocess.run(get_url_cmd, check=False, text=True, capture_output=True, env=os.environ.copy())
+                    p = subprocess.run(
+                        get_url_cmd,
+                        check=False,
+                        text=True,
+                        capture_output=True,
+                        env=os.environ.copy(),
+                        **no_console_subprocess_kwargs(),
+                    )
                     direct = (p.stdout or "").strip().splitlines()
                     if p.returncode != 0 or not direct:
                         msg = (p.stderr or p.stdout or "").strip()
@@ -949,7 +989,13 @@ class YtDlrGui(tk.Tk):
                     # Silence non-actionable decoder warnings (e.g. H.264 "Late SEI...") during preview.
                     cmd = [ffplay, "-hide_banner", "-nostats", "-loglevel", "error", direct_url]
                     self._events.put(_UiEvent("log", " ".join(shlex.quote(x) for x in cmd)))
-                    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, env=os.environ.copy())
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.STDOUT,
+                        env=os.environ.copy(),
+                        **no_console_subprocess_kwargs(),
+                    )
                     self._preview_proc = proc
                     proc.wait()
                     return

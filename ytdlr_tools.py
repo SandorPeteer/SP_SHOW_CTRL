@@ -13,6 +13,27 @@ from urllib.error import URLError
 import sys
 
 
+def no_console_subprocess_kwargs() -> dict:
+    """Hide console windows when spawning subprocesses on Windows GUI builds."""
+    if platform.system() != "Windows":
+        return {}
+    kwargs: dict = {}
+    try:
+        flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0)
+        if flags:
+            kwargs["creationflags"] = flags
+    except Exception:
+        pass
+    try:
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= int(getattr(subprocess, "STARTF_USESHOWWINDOW", 0) or 0)
+        si.wShowWindow = 0
+        kwargs["startupinfo"] = si
+    except Exception:
+        pass
+    return kwargs
+
+
 def tools_root() -> Path:
     env = ""
     try:
@@ -119,7 +140,7 @@ def download_latest_ytdlp(*, progress_cb=None) -> Path:
         if not curl:
             raise FileNotFoundError("curl not found")
         cmd = [curl, "-L", "--fail", "--silent", "--show-error", "-o", str(out_path), url]
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, **no_console_subprocess_kwargs())
 
     with tempfile.TemporaryDirectory(prefix="ytdlr_ytdlp_") as tmp:
         tmp_path = Path(tmp) / (dest.name + ".download")

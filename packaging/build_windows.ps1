@@ -22,6 +22,27 @@ try {
   $MpvExe = ""
 }
 
+$MpvDir = ""
+if ($MpvExe) {
+  try {
+    # Chocolatey often exposes a shim in `...\\chocolatey\\bin\\mpv.exe` which is not the real binary.
+    $MpvExeLower = $MpvExe.ToLowerInvariant()
+    if ($MpvExeLower -like "*\\chocolatey\\bin\\mpv.exe") {
+      $ChocoReal = Join-Path $Env:ProgramData "chocolatey\\lib\\mpv\\tools\\mpv.exe"
+      if (Test-Path $ChocoReal) {
+        $MpvExe = $ChocoReal
+      }
+    }
+  } catch {
+    # ignore
+  }
+  try {
+    $MpvDir = Split-Path -Parent $MpvExe
+  } catch {
+    $MpvDir = ""
+  }
+}
+
 $IconPng = "assets\logo.png"
 $IconIco = "assets\app_icon.ico"
 if ((Test-Path $IconPng) -and !(Test-Path $IconIco)) {
@@ -60,7 +81,15 @@ if (Test-Path $IconIco) {
 }
 
 if ($MpvExe) {
-  $Args += @("--add-binary", "$MpvExe;tools\\mpv")
+  # mpv on Windows usually needs DLLs next to mpv.exe, so bundle the full folder contents.
+  if ($MpvDir -and (Test-Path $MpvDir)) {
+    $MpvFiles = Get-ChildItem -File $MpvDir | Where-Object { $_.Extension -in ".exe", ".dll", ".com" }
+    foreach ($f in $MpvFiles) {
+      $Args += @("--add-binary", "$($f.FullName);tools\\mpv")
+    }
+  } else {
+    $Args += @("--add-binary", "$MpvExe;tools\\mpv")
+  }
 }
 
 & $Pi @Args "player.py"
