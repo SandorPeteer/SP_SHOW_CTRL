@@ -4589,6 +4589,16 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 self.settings.mpv_hwdec = v
             except Exception:
                 pass
+            # Apply immediately: restart persistent mpv output so hwdec takes effect.
+            try:
+                _shutdown_shared_mpv_output()
+            except Exception:
+                pass
+            try:
+                if bool(getattr(self.settings, "mpv_persistent_output", True)):
+                    self.video_runner.ensure_window()
+            except Exception:
+                pass
 
         var_hwdec.trace_add("write", _apply_hwdec)
         ttk.Label(disp, text="mpv hwdec:").grid(row=2, column=0, sticky="w", pady=(8, 0))
