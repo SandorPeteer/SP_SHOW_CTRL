@@ -502,23 +502,38 @@ def _resolve_mpv() -> str | None:
                 continue
 
     try:
-        found = shutil.which(tool)
-        if found:
-            # Prefer the real binary over shims when possible (Chocolatey/Scoop).
+        # Windows: prefer mpv.exe over mpv.com (mpv.com is the console-subsystem wrapper and is a bad default for GUI apps).
+        names = ("mpv.exe", "mpv") if sysname == "Windows" else ("mpv",)
+        for name in names:
+            found = shutil.which(name)
+            if not found:
+                continue
+            fp = Path(found)
+            if sysname == "Windows":
+                try:
+                    # If a tool resolves to mpv.com, prefer mpv.exe next to it.
+                    if fp.suffix.lower() == ".com" and fp.name.lower() == "mpv.com":
+                        adj = fp.with_name("mpv.exe")
+                        if adj.exists() and _is_probably_executable_binary(adj):
+                            return str(adj)
+                except Exception:
+                    pass
+                # Prefer the real binary over shims when possible (Chocolatey/Scoop).
+                try:
+                    s = str(fp).replace("/", "\\").lower()
+                    if s.endswith("\\chocolatey\\bin\\mpv.exe") or s.endswith("\\chocolatey\\bin\\mpv.com"):
+                        real = Path(os.environ.get("ProgramData") or "C:\\ProgramData") / "chocolatey" / "lib" / "mpv" / "tools" / "mpv.exe"
+                        if real.exists() and _is_probably_executable_binary(real):
+                            return str(real)
+                    if s.endswith("\\scoop\\shims\\mpv.exe") or s.endswith("\\scoop\\shims\\mpv.com"):
+                        up = Path(os.environ.get("USERPROFILE") or str(Path.home()))
+                        real = up / "scoop" / "apps" / "mpv" / "current" / "mpv.exe"
+                        if real.exists() and _is_probably_executable_binary(real):
+                            return str(real)
+                except Exception:
+                    pass
             try:
-                fp = Path(found)
-                s = str(fp).replace("/", "\\").lower()
-                if s.endswith("\\chocolatey\\bin\\mpv.exe"):
-                    real = Path(os.environ.get("ProgramData") or "C:\\ProgramData") / "chocolatey" / "lib" / "mpv" / "tools" / "mpv.exe"
-                    if real.exists() and _is_probably_executable_binary(real):
-                        return str(real)
-                if s.endswith("\\scoop\\shims\\mpv.exe"):
-                    up = Path(os.environ.get("USERPROFILE") or str(Path.home()))
-                    real = up / "scoop" / "apps" / "mpv" / "current" / "mpv.exe"
-                    if real.exists() and _is_probably_executable_binary(real):
-                        return str(real)
-                if _is_probably_executable_binary(fp):
-                    return str(found)
+                return str(found) if _is_probably_executable_binary(fp) else None
             except Exception:
                 return str(found)
     except Exception:
@@ -8062,7 +8077,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 "   winget install -e --id shinchiro.mpv --accept-source-agreements --accept-package-agreements\n\n"
                 "Ellenőrzés:\n"
                 "   mpv --version\n\n"
-                "Ha így sem látja az app, használd: Tools → Install mpv… → 'Select mpv.exe' (importálja a mappát)."
+                "Ha így sem látja az app:\n"
+                "- Nyisd meg a Setup (⚙) ablakot\n"
+                "- Display tab → Install mpv… (importálás is van)\n"
             )
 
         install_url = "https://mpv.io/installation/"
@@ -8175,132 +8192,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return
 
         if sysname == "Windows":
-            installers: list[tuple[str, list[str]]] = []
-            winget = shutil.which("winget")
-            if winget:
-                installers.append(
-                    (
-                        "winget",
-                        [
-                            winget,
-                            "install",
-                            "-e",
-                            "--id",
-                            "shinchiro.mpv",
-                            "--accept-source-agreements",
-                            "--accept-package-agreements",
-                        ],
-                    )
-                )
-            choco = shutil.which("choco")
-            if choco:
-                installers.append(( "choco", [choco, "install", "mpv", "-y", "--no-progress"] ))
-            scoop = shutil.which("scoop")
-            if scoop:
-                installers.append(("scoop", [scoop, "install", "mpv"]))
-
-            if installers:
-                try:
-                    ok = messagebox.askyesno(
-                        "Install mpv",
-                        "mpv is recommended for the smoothest output.\n\n"
-                        "I can try to install it automatically using:\n"
-                        + "\n".join(f"- {n}" for (n, _cmd) in installers)
-                        + "\n\n"
-                        "Install now?",
-                        parent=self,
-                    )
-                except Exception:
-                    ok = False
-                if ok:
-                    win = tk.Toplevel(self)
-                    win.title("Installing mpv…")
-                    try:
-                        win.configure(bg="#2b2b2b")
-                    except Exception:
-                        pass
-                    win.resizable(False, False)
-                    try:
-                        win.transient(self)
-                    except Exception:
-                        pass
-
-                    status_var = tk.StringVar(value="Preparing…")
-                    body = tk.Frame(win, bg="#2b2b2b", padx=14, pady=12)
-                    body.pack(fill="both", expand=True)
-                    tk.Label(body, textvariable=status_var, bg="#2b2b2b", fg="#e8e8e8", justify="left").pack(anchor="w")
-                    pb = ttk.Progressbar(body, mode="indeterminate")
-                    pb.pack(fill="x", expand=True, pady=(10, 0))
-                    pb.start(10)
-
-                    def _finish(success: bool, details: str) -> None:
-                        def _apply() -> None:
-                            try:
-                                pb.stop()
-                            except Exception:
-                                pass
-                            try:
-                                win.destroy()
-                            except Exception:
-                                pass
-                            if success and _resolve_mpv():
-                                try:
-                                    messagebox.showinfo("mpv", "mpv installed successfully.", parent=self)
-                                except Exception:
-                                    pass
-                            else:
-                                try:
-                                    messagebox.showwarning(
-                                        "mpv install",
-                                        "mpv could not be installed automatically.\n\n"
-                                        "You can still install it manually, or import it from a folder.\n\n"
-                                        f"Details:\n{details}",
-                                        parent=self,
-                                    )
-                                except Exception:
-                                    pass
-                                try:
-                                    # Give a concrete Windows path too (winget + import).
-                                    messagebox.showinfo("mpv (Windows)", _windows_mpv_help_text(), parent=self)
-                                    webbrowser.open(install_url)
-                                except Exception:
-                                    pass
-
-                        self._ui_tasks.put(_apply)
-
-                    def _worker() -> None:
-                        try:
-                            details: list[str] = []
-                            for name, cmd in installers:
-                                try:
-                                    self._ui_tasks.put(lambda n=name, c=cmd: status_var.set(f"Running: {n}\n\n{' '.join(c)}"))
-                                except Exception:
-                                    pass
-                                proc = subprocess.run(cmd, capture_output=True, text=True, check=False, **_no_console_subprocess_kwargs())
-                                out = ((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")).strip()
-                                if proc.returncode == 0 and _resolve_mpv():
-                                    _finish(True, out[-1200:])
-                                    return
-                                details.append(f"[{name}] exit={proc.returncode}\n{out[-1200:]}")
-                            _finish(False, ("\n\n".join(details)).strip()[-4000:] or "All installers failed.")
-                        except Exception as e:
-                            _finish(False, str(e))
-
-                    threading.Thread(target=_worker, daemon=True).start()
-                    return
-
-            # Fallback: let the user import a downloaded mpv folder.
-            try:
-                ok2 = messagebox.askyesno(
-                    "Install mpv",
-                    "mpv is not installed.\n\n"
-                    "If you already downloaded mpv, I can import it.\n\n"
-                    "Select mpv.exe now?",
-                    parent=self,
-                )
-            except Exception:
-                ok2 = False
-            if ok2:
+            def _import_mpv_windows() -> None:
                 try:
                     chosen = filedialog.askopenfilename(
                         title="Select mpv.exe",
@@ -8308,42 +8200,250 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     )
                 except Exception:
                     chosen = ""
-                if chosen:
+                if not chosen:
+                    return
+                try:
+                    src_dir = Path(chosen).expanduser().resolve().parent
+                    dst_dir = _mpv_bin_dir()
+                    dst_dir.mkdir(parents=True, exist_ok=True)
+                    # mpv on Windows usually needs DLLs next to mpv.exe; copy the whole folder contents.
+                    for p in src_dir.iterdir():
+                        try:
+                            if p.is_file():
+                                shutil.copy2(p, dst_dir / p.name)
+                        except Exception:
+                            continue
+                    existing2 = _resolve_mpv()
+                    if existing2:
+                        try:
+                            messagebox.showinfo("mpv", f"mpv ready:\n\n{existing2}\n\nImported into:\n{dst_dir}", parent=self)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            messagebox.showwarning(
+                                "mpv import",
+                                "Import complete, but mpv still not detected.\n\n"
+                                f"Imported into:\n{dst_dir}\n\n"
+                                "Make sure you selected the folder that contains mpv.exe + DLLs.",
+                                parent=self,
+                            )
+                        except Exception:
+                            pass
+                except Exception as e:
                     try:
-                        src_dir = Path(chosen).expanduser().resolve().parent
-                        dst_dir = _mpv_bin_dir()
-                        dst_dir.mkdir(parents=True, exist_ok=True)
-                        # mpv on Windows usually needs DLLs next to mpv.exe; copy the whole folder contents.
-                        for p in src_dir.iterdir():
-                            try:
-                                if p.is_file():
-                                    shutil.copy2(p, dst_dir / p.name)
-                            except Exception:
-                                continue
-                        try:
-                            messagebox.showinfo("mpv", f"Imported mpv into:\n\n{dst_dir}", parent=self)
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        try:
-                            messagebox.showwarning("mpv import", f"Import failed: {e}", parent=self)
-                        except Exception:
-                            pass
-                return
+                        messagebox.showwarning("mpv import", f"Import failed: {e}", parent=self)
+                    except Exception:
+                        pass
 
+            def _open_mpv_tools_folder() -> None:
+                p = _mpv_bin_dir()
+                try:
+                    p.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
+                try:
+                    if platform.system() == "Windows":
+                        os.startfile(str(p))  # type: ignore[attr-defined]
+                        return
+                except Exception:
+                    pass
+                try:
+                    if platform.system() == "Darwin":
+                        subprocess.run(["open", str(p)], check=False, **_no_console_subprocess_kwargs())
+                        return
+                except Exception:
+                    pass
+                try:
+                    subprocess.run(["xdg-open", str(p)], check=False, **_no_console_subprocess_kwargs())
+                except Exception:
+                    pass
+
+            def _auto_install_mpv_windows() -> None:
+                installers: list[tuple[str, list[str]]] = []
+                winget = shutil.which("winget")
+                if winget:
+                    installers.append(
+                        (
+                            "winget",
+                            [
+                                winget,
+                                "install",
+                                "-e",
+                                "--id",
+                                "shinchiro.mpv",
+                                "--accept-source-agreements",
+                                "--accept-package-agreements",
+                            ],
+                        )
+                    )
+                choco = shutil.which("choco")
+                if choco:
+                    installers.append(("choco", [choco, "install", "mpv", "-y", "--no-progress"]))
+                scoop = shutil.which("scoop")
+                if scoop:
+                    installers.append(("scoop", [scoop, "install", "mpv"]))
+
+                if not installers:
+                    try:
+                        messagebox.showinfo("Install mpv", _windows_mpv_help_text(), parent=self)
+                    except Exception:
+                        pass
+                    try:
+                        webbrowser.open(install_url)
+                    except Exception:
+                        pass
+                    return
+
+                win = tk.Toplevel(self)
+                win.title("Installing mpv…")
+                try:
+                    win.configure(bg="#2b2b2b")
+                except Exception:
+                    pass
+                win.resizable(False, False)
+                try:
+                    win.transient(self)
+                except Exception:
+                    pass
+
+                status_var = tk.StringVar(value="Preparing…")
+                body = tk.Frame(win, bg="#2b2b2b", padx=14, pady=12)
+                body.pack(fill="both", expand=True)
+                tk.Label(body, textvariable=status_var, bg="#2b2b2b", fg="#e8e8e8", justify="left").pack(anchor="w")
+                pb = ttk.Progressbar(body, mode="indeterminate")
+                pb.pack(fill="x", expand=True, pady=(10, 0))
+                pb.start(10)
+
+                def _finish(success: bool, details: str) -> None:
+                    def _apply() -> None:
+                        try:
+                            pb.stop()
+                        except Exception:
+                            pass
+                        try:
+                            win.destroy()
+                        except Exception:
+                            pass
+                        if success and _resolve_mpv():
+                            try:
+                                messagebox.showinfo("mpv", "mpv installed successfully.", parent=self)
+                            except Exception:
+                                pass
+                            return
+                        try:
+                            messagebox.showwarning(
+                                "mpv install",
+                                "mpv could not be installed automatically.\n\n"
+                                "Next options:\n"
+                                "- Import a portable mpv folder (mpv.exe + DLLs)\n"
+                                "- Or install via winget (recommended)\n\n"
+                                f"Details:\n{details}",
+                                parent=self,
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            wants_import = messagebox.askyesno(
+                                "Import mpv.exe?",
+                                "Do you want to import a downloaded mpv folder now?\n\n"
+                                "Tip: pick the folder that contains mpv.exe and DLL files.",
+                                parent=self,
+                            )
+                        except Exception:
+                            wants_import = False
+                        if wants_import:
+                            _import_mpv_windows()
+                        else:
+                            try:
+                                messagebox.showinfo("mpv (Windows)", _windows_mpv_help_text(), parent=self)
+                            except Exception:
+                                pass
+                            try:
+                                webbrowser.open(install_url)
+                            except Exception:
+                                pass
+
+                    self._ui_tasks.put(_apply)
+
+                def _worker() -> None:
+                    try:
+                        details: list[str] = []
+                        for name, cmd in installers:
+                            try:
+                                self._ui_tasks.put(lambda n=name, c=cmd: status_var.set(f"Running: {n}\n\n{' '.join(c)}"))
+                            except Exception:
+                                pass
+                            proc = subprocess.run(cmd, capture_output=True, text=True, check=False, **_no_console_subprocess_kwargs())
+                            out = ((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")).strip()
+                            if proc.returncode == 0 and _resolve_mpv():
+                                _finish(True, out[-1200:])
+                                return
+                            details.append(f"[{name}] exit={proc.returncode}\n{out[-1200:]}")
+                        _finish(False, ("\n\n".join(details)).strip()[-4000:] or "All installers failed.")
+                    except Exception as e:
+                        _finish(False, str(e))
+
+                threading.Thread(target=_worker, daemon=True).start()
+
+            # Show a simple options dialog so users can import a portable mpv even if installers are confusing.
             try:
-                messagebox.showinfo(
-                    "Install mpv",
-                    "mpv is not installed.\n\n" + _windows_mpv_help_text(),
-                    parent=self,
+                win = tk.Toplevel(self)
+                win.title("Install mpv (Windows)")
+                try:
+                    win.configure(bg="#2b2b2b")
+                except Exception:
+                    pass
+                win.resizable(False, False)
+                try:
+                    win.transient(self)
+                except Exception:
+                    pass
+
+                body = tk.Frame(win, bg="#2b2b2b", padx=14, pady=12)
+                body.pack(fill="both", expand=True)
+                tk.Label(
+                    body,
+                    text="mpv is recommended for the smoothest output.\n\nPick an option:",
+                    bg="#2b2b2b",
+                    fg="#e8e8e8",
+                    justify="left",
+                ).pack(anchor="w")
+
+                tools_path = str(_mpv_bin_dir())
+                tk.Label(body, text=f"App tools folder:\n{tools_path}", bg="#2b2b2b", fg="#bfbfbf", justify="left").pack(
+                    anchor="w", pady=(8, 0)
                 )
+
+                def _copy_winget() -> None:
+                    cmd = "winget install -e --id shinchiro.mpv --accept-source-agreements --accept-package-agreements"
+                    try:
+                        self.clipboard_clear()
+                        self.clipboard_append(cmd)
+                        messagebox.showinfo("Copied", "Winget command copied to clipboard.", parent=win)
+                    except Exception:
+                        pass
+
+                btn_row = tk.Frame(body, bg="#2b2b2b")
+                btn_row.pack(fill="x", pady=(10, 0))
+                ttk.Button(btn_row, text="Auto install…", command=lambda: (win.destroy(), _auto_install_mpv_windows())).pack(
+                    side="left", padx=(0, 10)
+                )
+                ttk.Button(btn_row, text="Import mpv.exe…", command=lambda: (win.destroy(), _import_mpv_windows())).pack(
+                    side="left", padx=(0, 10)
+                )
+                ttk.Button(btn_row, text="Open tools folder", command=_open_mpv_tools_folder).pack(side="left", padx=(0, 10))
+                ttk.Button(btn_row, text="Copy winget cmd", command=_copy_winget).pack(side="left", padx=(0, 10))
+                ttk.Button(btn_row, text="Help page", command=lambda: webbrowser.open(install_url)).pack(side="left")
+
+                ttk.Separator(body, orient="horizontal").pack(fill="x", pady=(12, 10))
+                tk.Label(body, text=_windows_mpv_help_text(), bg="#2b2b2b", fg="#e8e8e8", justify="left").pack(anchor="w")
+                ttk.Button(body, text="Close", command=win.destroy).pack(anchor="e", pady=(10, 0))
+                return
             except Exception:
-                pass
-            try:
-                webbrowser.open(install_url)
-            except Exception:
-                pass
-            return
+                # If the dialog fails (rare), fall back to auto-install attempts.
+                _auto_install_mpv_windows()
+                return
 
         # Linux/others: open instructions page (package managers / downloads).
         try:
