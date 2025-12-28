@@ -1,12 +1,22 @@
 param(
   [string]$MpvPath,
-  [int]$TimeoutSec
+  [int]$TimeoutSec,
+  [switch]$Pause
 )
 
 $ErrorActionPreference = "Stop"
 
 if ($null -eq $MpvPath) { $MpvPath = "" }
 if ($null -eq $TimeoutSec -or $TimeoutSec -le 0) { $TimeoutSec = 8 }
+
+function Get-LogDir {
+  $base = ""
+  if ($Env:APPDATA) { $base = $Env:APPDATA }
+  if (-not $base) {
+    $base = Join-Path $Env:USERPROFILE "AppData\Roaming"
+  }
+  return (Join-Path $base "SP_Show_Control\logs")
+}
 
 function Resolve-MpvPath {
   param([string]$Explicit)
@@ -58,13 +68,14 @@ if (-not $mpv) { throw "mpv.exe not found. Provide -MpvPath or install mpv." }
 
 $guid = [Guid]::NewGuid().ToString("N")
 $pipe = "\\.\pipe\sp_show_ctrl_ipc_test_$guid"
-$logDir = Join-Path $Env:APPDATA "SP_Show_Control\logs"
+$logDir = Get-LogDir
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $logFile = Join-Path $logDir "mpv_ipc_smoke_test_$guid.log"
 
 Write-Host "mpv: $mpv"
 Write-Host "pipe: $pipe"
 Write-Host "log : $logFile"
+("mpv=$mpv`npipe=$pipe`nstarted=$(Get-Date -Format o)`n") | Out-File -FilePath $logFile -Encoding UTF8 -Append
 
 $args = @(
   "--no-terminal",
@@ -76,13 +87,15 @@ $args = @(
   "--input-ipc-server=$pipe"
 )
 
-$proc = Start-Process -PassThru -FilePath $mpv -ArgumentList $args
+$proc = $null
 try {
+  Write-Host "Starting mpv..."
+  $proc = Start-Process -PassThru -FilePath $mpv -ArgumentList $args
+  Write-Host "Waiting for named pipe..."
   $timeoutMs = [Math]::Max(1000, $TimeoutSec * 1000)
-  if (-not (Wait-NamedPipe -PipePath $pipe -TimeoutMs $timeoutMs)) {
-    throw "Timeout waiting for named pipe."
-  }
+  if (-not (Wait-NamedPipe -PipePath $pipe -TimeoutMs $timeoutMs)) { throw "Timeout waiting for named pipe." }
 
+  Write-Host "Connecting..."
   $fs = New-Object System.IO.FileStream($pipe, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
   $enc = New-Object System.Text.UTF8Encoding($false)
   $reader = New-Object System.IO.StreamReader($fs, $enc, $true, 4096, $true)
@@ -90,9 +103,12 @@ try {
   $writer.NewLine = "`n"
   $writer.AutoFlush = $true
 
+  Write-Host "Sending request..."
   $req = @{ command = @("get_property", "mpv-version"); request_id = 1 } | ConvertTo-Json -Compress
   $writer.WriteLine($req)
-  $line = $reader.ReadLine()
+  $task = $reader.ReadLineAsync()
+  if (-not $task.Wait($timeoutMs)) { throw "Timeout waiting IPC response." }
+  $line = $task.Result
   if (-not $line) { throw "No response from IPC." }
   $resp = $line | ConvertFrom-Json
   if ($resp.error -ne "success") { throw "IPC error: $($resp.error)" }
@@ -100,8 +116,13 @@ try {
 
   $quit = @{ command = @("quit"); request_id = 2 } | ConvertTo-Json -Compress
   $writer.WriteLine($quit)
+  Write-Host "Quitting..."
 } finally {
   try { if ($proc -and -not $proc.HasExited) { $proc.Kill() | Out-Null } } catch {}
 }
 
 Write-Host "Done."
+if ($Pause) {
+  Write-Host "Press Enter to close..."
+  [void](Read-Host)
+}
