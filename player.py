@@ -1552,8 +1552,9 @@ class MpvIpcSession:
             "--image-display-duration=inf",
             f"--title=SP Show Control Output ({self.name})",
             f"--input-ipc-server={self.ipc_server}",
-            f"--geometry={geometry}",
         ]
+        if platform.system() != "Windows":
+            args.append(f"--geometry={geometry}")
         if self.log_file:
             args.append(f"--log-file={self.log_file}")
         if platform.system() == "Windows":
