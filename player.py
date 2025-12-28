@@ -1184,6 +1184,7 @@ class Settings:
     mpv_persistent_output: bool = True
     mpv_offer_shown: bool = False
     mpv_hwdec: str = ""  # "", "no", "auto-safe", "auto"
+    mpv_output_mode: str = "ipc"  # ipc | spawn
     startup_volume: int = 100
     downloads_dir: str = ""
     normalize_enabled: bool = False
@@ -1200,6 +1201,7 @@ class Settings:
             "mpv_persistent_output": self.mpv_persistent_output,
             "mpv_offer_shown": self.mpv_offer_shown,
             "mpv_hwdec": self.mpv_hwdec,
+            "mpv_output_mode": self.mpv_output_mode,
             "startup_volume": self.startup_volume,
             "downloads_dir": self.downloads_dir,
             "normalize_enabled": self.normalize_enabled,
@@ -1232,6 +1234,13 @@ class Settings:
         if hw not in ("", "no", "auto-safe", "auto"):
             hw = ""
         s.mpv_hwdec = hw
+        try:
+            om = str(data.get("mpv_output_mode", s.mpv_output_mode) or "").strip().lower()
+        except Exception:
+            om = str(s.mpv_output_mode or "ipc")
+        if om not in ("ipc", "spawn"):
+            om = "ipc"
+        s.mpv_output_mode = om
         s.startup_volume = int(data.get("startup_volume", s.startup_volume))
         try:
             s.downloads_dir = str(data.get("downloads_dir", s.downloads_dir) or "")
@@ -1823,6 +1832,11 @@ _SHARED_MPV_OUTPUT_LOCK = threading.Lock()
 
 def _get_shared_mpv_output(settings: Settings) -> MpvIpcSession | None:
     """Return a singleton mpv output session (persistent window), starting it if needed."""
+    try:
+        if str(getattr(settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() != "ipc":
+            return None
+    except Exception:
+        pass
     if not bool(getattr(settings, "mpv_persistent_output", True)):
         return None
     mpv = _resolve_mpv()
@@ -1880,6 +1894,7 @@ class OutputRunner:
     def __init__(self, settings: Settings):
         self.settings = settings
         self._sess: MpvIpcSession | None = None
+        self._spawn_runner = MediaRunner(settings, name="OUTPUT_SPAWN")
         self.owner_deck: str | None = None  # "A" or "B"
         self._playing_cue: Cue | None = None
         self._paused: bool = False
@@ -1888,6 +1903,13 @@ class OutputRunner:
         self.last_end_reason: str | None = None
 
     def ensure_window(self) -> bool:
+        try:
+            if str(getattr(self.settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() == "spawn":
+                # Spawn mode does not keep a persistent window; it starts mpv per cue.
+                self._sess = None
+                return True
+        except Exception:
+            pass
         sess = _get_shared_mpv_output(self.settings)
         if sess is None:
             self._sess = None
@@ -1896,6 +1918,11 @@ class OutputRunner:
         return True
 
     def is_playing(self) -> bool:
+        try:
+            if str(getattr(self.settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() == "spawn":
+                return bool(self._spawn_runner.is_playing())
+        except Exception:
+            pass
         sess = self._sess
         if sess is None:
             try:
@@ -1970,6 +1997,11 @@ class OutputRunner:
         return self._playing_cue
 
     def playback_position_sec(self) -> float | None:
+        try:
+            if str(getattr(self.settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() == "spawn":
+                return self._spawn_runner.playback_position_sec()
+        except Exception:
+            pass
         cue = self._playing_cue
         if cue is None or cue.kind != "video":
             return None
@@ -2008,6 +2040,18 @@ class OutputRunner:
             return None
 
     def stop(self) -> None:
+        try:
+            if str(getattr(self.settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() == "spawn":
+                try:
+                    self._spawn_runner.stop()
+                except Exception:
+                    pass
+                self.owner_deck = None
+                self._paused = False
+                self._stop_at_sec = None
+                return
+        except Exception:
+            pass
         sess = self._sess
         if sess is None:
             return
@@ -2021,6 +2065,12 @@ class OutputRunner:
         # Keep _playing_cue so the app can handle natural finish vs stop if needed.
 
     def pause(self) -> None:
+        try:
+            if str(getattr(self.settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() == "spawn":
+                # Spawn mode cannot pause reliably; keep as no-op.
+                return
+        except Exception:
+            pass
         sess = self._sess
         if sess is None:
             return
@@ -2031,6 +2081,11 @@ class OutputRunner:
             pass
 
     def resume(self) -> None:
+        try:
+            if str(getattr(self.settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() == "spawn":
+                return
+        except Exception:
+            pass
         sess = self._sess
         if sess is None:
             return
@@ -2044,6 +2099,11 @@ class OutputRunner:
         return bool(self._paused)
 
     def seek_to(self, position_sec: float) -> None:
+        try:
+            if str(getattr(self.settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() == "spawn":
+                return
+        except Exception:
+            pass
         sess = self._sess
         if sess is None:
             return
@@ -2058,6 +2118,25 @@ class OutputRunner:
     def play_at_for_deck(self, deck: str, cue: Cue, position_sec: float, *, volume_override: int | None = None) -> None:
         if cue.kind not in ("video", "image"):
             return
+        try:
+            if str(getattr(self.settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() == "spawn":
+                # Fallback: spawn mpv per cue (no IPC). This behaves closer to "mpv.exe <file>".
+                # Ensure output placement uses cue.open_on_second_screen settings.
+                self.owner_deck = str(deck)
+                try:
+                    self._spawn_runner.play_at(cue, float(position_sec), volume_override=volume_override)
+                except TypeError:
+                    # Older signature fallback
+                    self._spawn_runner.play(cue)
+                self._playing_cue = cue
+                self._paused = False
+                self._stop_at_sec = None
+                self.last_exit_code = None
+                self.last_end_reason = None
+                return
+        except Exception:
+            pass
+
         if not self.ensure_window():
             raise RuntimeError("mpv output window not available")
         sess = self._sess
@@ -4609,6 +4688,44 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception:
             pass
 
+        # mpv output mode (Windows fallback): IPC persistent window vs spawn per cue.
+        var_out_mode = tk.StringVar(value=str(getattr(self.settings, "mpv_output_mode", "ipc") or "ipc"))
+
+        def _apply_out_mode(*_a) -> None:
+            try:
+                v = str(var_out_mode.get() or "").strip().lower()
+            except Exception:
+                v = "ipc"
+            if v not in ("ipc", "spawn"):
+                v = "ipc"
+            try:
+                self.settings.mpv_output_mode = v
+            except Exception:
+                pass
+            # Restart output so mode takes effect immediately and no stale mpv window remains.
+            try:
+                _shutdown_shared_mpv_output()
+            except Exception:
+                pass
+            try:
+                self.video_runner.stop()
+            except Exception:
+                pass
+            try:
+                if v == "ipc" and bool(getattr(self.settings, "mpv_persistent_output", True)):
+                    self.video_runner.ensure_window()
+            except Exception:
+                pass
+
+        var_out_mode.trace_add("write", _apply_out_mode)
+        ttk.Label(disp, text="mpv output:").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        cb_out = ttk.Combobox(disp, textvariable=var_out_mode, values=("ipc", "spawn"), state="readonly", width=10)
+        cb_out.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
+        try:
+            cb_out.configure(takefocus=0)
+        except Exception:
+            pass
+
         var_mpv_persist = tk.BooleanVar(value=bool(getattr(self.settings, "mpv_persistent_output", True)))
 
         def _apply_mpv_persist(*_a) -> None:
@@ -4628,7 +4745,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             disp,
             text="Keep mpv output window open (2nd screen)",
             variable=var_mpv_persist,
-        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         ttk.Separator(tab_display, orient="horizontal").pack(fill="x", pady=(6, 0))
         ttk.Label(
