@@ -1535,10 +1535,11 @@ class MpvIpcSession:
 
         args = [
             self.mpv_exe,
+            "--player-operation-mode=pseudo-gui",
             "--no-terminal",
             f"--hwdec={self.hwdec}",
             "--idle=yes",
-            "--force-window=yes",
+            "--force-window=immediate",
             "--keep-open=yes",
             "--no-auto-window-resize",
             "--no-keepaspect-window",
@@ -1563,6 +1564,11 @@ class MpvIpcSession:
             args.append("--macos-geometry-calculation=whole")
             # Default to pseudo-fullscreen on macOS (avoid Spaces).
             args.append("--native-fs=no")
+
+        try:
+            _append_app_log(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] mpv start: {args!r}\n")
+        except Exception:
+            pass
 
         self._proc = subprocess.Popen(
             args,
@@ -1645,6 +1651,7 @@ class MpvIpcSession:
                 except Exception as e:
                     raise RuntimeError(f"Windows IPC: missing ctypes/msvcrt: {e}") from e
 
+                flags_rdwr = int(getattr(_os, "O_RDWR", 0)) | int(getattr(_os, "O_BINARY", 0))
                 GENERIC_READ = 0x80000000
                 GENERIC_WRITE = 0x40000000
                 OPEN_EXISTING = 3
@@ -1675,6 +1682,18 @@ class MpvIpcSession:
                 GetLastError.restype = wintypes.DWORD
 
                 while time.monotonic() < deadline:
+                    try:
+                        ok = bool(WaitNamedPipeW(str(pipe), 200))
+                    except Exception:
+                        ok = False
+                    if not ok:
+                        err = int(GetLastError() or 0)
+                        if err in (ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND):
+                            time.sleep(0.05)
+                            continue
+                        if err == ERROR_PIPE_BUSY:
+                            time.sleep(0.05)
+                            continue
                     h = CreateFileW(
                         str(pipe),
                         int(GENERIC_READ | GENERIC_WRITE),
@@ -1686,7 +1705,7 @@ class MpvIpcSession:
                     )
                     hv = int(h)
                     if hv != int(INVALID_HANDLE_VALUE):
-                        fd = msvcrt.open_osfhandle(hv, 0)
+                        fd = msvcrt.open_osfhandle(hv, flags_rdwr)
                         return _os.fdopen(fd, "r+b", buffering=0)
                     err = int(GetLastError() or 0)
                     if err == ERROR_PIPE_BUSY:
@@ -4836,6 +4855,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         )
         ttk.Button(disp, text="Test mpv IPC", command=self._test_mpv_ipc).grid(
             row=1, column=5, sticky="w", padx=(10, 0), pady=(10, 0)
+        )
+        ttk.Button(disp, text="Open logs", command=self._open_logs_folder).grid(
+            row=2, column=4, sticky="w", padx=(10, 0), pady=(10, 0)
         )
 
         # mpv hwdec: default to a safe value on Windows to avoid driver hangs.
@@ -8465,6 +8487,30 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception:
             return
 
+    def _open_logs_folder(self) -> None:
+        p = _user_data_dir() / "logs"
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        sysname = platform.system()
+        if sysname == "Windows":
+            try:
+                os.startfile(str(p))  # type: ignore[attr-defined]
+                return
+            except Exception:
+                return
+        if sysname == "Darwin":
+            try:
+                subprocess.run(["open", str(p)], check=False, **_no_console_subprocess_kwargs())
+                return
+            except Exception:
+                return
+        try:
+            subprocess.run(["xdg-open", str(p)], check=False, **_no_console_subprocess_kwargs())
+        except Exception:
+            return
+
     def _select_mpv_exe(self) -> None:
         """Import a portable mpv into the app's tools folder (useful even if mpv exists system-wide)."""
         sysname = platform.system()
@@ -8545,56 +8591,73 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             except Exception:
                 pass
             return
-        if platform.system() != "Windows":
-            try:
-                messagebox.showinfo("mpv IPC", "This test is mainly for Windows named-pipe IPC.", parent=self)
-            except Exception:
-                pass
-        try:
-            sess = MpvIpcSession(
-                mpv,
-                name="TEST",
-                second_screen_left=int(getattr(self.settings, "second_screen_left", 0)),
-                second_screen_top=int(getattr(self.settings, "second_screen_top", 0)),
-                fullscreen=False,
-            )
-            sess.hwdec = _effective_mpv_hwdec(self.settings)
-            sess.log_file = _mpv_log_file("ipc_test")
-            sess.start()
-            resp = sess.command(["get_property", "mpv-version"], timeout=1.2)
-            vers = ""
-            try:
-                if isinstance(resp, dict) and resp.get("error") == "success":
-                    vers = str(resp.get("data") or "")
-            except Exception:
-                vers = ""
-            try:
-                sess.stop()
-            except Exception:
-                pass
-            try:
-                sess.shutdown()
-            except Exception:
-                pass
+        self._log("mpv IPC test: starting…")
+        log_path = _mpv_log_file("ipc_test")
+
+        def _done_ok(version: str) -> None:
+            self._log("mpv IPC test: OK")
             msg = "IPC OK."
-            if vers:
-                msg += f"\n\nmpv-version:\n{vers}"
-            msg += f"\n\nLog:\n{_mpv_log_file('ipc_test')}"
+            if version:
+                msg += f"\n\nmpv-version:\n{version}"
+            msg += f"\n\nLog:\n{log_path}\n\nApp log:\n{_app_log_file()}"
             try:
                 messagebox.showinfo("mpv IPC", msg, parent=self)
             except Exception:
                 pass
-        except Exception as e:
+
+        def _done_fail(err: str) -> None:
+            self._log(f"mpv IPC test: FAILED: {err}")
             try:
                 messagebox.showwarning(
                     "mpv IPC failed",
-                    f"mpv IPC test failed:\n\n{e}\n\n"
-                    f"Try 'mpv output: spawn' as a workaround.\n\n"
-                    f"Log:\n{_mpv_log_file('ipc_test')}",
+                    f"mpv IPC test failed:\n\n{err}\n\n"
+                    "Workaround:\n"
+                    "- Setup → Display → mpv output mode: spawn\n\n"
+                    f"Log:\n{log_path}\n\n"
+                    f"App log:\n{_app_log_file()}",
                     parent=self,
                 )
             except Exception:
                 pass
+
+        def _worker() -> None:
+            sess: MpvIpcSession | None = None
+            vers = ""
+            err = ""
+            try:
+                name = "TEST_" + uuid.uuid4().hex[:8].upper()
+                sess = MpvIpcSession(
+                    mpv,
+                    name=name,
+                    second_screen_left=int(getattr(self.settings, "second_screen_left", 0)),
+                    second_screen_top=int(getattr(self.settings, "second_screen_top", 0)),
+                    fullscreen=False,
+                )
+                sess.hwdec = _effective_mpv_hwdec(self.settings)
+                sess.log_file = log_path
+                sess.start()
+                resp = sess.command(["get_property", "mpv-version"], timeout=1.8)
+                if isinstance(resp, dict) and resp.get("error") == "success":
+                    vers = str(resp.get("data") or "")
+            except Exception as e:
+                err = str(e)
+            finally:
+                try:
+                    if sess is not None:
+                        try:
+                            sess.stop()
+                        except Exception:
+                            pass
+                        sess.shutdown()
+                except Exception:
+                    pass
+
+            if err:
+                self.after(0, lambda: _done_fail(err))
+            else:
+                self.after(0, lambda: _done_ok(vers))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _install_mpv_prompt(self) -> None:
         existing = _resolve_mpv()
