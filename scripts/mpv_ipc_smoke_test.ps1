@@ -1,9 +1,12 @@
 param(
-  [string]$MpvPath = "",
-  [int]$TimeoutSec = 8
+  [string]$MpvPath,
+  [int]$TimeoutSec
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($null -eq $MpvPath) { $MpvPath = "" }
+if ($null -eq $TimeoutSec -or $TimeoutSec -le 0) { $TimeoutSec = 8 }
 
 function Resolve-MpvPath {
   param([string]$Explicit)
