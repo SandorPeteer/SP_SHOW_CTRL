@@ -1,9 +1,9 @@
-$ErrorActionPreference = "Stop"
-
 param(
   [string]$MpvPath = "",
   [int]$TimeoutSec = 8
 )
+
+$ErrorActionPreference = "Stop"
 
 function Resolve-MpvPath {
   param([string]$Explicit)
