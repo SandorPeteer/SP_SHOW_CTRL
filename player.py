@@ -458,6 +458,33 @@ def _resolve_fftool(tool: str) -> str | None:
 
 def _resolve_mpv() -> str | None:
     tool = "mpv"
+    # Explicit override (useful on Windows when mpv isn't on PATH).
+    try:
+        env_p = str(os.environ.get("SP_SHOW_CTRL_MPV") or os.environ.get("SP_SHOW_CTRL_MPV_PATH") or "").strip()
+    except Exception:
+        env_p = ""
+    if env_p:
+        try:
+            p = Path(env_p).expanduser()
+            if p.is_dir():
+                p = p / ("mpv.exe" if platform.system() == "Windows" else "mpv")
+            if p.exists() and _is_probably_executable_binary(p):
+                return str(p)
+        except Exception:
+            pass
+    try:
+        env_dir = str(os.environ.get("SP_SHOW_CTRL_MPV_DIR") or "").strip()
+    except Exception:
+        env_dir = ""
+    if env_dir:
+        try:
+            d = Path(env_dir).expanduser()
+            p = d / ("mpv.exe" if platform.system() == "Windows" else "mpv")
+            if p.exists() and _is_probably_executable_binary(p):
+                return str(p)
+        except Exception:
+            pass
+
     # Prefer bundled mpv in frozen apps (PyInstaller --add-binary).
     try:
         if platform.system() == "Windows":
