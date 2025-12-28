@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import uuid
 import webbrowser
 import zipfile
@@ -666,6 +667,61 @@ def _mpv_log_file(name: str) -> str:
         pass
     fname = f"mpv_{(name or 'log').strip().lower()}.log"
     return str(base / fname)
+
+
+def _app_log_file() -> str:
+    base = _user_data_dir() / "logs"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return str(base / "app.log")
+
+
+def _append_app_log(text: str) -> None:
+    try:
+        if not text:
+            return
+        with open(_app_log_file(), "a", encoding="utf-8", errors="replace") as f:
+            f.write(text)
+    except Exception:
+        pass
+
+
+def _install_global_exception_logging() -> None:
+    """Ensure unhandled exceptions are persisted in GUI builds (Windows)."""
+
+    def _log_exc(prefix: str, exc_type: type[BaseException], exc: BaseException, tb) -> None:
+        try:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            _append_app_log(f"\n[{ts}] {prefix}: {exc_type.__name__}: {exc}\n")
+            _append_app_log("".join(traceback.format_exception(exc_type, exc, tb)))
+        except Exception:
+            pass
+
+    def _sys_hook(exc_type, exc, tb) -> None:
+        _log_exc("Unhandled exception", exc_type, exc, tb)
+        try:
+            messagebox.showerror(
+                "Unhandled error",
+                f"{exc_type.__name__}: {exc}\n\nLog:\n{_app_log_file()}",
+            )
+        except Exception:
+            pass
+
+    try:
+        sys.excepthook = _sys_hook  # type: ignore[assignment]
+    except Exception:
+        pass
+
+    try:
+        th_hook = getattr(threading, "excepthook", None)
+        if th_hook is not None:
+            def _thread_hook(args) -> None:  # type: ignore[no-redef]
+                _log_exc("Thread exception", args.exc_type, args.exc_value, args.exc_traceback)
+            threading.excepthook = _thread_hook  # type: ignore[attr-defined]
+    except Exception:
+        pass
 
 
 def _download_url_to_file(
@@ -3297,6 +3353,10 @@ class BlackScreenWindow:
 class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
     def __init__(self):
         super().__init__()
+        try:
+            _install_global_exception_logging()
+        except Exception:
+            pass
         self.title("S.P. Show Control")
         # Pick a size that always fits on the current screen (avoid opening partially off-screen).
         try:
@@ -3383,6 +3443,11 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._btn_off_fg = "#ffffff"
         self._btn_play_on_bg = "#2e7d32"
         self._btn_stop_on_bg = "#c62828"
+        try:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            _append_app_log(f"[{ts}] App started ({APP_NAME} {APP_VERSION})\n")
+        except Exception:
+            pass
         self._btn_loop_on_bg = "#f9a825"
         self._btn_loop_on_fg = "#111111"
         self._playing_iid_a: str | None = None
@@ -4562,6 +4627,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
         ts = time.strftime("%H:%M:%S")
         line = f"[{ts}] {msg}\n"
+        _append_app_log(line)
         self._log_buffer.append(line)
         if len(self._log_buffer) > int(self._log_max_lines):
             excess = len(self._log_buffer) - int(self._log_max_lines)
@@ -4605,6 +4671,22 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 txt.configure(state="disabled")
             except Exception:
                 pass
+
+    def report_callback_exception(self, exc, val, tb) -> None:  # type: ignore[override]
+        try:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            _append_app_log(f"\n[{ts}] Tk callback exception: {exc.__name__}: {val}\n")
+            _append_app_log("".join(traceback.format_exception(exc, val, tb)))
+        except Exception:
+            pass
+        try:
+            messagebox.showerror(
+                "Error",
+                f"{exc.__name__}: {val}\n\nLog:\n{_app_log_file()}",
+                parent=self,
+            )
+        except Exception:
+            pass
 
     def _copy_log(self) -> None:
         txt = getattr(self, "log_text", None)
