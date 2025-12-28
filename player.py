@@ -618,6 +618,29 @@ def _pick_playback_backend(settings: Settings) -> tuple[str, str]:
     raise RuntimeError("No playback engine found. Install mpv or FFmpeg (ffplay).")
 
 
+def _effective_mpv_hwdec(settings: Settings | None = None) -> str:
+    """Return a stable mpv hwdec setting; defaults to 'no' on Windows to avoid driver hangs."""
+    v = ""
+    try:
+        if settings is not None:
+            v = str(getattr(settings, "mpv_hwdec", "") or "").strip().lower()
+    except Exception:
+        v = ""
+    if v in ("no", "auto-safe", "auto"):
+        return v
+    return "no" if platform.system() == "Windows" else "auto-safe"
+
+
+def _mpv_log_file(name: str) -> str:
+    base = _user_data_dir() / "logs"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    fname = f"mpv_{(name or 'log').strip().lower()}.log"
+    return str(base / fname)
+
+
 def _download_url_to_file(
     url: str,
     dest: Path,
@@ -1160,6 +1183,7 @@ class Settings:
     playback_engine: str = "auto"  # auto | mpv | ffplay
     mpv_persistent_output: bool = True
     mpv_offer_shown: bool = False
+    mpv_hwdec: str = ""  # "", "no", "auto-safe", "auto"
     startup_volume: int = 100
     downloads_dir: str = ""
     normalize_enabled: bool = False
@@ -1175,6 +1199,7 @@ class Settings:
             "playback_engine": self.playback_engine,
             "mpv_persistent_output": self.mpv_persistent_output,
             "mpv_offer_shown": self.mpv_offer_shown,
+            "mpv_hwdec": self.mpv_hwdec,
             "startup_volume": self.startup_volume,
             "downloads_dir": self.downloads_dir,
             "normalize_enabled": self.normalize_enabled,
@@ -1200,6 +1225,13 @@ class Settings:
         s.playback_engine = engine
         s.mpv_persistent_output = bool(data.get("mpv_persistent_output", s.mpv_persistent_output))
         s.mpv_offer_shown = bool(data.get("mpv_offer_shown", s.mpv_offer_shown))
+        try:
+            hw = str(data.get("mpv_hwdec", s.mpv_hwdec) or "").strip().lower()
+        except Exception:
+            hw = str(s.mpv_hwdec or "")
+        if hw not in ("", "no", "auto-safe", "auto"):
+            hw = ""
+        s.mpv_hwdec = hw
         s.startup_volume = int(data.get("startup_volume", s.startup_volume))
         try:
             s.downloads_dir = str(data.get("downloads_dir", s.downloads_dir) or "")
@@ -1359,6 +1391,8 @@ class MpvIpcSession:
         self.second_screen_top = int(second_screen_top)
         self.fullscreen = bool(fullscreen)
         self.native_fullscreen = False
+        self.hwdec = "auto-safe"
+        self.log_file = ""
 
         self._proc: subprocess.Popen | None = None
         self._sock: socket.socket | None = None
@@ -1410,7 +1444,7 @@ class MpvIpcSession:
         args = [
             self.mpv_exe,
             "--no-terminal",
-            "--hwdec=auto-safe",
+            f"--hwdec={self.hwdec}",
             "--idle=yes",
             "--force-window=yes",
             "--keep-open=yes",
@@ -1420,13 +1454,15 @@ class MpvIpcSession:
             "--no-input-default-bindings",
             "--osd-level=0",
             "--border=yes",
-            "--msg-level=all=no",
+            "--msg-level=all=warn",
             "--ontop=no",
             "--image-display-duration=inf",
             f"--title=SP Show Control Output ({self.name})",
             f"--input-ipc-server={self.ipc_server}",
             f"--geometry={geometry}",
         ]
+        if self.log_file:
+            args.append(f"--log-file={self.log_file}")
         if platform.system() == "Darwin":
             # Avoid weird clamping when using full-display geometry on macOS.
             args.append("--macos-geometry-calculation=whole")
@@ -1812,6 +1848,8 @@ def _get_shared_mpv_output(settings: Settings) -> MpvIpcSession | None:
             sess.second_screen_left = int(getattr(settings, "second_screen_left", 0))
             sess.second_screen_top = int(getattr(settings, "second_screen_top", 0))
             sess.fullscreen = bool(getattr(settings, "presentation_active", False))
+            sess.hwdec = _effective_mpv_hwdec(settings)
+            sess.log_file = _mpv_log_file("output")
         except Exception:
             pass
         if not sess.is_alive():
@@ -2503,13 +2541,16 @@ class MediaRunner:
         volume_override: int | None = None,
     ) -> list[str]:
         vol = _clamp_int(self.settings.startup_volume if volume_override is None else volume_override, 0, 100)
+        hwdec = _effective_mpv_hwdec(self.settings)
+        log_file = _mpv_log_file(f"playback_{self.name}")
         args: list[str] = [
             mpv,
             "--no-terminal",
-            "--hwdec=auto-safe",
+            f"--hwdec={hwdec}",
             "--keep-open=no",
             "--force-window=no",
-            "--msg-level=all=no",
+            "--msg-level=all=warn",
+            f"--log-file={log_file}",
             f"--volume={vol}",
         ]
 
@@ -4527,6 +4568,36 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         ttk.Button(disp, text="Install mpv…", command=self._install_mpv_prompt).grid(
             row=1, column=2, sticky="w", padx=(14, 0), pady=(10, 0)
         )
+        ttk.Button(disp, text="Select mpv.exe…", command=self._select_mpv_exe).grid(
+            row=1, column=3, sticky="w", padx=(10, 0), pady=(10, 0)
+        )
+        ttk.Button(disp, text="Open mpv tools", command=self._open_mpv_tools_folder).grid(
+            row=1, column=4, sticky="w", padx=(10, 0), pady=(10, 0)
+        )
+
+        # mpv hwdec: default to a safe value on Windows to avoid driver hangs.
+        var_hwdec = tk.StringVar(value=_effective_mpv_hwdec(self.settings))
+
+        def _apply_hwdec(*_a) -> None:
+            try:
+                v = str(var_hwdec.get() or "").strip().lower()
+            except Exception:
+                v = ""
+            if v not in ("no", "auto-safe", "auto"):
+                v = ""
+            try:
+                self.settings.mpv_hwdec = v
+            except Exception:
+                pass
+
+        var_hwdec.trace_add("write", _apply_hwdec)
+        ttk.Label(disp, text="mpv hwdec:").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        cb_hw = ttk.Combobox(disp, textvariable=var_hwdec, values=("no", "auto-safe", "auto"), state="readonly", width=10)
+        cb_hw.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
+        try:
+            cb_hw.configure(takefocus=0)
+        except Exception:
+            pass
 
         var_mpv_persist = tk.BooleanVar(value=bool(getattr(self.settings, "mpv_persistent_output", True)))
 
@@ -4547,7 +4618,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             disp,
             text="Keep mpv output window open (2nd screen)",
             variable=var_mpv_persist,
-        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         ttk.Separator(tab_display, orient="horizontal").pack(fill="x", pady=(6, 0))
         ttk.Label(
@@ -8058,6 +8129,101 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             path.write_text(json.dumps(self.settings.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
         except Exception:
             return
+
+    def _open_mpv_tools_folder(self) -> None:
+        p = _mpv_bin_dir()
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        sysname = platform.system()
+        if sysname == "Windows":
+            try:
+                os.startfile(str(p))  # type: ignore[attr-defined]
+                return
+            except Exception:
+                return
+        if sysname == "Darwin":
+            try:
+                subprocess.run(["open", str(p)], check=False, **_no_console_subprocess_kwargs())
+                return
+            except Exception:
+                return
+        try:
+            subprocess.run(["xdg-open", str(p)], check=False, **_no_console_subprocess_kwargs())
+        except Exception:
+            return
+
+    def _select_mpv_exe(self) -> None:
+        """Import a portable mpv into the app's tools folder (useful even if mpv exists system-wide)."""
+        sysname = platform.system()
+        title = "Select mpv.exe" if sysname == "Windows" else "Select mpv"
+        filetypes = [("mpv", "mpv.exe")] if sysname == "Windows" else [("mpv", "mpv"), ("Executables", "*.*")]
+        try:
+            chosen = filedialog.askopenfilename(title=title, filetypes=filetypes)
+        except Exception:
+            chosen = ""
+        if not chosen:
+            return
+        try:
+            src = Path(chosen).expanduser().resolve()
+        except Exception:
+            return
+        # If the user picked mpv.com, prefer mpv.exe next to it.
+        if sysname == "Windows":
+            try:
+                if src.suffix.lower() == ".com":
+                    adj = src.with_name("mpv.exe")
+                    if adj.exists():
+                        src = adj
+            except Exception:
+                pass
+        try:
+            dst_dir = _mpv_bin_dir()
+            dst_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return
+
+        try:
+            if sysname == "Windows":
+                src_dir = src.parent
+                for p in src_dir.iterdir():
+                    try:
+                        if p.is_file():
+                            shutil.copy2(p, dst_dir / p.name)
+                    except Exception:
+                        continue
+            else:
+                dst = dst_dir / ("mpv.exe" if sysname == "Windows" else "mpv")
+                try:
+                    shutil.copy2(src, dst)
+                except Exception:
+                    shutil.copy(src, dst)
+                _ensure_executable(dst)
+        except Exception as e:
+            try:
+                messagebox.showwarning("mpv import", f"Import failed: {e}", parent=self)
+            except Exception:
+                pass
+            return
+
+        resolved = _resolve_mpv() or ""
+        if resolved:
+            try:
+                messagebox.showinfo("mpv", f"mpv ready:\n\n{resolved}\n\nTools folder:\n{dst_dir}", parent=self)
+            except Exception:
+                pass
+        else:
+            try:
+                messagebox.showwarning(
+                    "mpv import",
+                    "Import complete, but mpv still not detected.\n\n"
+                    f"Tools folder:\n{dst_dir}\n\n"
+                    "Make sure you selected the folder that contains mpv.exe + DLL files.",
+                    parent=self,
+                )
+            except Exception:
+                pass
 
     def _install_mpv_prompt(self) -> None:
         existing = _resolve_mpv()
