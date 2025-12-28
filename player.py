@@ -1472,6 +1472,9 @@ class MpvIpcSession:
         ]
         if self.log_file:
             args.append(f"--log-file={self.log_file}")
+        if platform.system() == "Windows":
+            # Helpful when diagnosing IPC issues on Windows.
+            args.append("--msg-level=ipc=v")
         if platform.system() == "Darwin":
             # Avoid weird clamping when using full-display geometry on macOS.
             args.append("--macos-geometry-calculation=whole")
@@ -1548,16 +1551,85 @@ class MpvIpcSession:
         if platform.system() == "Windows":
             import io
 
+            def _connect_named_pipe(pipe: str) -> object:
+                # Avoid blocking on open() for named pipes: use CreateFileW + WaitNamedPipeW.
+                import os as _os
+
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+                    import msvcrt
+                except Exception as e:
+                    raise RuntimeError(f"Windows IPC: missing ctypes/msvcrt: {e}") from e
+
+                GENERIC_READ = 0x80000000
+                GENERIC_WRITE = 0x40000000
+                OPEN_EXISTING = 3
+                FILE_ATTRIBUTE_NORMAL = 0x80
+                INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value  # type: ignore[attr-defined]
+                ERROR_PIPE_BUSY = 231
+                ERROR_FILE_NOT_FOUND = 2
+                ERROR_PATH_NOT_FOUND = 3
+
+                CreateFileW = ctypes.windll.kernel32.CreateFileW
+                CreateFileW.argtypes = [
+                    wintypes.LPCWSTR,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    wintypes.LPVOID,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    wintypes.HANDLE,
+                ]
+                CreateFileW.restype = wintypes.HANDLE
+
+                WaitNamedPipeW = ctypes.windll.kernel32.WaitNamedPipeW
+                WaitNamedPipeW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
+                WaitNamedPipeW.restype = wintypes.BOOL
+
+                GetLastError = ctypes.windll.kernel32.GetLastError
+                GetLastError.argtypes = []
+                GetLastError.restype = wintypes.DWORD
+
+                while time.monotonic() < deadline:
+                    h = CreateFileW(
+                        str(pipe),
+                        int(GENERIC_READ | GENERIC_WRITE),
+                        0,
+                        None,
+                        int(OPEN_EXISTING),
+                        int(FILE_ATTRIBUTE_NORMAL),
+                        None,
+                    )
+                    hv = int(h)
+                    if hv != int(INVALID_HANDLE_VALUE):
+                        fd = msvcrt.open_osfhandle(hv, 0)
+                        return _os.fdopen(fd, "r+b", buffering=0)
+                    err = int(GetLastError() or 0)
+                    if err == ERROR_PIPE_BUSY:
+                        # Server exists but all instances are busy: wait briefly.
+                        WaitNamedPipeW(str(pipe), 200)
+                        continue
+                    if err in (ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND):
+                        time.sleep(0.05)
+                        continue
+                    time.sleep(0.05)
+                raise RuntimeError("mpv IPC pipe did not become available")
+
+            f = None
+            last_err: Exception | None = None
             while time.monotonic() < deadline:
                 try:
-                    f = open(self.ipc_server, "r+b", buffering=0)
-                    self._pipe = f
-                    self._pipe_text = io.TextIOWrapper(f, encoding="utf-8", errors="ignore", newline="\n")  # type: ignore[attr-defined]
+                    f = _connect_named_pipe(self.ipc_server)
                     break
-                except Exception:
+                except Exception as e:
+                    last_err = e
                     time.sleep(0.05)
-            else:
-                raise RuntimeError("mpv IPC pipe did not become available")
+                    continue
+            if f is None:
+                raise RuntimeError(f"mpv IPC pipe did not become available: {last_err}")
+            self._pipe = f
+            self._pipe_text = io.TextIOWrapper(f, encoding="utf-8", errors="ignore", newline="\n")  # type: ignore[attr-defined]
 
             self._reader_thread = threading.Thread(target=self._reader_loop_pipe, daemon=True)
             self._reader_thread.start()
@@ -4652,6 +4724,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         )
         ttk.Button(disp, text="Open mpv tools", command=self._open_mpv_tools_folder).grid(
             row=1, column=4, sticky="w", padx=(10, 0), pady=(10, 0)
+        )
+        ttk.Button(disp, text="Test mpv IPC", command=self._test_mpv_ipc).grid(
+            row=1, column=5, sticky="w", padx=(10, 0), pady=(10, 0)
         )
 
         # mpv hwdec: default to a safe value on Windows to avoid driver hangs.
@@ -8347,6 +8422,66 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     "Import complete, but mpv still not detected.\n\n"
                     f"Tools folder:\n{dst_dir}\n\n"
                     "Make sure you selected the folder that contains mpv.exe + DLL files.",
+                    parent=self,
+                )
+            except Exception:
+                pass
+
+    def _test_mpv_ipc(self) -> None:
+        """Minimal self-test for Windows mpv IPC without playing a file."""
+        mpv = _resolve_mpv()
+        if not mpv:
+            try:
+                messagebox.showwarning("mpv", "mpv not found. Use 'Select mpv.exe…' first.", parent=self)
+            except Exception:
+                pass
+            return
+        if platform.system() != "Windows":
+            try:
+                messagebox.showinfo("mpv IPC", "This test is mainly for Windows named-pipe IPC.", parent=self)
+            except Exception:
+                pass
+        try:
+            sess = MpvIpcSession(
+                mpv,
+                name="TEST",
+                second_screen_left=int(getattr(self.settings, "second_screen_left", 0)),
+                second_screen_top=int(getattr(self.settings, "second_screen_top", 0)),
+                fullscreen=False,
+            )
+            sess.hwdec = _effective_mpv_hwdec(self.settings)
+            sess.log_file = _mpv_log_file("ipc_test")
+            sess.start()
+            resp = sess.command(["get_property", "mpv-version"], timeout=1.2)
+            vers = ""
+            try:
+                if isinstance(resp, dict) and resp.get("error") == "success":
+                    vers = str(resp.get("data") or "")
+            except Exception:
+                vers = ""
+            try:
+                sess.stop()
+            except Exception:
+                pass
+            try:
+                sess.shutdown()
+            except Exception:
+                pass
+            msg = "IPC OK."
+            if vers:
+                msg += f"\n\nmpv-version:\n{vers}"
+            msg += f"\n\nLog:\n{_mpv_log_file('ipc_test')}"
+            try:
+                messagebox.showinfo("mpv IPC", msg, parent=self)
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                messagebox.showwarning(
+                    "mpv IPC failed",
+                    f"mpv IPC test failed:\n\n{e}\n\n"
+                    f"Try 'mpv output: spawn' as a workaround.\n\n"
+                    f"Log:\n{_mpv_log_file('ipc_test')}",
                     parent=self,
                 )
             except Exception:
