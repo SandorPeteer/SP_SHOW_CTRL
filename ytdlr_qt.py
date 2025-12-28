@@ -440,6 +440,9 @@ class YtDlrQt(QMainWindow):
         self.btn_dj_download = QPushButton("DJ Download (m4a)")
         self.btn_dj_download.clicked.connect(self._on_dj_download)
         dl.addWidget(self.btn_dj_download)
+        self.btn_clip_download = QPushButton("Clip Download (best mp4)")
+        self.btn_clip_download.clicked.connect(self._on_clip_download)
+        dl.addWidget(self.btn_clip_download)
 
         self.dl_progress = QProgressBar()
         self.dl_progress.setRange(0, 100)
@@ -603,7 +606,15 @@ class YtDlrQt(QMainWindow):
                 except Exception as e:
                     self._results.put(("error", f"Preview URL error: {e}"))
             elif task == "download":
-                url, out_dir, format_id, passthrough = payload  # type: ignore[misc]
+                data = payload if isinstance(payload, dict) else {}  # type: ignore[assignment]
+                url = str(data.get("url") or "")
+                out_dir = str(data.get("out_dir") or "")
+                mode = str(data.get("mode") or "audio")
+                format_selector = str(data.get("format_selector") or "").strip() or None
+                ffmpeg_location = str(data.get("ffmpeg_location") or "").strip() or None
+                merge_output_format = str(data.get("merge_output_format") or "").strip() or None
+                single_file = bool(data.get("single_file") or False)
+                passthrough = list(data.get("passthrough") or [])
                 try:
                     ytdlp = core.resolve_ytdlp("")
                     out = str(Path(str(out_dir)).expanduser())
@@ -613,8 +624,11 @@ class YtDlrQt(QMainWindow):
                         urls=[str(url)],
                         out_dir=out,
                         template=core.DEFAULT_TEMPLATE,
-                        mode="audio",
-                        format_selector=str(format_id),
+                        mode=mode,
+                        format_selector=format_selector,
+                        single_file=single_file,
+                        ffmpeg_location=ffmpeg_location,
+                        merge_output_format=merge_output_format,
                         no_playlist=True,
                         passthrough=list(passthrough),
                     )
@@ -734,6 +748,7 @@ class YtDlrQt(QMainWindow):
                 self._downloading = False
                 try:
                     self.btn_dj_download.setEnabled(True)
+                    self.btn_clip_download.setEnabled(True)
                 except Exception:
                     pass
                 self.statusBar().showMessage(f"Downloaded: {payload}", 9000)
@@ -746,6 +761,7 @@ class YtDlrQt(QMainWindow):
                 self._downloading = False
                 try:
                     self.btn_dj_download.setEnabled(True)
+                    self.btn_clip_download.setEnabled(True)
                 except Exception:
                     pass
                 self._busy_pop()
@@ -1174,7 +1190,78 @@ class YtDlrQt(QMainWindow):
         except Exception:
             pass
         self.statusBar().showMessage("Downloading…")
-        self._tasks.put(("download", (url, out_dir, fmt_id, extra)))
+        self._tasks.put(
+            (
+                "download",
+                {
+                    "url": url,
+                    "out_dir": out_dir,
+                    "mode": "audio",
+                    "format_selector": fmt_id,
+                    "ffmpeg_location": "",
+                    "merge_output_format": "",
+                    "single_file": True,
+                    "passthrough": extra,
+                },
+            )
+        )
+
+    def _on_clip_download(self) -> None:
+        if self._downloading:
+            return
+        url = (self.url_edit.text() or self._current_url or "").strip()
+        if not url:
+            self._show_error("Missing URL")
+            return
+        out_dir = self.dj_dir_edit.text().strip()
+        if not out_dir:
+            self._show_error("Missing output folder")
+            return
+        extra = _split_args(self.extra_opts.text())
+
+        ffmpeg_location = ""
+        try:
+            ffmpeg_location = core.resolve_ffmpeg_location("") or ""
+        except Exception:
+            ffmpeg_location = ""
+
+        # Best-effort "best video+audio in mp4": if FFmpeg is available, allow bestvideo+bestaudio merge;
+        # otherwise, restrict to progressive MP4 so it still works without FFmpeg.
+        merge_fmt = ""
+        if ffmpeg_location:
+            fmt_sel = core.recordbox_recommended_format_selector()
+            merge_fmt = "mp4"
+        else:
+            fmt_sel = "best[ext=mp4][vcodec^=avc1][acodec^=mp4a]/best[ext=mp4][vcodec!=none][acodec!=none]/best[ext=mp4]/best"
+
+        self._downloading = True
+        try:
+            self.btn_dj_download.setEnabled(False)
+            self.btn_clip_download.setEnabled(False)
+        except Exception:
+            pass
+        try:
+            self.dl_progress.setVisible(True)
+            self.dl_progress.setValue(0)
+            self.lbl_dl.setFullText("Starting…")
+        except Exception:
+            pass
+        self.statusBar().showMessage("Downloading clip…")
+        self._tasks.put(
+            (
+                "download",
+                {
+                    "url": url,
+                    "out_dir": out_dir,
+                    "mode": "av",
+                    "format_selector": fmt_sel,
+                    "ffmpeg_location": ffmpeg_location,
+                    "merge_output_format": merge_fmt,
+                    "single_file": not bool(ffmpeg_location),
+                    "passthrough": extra,
+                },
+            )
+        )
 
 
 def run() -> None:
