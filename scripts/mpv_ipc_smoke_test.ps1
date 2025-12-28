@@ -15,7 +15,23 @@ function Get-LogDir {
   if (-not $base) {
     $base = Join-Path $Env:USERPROFILE "AppData\Roaming"
   }
-  return (Join-Path $base "SP_Show_Control\logs")
+  $dir = Join-Path $base "SP_Show_Control\logs"
+  try {
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    return $dir
+  } catch {
+    # Fallback if APPDATA is unavailable or unwritable.
+    $fallback = Join-Path $PSScriptRoot "logs"
+    try { New-Item -ItemType Directory -Force -Path $fallback | Out-Null } catch {}
+    return $fallback
+  }
+}
+
+function Write-ClientLog {
+  param([string]$Path, [string]$Message)
+  try {
+    ("[{0}] {1}" -f (Get-Date -Format o), $Message) | Out-File -FilePath $Path -Encoding UTF8 -Append
+  } catch {}
 }
 
 function Resolve-MpvPath {
@@ -64,31 +80,36 @@ if (-not $mpv) { throw "mpv.exe not found. Provide -MpvPath or install mpv." }
 $guid = [Guid]::NewGuid().ToString("N")
 $pipe = "\\.\pipe\sp_show_ctrl_ipc_test_$guid"
 $logDir = Get-LogDir
-New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-$logFile = Join-Path $logDir "mpv_ipc_smoke_test_$guid.log"
+$mpvLogFile = Join-Path $logDir "mpv_ipc_smoke_test_${guid}_mpv.log"
+$clientLogFile = Join-Path $logDir "mpv_ipc_smoke_test_${guid}_client.log"
 
 Write-Host "mpv: $mpv"
 Write-Host "pipe: $pipe"
-Write-Host "log : $logFile"
-("mpv=$mpv`npipe=$pipe`nstarted=$(Get-Date -Format o)`n") | Out-File -FilePath $logFile -Encoding UTF8 -Append
+Write-Host "mpv log   : $mpvLogFile"
+Write-Host "client log: $clientLogFile"
+Write-ClientLog -Path $clientLogFile -Message "mpv=$mpv"
+Write-ClientLog -Path $clientLogFile -Message "pipe=$pipe"
 
 $args = @(
+  "--player-operation-mode=pseudo-gui",
   "--no-terminal",
   "--idle=yes",
   "--force-window=yes",
   "--keep-open=yes",
   "--msg-level=ipc=v",
-  "--log-file=$logFile",
+  "--log-file=$mpvLogFile",
   "--input-ipc-server=$pipe"
 )
 
 $proc = $null
 try {
   Write-Host "Starting mpv..."
+  Write-ClientLog -Path $clientLogFile -Message "Starting mpv..."
   $proc = Start-Process -PassThru -FilePath $mpv -ArgumentList $args
   $timeoutMs = [Math]::Max(1000, $TimeoutSec * 1000)
 
   Write-Host "Connecting..."
+  Write-ClientLog -Path $clientLogFile -Message "Connecting to named pipe..."
   $fs = New-NamedPipeClient -PipePath $pipe -TimeoutMs $timeoutMs
   $enc = New-Object System.Text.UTF8Encoding($false)
   $reader = New-Object System.IO.StreamReader($fs, $enc, $true, 4096, $true)
@@ -97,12 +118,14 @@ try {
   $writer.AutoFlush = $true
 
   Write-Host "Sending request..."
+  Write-ClientLog -Path $clientLogFile -Message "Sending get_property mpv-version..."
   $req = @{ command = @("get_property", "mpv-version"); request_id = 1 } | ConvertTo-Json -Compress
   $writer.WriteLine($req)
   $task = $reader.ReadLineAsync()
   if (-not $task.Wait($timeoutMs)) { throw "Timeout waiting IPC response." }
   $line = $task.Result
   if (-not $line) { throw "No response from IPC." }
+  Write-ClientLog -Path $clientLogFile -Message ("Response: {0}" -f $line)
   $resp = $line | ConvertFrom-Json
   if ($resp.error -ne "success") { throw "IPC error: $($resp.error)" }
   Write-Host "OK: mpv-version=$($resp.data)"
@@ -110,10 +133,11 @@ try {
   $quit = @{ command = @("quit"); request_id = 2 } | ConvertTo-Json -Compress
   $writer.WriteLine($quit)
   Write-Host "Quitting..."
+  Write-ClientLog -Path $clientLogFile -Message "Sent quit."
 } catch {
   $msg = ($_ | Out-String).Trim()
   Write-Host "ERROR:`n$msg"
-  try { ("ERROR:`n$msg`n") | Out-File -FilePath $logFile -Encoding UTF8 -Append } catch {}
+  Write-ClientLog -Path $clientLogFile -Message ("ERROR: {0}" -f $msg)
   throw
 } finally {
   try { if ($proc -and -not $proc.HasExited) { $proc.Kill() | Out-Null } } catch {}
