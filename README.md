@@ -31,6 +31,14 @@ python3 player.py
 - Forrásból futtatva a preset fájl: `./show_preset.json`
 - Buildelt appban a preset a user app-data mappába kerül (pl. macOS: `~/Library/Application Support/SP_Show_Control/show_preset.json`)
 
+### Hibaelhárítás (Windows)
+
+- Logok: `%APPDATA%\\SP_Show_Control\\logs\\`
+  - `app.log` (Python/Tk hibák)
+  - `mpv_output.log`, `mpv_playback_A.log`, `mpv_playback_B.log` (mpv)
+- mpv IPC teszt (PowerShell, barát-kompatibilis): `.\scripts\mpv_ipc_smoke_test.ps1 -Pause`
+  - Ha nincs mpv a PATH-on: `.\scripts\mpv_ipc_smoke_test.ps1 -MpvPath "C:\\path\\to\\mpv.exe" -Pause`
+
 ## yt-dlr (DJ)
 
 Indítás:
@@ -58,4 +66,3 @@ Windows (PowerShell):
 .\packaging\build_windows.ps1
 .\packaging\build_yt_dlr_windows.ps1
 ```
-
