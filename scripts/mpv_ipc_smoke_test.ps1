@@ -42,25 +42,20 @@ function Resolve-MpvPath {
   return ""
 }
 
-function Wait-NamedPipe {
+function New-NamedPipeClient {
   param([string]$PipePath, [int]$TimeoutMs)
-  Add-Type -Namespace Win32 -Name Pipe -MemberDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public static class Pipe {
-  [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
-  public static extern bool WaitNamedPipe(string name, int timeout);
-}
-"@ -ErrorAction SilentlyContinue | Out-Null
-
-  $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
-  while ([DateTime]::UtcNow -lt $deadline) {
-    try {
-      if ([Win32.Pipe]::WaitNamedPipe($PipePath, 200)) { return $true }
-    } catch {}
-    Start-Sleep -Milliseconds 60
+  $prefix = "\\.\pipe\"
+  $name = $PipePath
+  if ($PipePath.StartsWith($prefix)) {
+    $name = $PipePath.Substring($prefix.Length)
   }
-  return $false
+  if (-not $name) { throw "Invalid pipe name: $PipePath" }
+
+  $dir = [System.IO.Pipes.PipeDirection]::InOut
+  $opt = [System.IO.Pipes.PipeOptions]::Asynchronous
+  $client = New-Object System.IO.Pipes.NamedPipeClientStream(".", $name, $dir, $opt)
+  $client.Connect([Math]::Max(1, [int]$TimeoutMs))
+  return $client
 }
 
 $mpv = Resolve-MpvPath -Explicit $MpvPath
@@ -91,12 +86,10 @@ $proc = $null
 try {
   Write-Host "Starting mpv..."
   $proc = Start-Process -PassThru -FilePath $mpv -ArgumentList $args
-  Write-Host "Waiting for named pipe..."
   $timeoutMs = [Math]::Max(1000, $TimeoutSec * 1000)
-  if (-not (Wait-NamedPipe -PipePath $pipe -TimeoutMs $timeoutMs)) { throw "Timeout waiting for named pipe." }
 
   Write-Host "Connecting..."
-  $fs = New-Object System.IO.FileStream($pipe, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+  $fs = New-NamedPipeClient -PipePath $pipe -TimeoutMs $timeoutMs
   $enc = New-Object System.Text.UTF8Encoding($false)
   $reader = New-Object System.IO.StreamReader($fs, $enc, $true, 4096, $true)
   $writer = New-Object System.IO.StreamWriter($fs, $enc, 4096, $true)
@@ -117,6 +110,11 @@ try {
   $quit = @{ command = @("quit"); request_id = 2 } | ConvertTo-Json -Compress
   $writer.WriteLine($quit)
   Write-Host "Quitting..."
+} catch {
+  $msg = ($_ | Out-String).Trim()
+  Write-Host "ERROR:`n$msg"
+  try { ("ERROR:`n$msg`n") | Out-File -FilePath $logFile -Encoding UTF8 -Append } catch {}
+  throw
 } finally {
   try { if ($proc -and -not $proc.HasExited) { $proc.Kill() | Out-Null } } catch {}
 }
