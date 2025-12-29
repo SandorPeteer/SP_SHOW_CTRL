@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 import ytdlr_core as core
-from ytdlr_tools import no_console_subprocess_kwargs
+from ytdlr_tools import no_console_subprocess_kwargs, swallow_exc
 
 
 @dataclass
@@ -356,8 +356,8 @@ class YtDlrGui(tk.Tk):
             self.clipboard_clear()
             self.clipboard_append(url)
             self.var_status.set("URL copied.")
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="tk copy_url")
 
     def _apply_results(self, payload: object) -> None:
         items = payload if isinstance(payload, list) else []
@@ -397,8 +397,8 @@ class YtDlrGui(tk.Tk):
         selected_url = (self.var_url.get() or self._selected_url or "").strip()
         try:
             self._items.sort(key=self._search_sort_key, reverse=bool(self._sort_search_desc))
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="tk rebuild_search_tree sort")
 
         for iid in self.tree.get_children():
             self.tree.delete(iid)
@@ -421,8 +421,8 @@ class YtDlrGui(tk.Tk):
                     try:
                         self.tree.selection_set(str(idx))
                         self.tree.see(str(idx))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        swallow_exc(e, note="tk rebuild_search_tree select")
                     break
 
     def _sort_search(self, col: str) -> None:
@@ -504,8 +504,8 @@ class YtDlrGui(tk.Tk):
         if selected:
             try:
                 self.tree_fmt.selection_set([x for x in selected if x in set(self.tree_fmt.get_children())])
-            except Exception:
-                pass
+            except Exception as e:
+                swallow_exc(e, note="tk refresh_formats_tree selection")
 
     def _use_selected_format(self) -> None:
         sel = self.tree_fmt.selection()
@@ -597,8 +597,8 @@ class YtDlrGui(tk.Tk):
             return
         try:
             proc.terminate()
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="tk cancel_info terminate")
 
     def _start_search(self) -> None:
         if self._search_thread is not None and self._search_thread.is_alive():
@@ -666,8 +666,8 @@ class YtDlrGui(tk.Tk):
             return
         try:
             proc.terminate()
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="tk cancel_search terminate")
 
     def _start_download(self) -> None:
         if self._download_thread is not None and self._download_thread.is_alive():
@@ -781,8 +781,8 @@ class YtDlrGui(tk.Tk):
         try:
             proc.terminate()
             self.var_status.set("Cancel…")
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="tk cancel_download terminate")
 
     def _dj_download(self) -> None:
         url = (self.var_url.get() or self._selected_url or "").strip()
@@ -1010,20 +1010,20 @@ class YtDlrGui(tk.Tk):
             return
         try:
             proc.terminate()
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="tk stop_preview terminate")
 
     def _on_close(self) -> None:
         for p in (self._search_proc, self._info_proc, self._download_proc, self._preview_proc):
             try:
                 if p is not None:
                     p.terminate()
-            except Exception:
-                pass
+            except Exception as e:
+                swallow_exc(e, note="tk on_close terminate")
         try:
             self.destroy()
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="tk on_close destroy")
 
 
 def run_gui() -> None:

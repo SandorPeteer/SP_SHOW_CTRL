@@ -787,6 +787,12 @@ def _swallow_exc(exc: BaseException, *, note: str = "") -> None:
         return
 
 
+def _swallow_exc_debug(exc: BaseException, *, note: str = "") -> None:
+    if not _is_debug_logging_enabled(None):
+        return
+    _swallow_exc(exc, note=note)
+
+
 def _install_global_exception_logging() -> None:
     """Ensure unhandled exceptions are persisted in GUI builds (Windows)."""
 
@@ -2361,8 +2367,8 @@ class MediaRunner:
                     filters.append(f"volume={gain_db:.2f}dB")
                 if gain_db > 0.25:
                     filters.append("alimiter=limit=0.97")
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="build_ffplay_args normalize")
 
         if audio_filter:
             filters.append(audio_filter)
@@ -2458,8 +2464,8 @@ class MediaRunner:
                     filters.append(f"volume={gain_db:.2f}dB")
                 if gain_db > 0.25:
                     filters.append("alimiter=limit=0.97")
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="build_mpv_args normalize")
         if audio_filter:
             filters.append(audio_filter)
         if filters:
@@ -2963,8 +2969,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         super().__init__()
         try:
             _install_global_exception_logging()
-        except Exception:
-            pass
+        except Exception as e:
+            _bootstrap_swallow(e, "install_global_exception_logging")
         self.title("S.P. Show Control")
         # Pick a size that always fits on the current screen (avoid opening partially off-screen).
         try:
@@ -2985,18 +2991,19 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             if icon_path.exists():
                 self._app_icon_image = tk.PhotoImage(file=str(icon_path))
                 self.iconphoto(True, self._app_icon_image)
-        except Exception:
+        except Exception as e:
+            _bootstrap_swallow(e, "icon load")
             self._app_icon_image = None
 
         self.settings = Settings()
         try:
             self._load_persistent_settings()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="load_persistent_settings")
         try:
             _apply_logging_settings(self.settings)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="apply_logging_settings")
         self.audio_runner = MediaRunner(self.settings, name="A")
         self.title("S.P. Show Control")
         self.video_runner = OutputRunner(self.settings)
@@ -3055,11 +3062,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._btn_off_fg = "#ffffff"
         self._btn_play_on_bg = "#2e7d32"
         self._btn_stop_on_bg = "#c62828"
-        try:
-            ts = time.strftime("%Y-%m-%d %H:%M:%S")
-            _append_app_log(f"[{ts}] App started ({APP_NAME} {APP_VERSION})\n")
-        except Exception:
-            pass
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        _append_app_log(f"[{ts}] App started ({APP_NAME} {APP_VERSION})\n")
         self._btn_loop_on_bg = "#f9a825"
         self._btn_loop_on_fg = "#111111"
         self._playing_iid_a: str | None = None
@@ -3099,8 +3103,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._build_ui()
         try:
             self._sync_presentation_button()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="sync_presentation_button (startup)")
         self.after(0, self._bring_to_front)
         self._poll_playback()
         self.after(0, self._startup_sequence)
@@ -3111,8 +3115,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return None
         try:
             self.update_idletasks()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="controller_monitor update_idletasks")
         try:
             x = int(self.winfo_rootx())
             y = int(self.winfo_rooty())
@@ -3139,12 +3143,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         try:
             try:
                 self.var_left.set(str(int(left)))
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="set_display_vars left")
             try:
                 self.var_top.set(str(int(top)))
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="set_display_vars top")
         finally:
             self._suppress_display_var_trace = False
         if apply:
@@ -3202,8 +3206,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 f"{label}: geometry={geo} fullscreen={fs} border={border} ontop={ontop} "
                 f"auto-window-resize={awr} keepaspect-window={kaw} window-maximized={wm} mode={mode}"
             )
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="log_mpv_output_state")
 
     def _has_second_screen(self) -> bool:
         try:
@@ -3216,8 +3220,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         def _after_deps() -> None:
             try:
                 self._init_output_surface()
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="startup_sequence init_output_surface")
             loaded = self._auto_load_preset()
             if not loaded:
                 self._refresh_tree()
@@ -3234,20 +3238,21 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         started = False
         try:
             started = bool(self.video_runner.ensure_window())
-        except Exception:
+        except Exception as e:
+            _swallow_exc(e, note="init_output_surface ensure_window")
             started = False
         if started:
             self._log("mpv output window ready. Drag it to the projector/external display, then press PRESENTATION.")
             return
         try:
             self.after(200, self._start_black_background)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="init_output_surface schedule black_background")
         try:
             self._last_video_playing = False
             self._monitor_video_playback()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="init_output_surface monitor_video_playback")
 
     def _sync_presentation_button(self) -> None:
         v = getattr(self, "var_presentation_btn", None)
@@ -3258,8 +3263,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 v.set("⏹ EXIT PRESENTATION")
             else:
                 v.set("🎥 PRESENTATION")
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="sync_presentation_button")
 
     def _toggle_presentation(self) -> None:
         try:
@@ -3270,19 +3275,19 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         finally:
             try:
                 self._sync_presentation_button()
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="toggle_presentation sync button")
 
     def _force_mpv_fullscreen(self) -> None:
         """Force mpv output fullscreen on the currently selected display (manual workflow)."""
         try:
             self.settings.presentation_active = True
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="force_mpv_fullscreen set presentation_active")
         try:
             self._sync_presentation_button()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="force_mpv_fullscreen sync button")
         try:
             sess = _get_shared_mpv_output(self.settings)
         except Exception:
@@ -3290,28 +3295,28 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if sess is None:
             try:
                 messagebox.showerror("mpv", "mpv output window not available.", parent=self)
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="force_mpv_fullscreen messagebox")
             self._log("mpv fullscr: mpv output window not available.")
             return
         try:
             sess.fullscreen = True
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="force_mpv_fullscreen set fullscreen")
         try:
             # "Real" fullscreen on macOS (non-draggable). This can create a Space.
             sess.native_fullscreen = True
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="force_mpv_fullscreen set native_fullscreen")
         try:
             sess.apply_window_placement()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="force_mpv_fullscreen apply_window_placement")
         self._log("mpv fullscr: forced fullscreen (native).")
         try:
             self._log_mpv_output_state()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="force_mpv_fullscreen log_state")
 
     def _enter_presentation_mode(self) -> None:
         try:
@@ -3321,8 +3326,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if sess is None:
             try:
                 messagebox.showerror("Presentation", "mpv output window not available.", parent=self)
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="enter_presentation_mode messagebox")
             self._log("PRESENTATION: mpv output window not available.")
             return
 
@@ -3336,37 +3341,37 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 self.settings.second_screen_top = int(y)
                 try:
                     self._save_persistent_settings()
-                except Exception:
-                    pass
+                except Exception as e:
+                    _swallow_exc(e, note="enter_presentation_mode save_persistent_settings")
                 try:
                     self._set_display_vars(int(x), int(y), apply=False)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    _swallow_exc(e, note="enter_presentation_mode set_display_vars")
+        except Exception as e:
+            _swallow_exc(e, note="enter_presentation_mode read geometry")
 
         try:
             self.settings.presentation_active = True
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="enter_presentation_mode set presentation_active")
         try:
             sess.fullscreen = True
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="enter_presentation_mode set fullscreen")
         try:
             # Presentation button stays in pseudo-fullscreen by default (still allows drag if needed).
             sess.native_fullscreen = False
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="enter_presentation_mode set native_fullscreen")
         try:
             sess.apply_window_placement()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="enter_presentation_mode apply_window_placement")
         self._log("PRESENTATION: ON (fullscreen).")
         try:
             self._log_mpv_output_state()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="enter_presentation_mode log_state")
 
     def _exit_presentation_mode(self) -> None:
         try:
@@ -3376,27 +3381,27 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if sess is None:
             try:
                 self.settings.presentation_active = False
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="exit_presentation_mode set presentation_active (no session)")
             self._log("PRESENTATION: OFF (mpv output window not available).")
             return
         try:
             self.settings.presentation_active = False
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="exit_presentation_mode set presentation_active")
         try:
             sess.fullscreen = False
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="exit_presentation_mode set fullscreen")
         try:
             sess.apply_window_placement()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="exit_presentation_mode apply_window_placement")
         self._log("PRESENTATION: OFF (windowed).")
         try:
             self._log_mpv_output_state()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="exit_presentation_mode log_state")
 
     def _wave_help_text(self) -> str:
         # Keep this short-ish to avoid affecting layout.
@@ -3409,8 +3414,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             if hasattr(self, '_background_window') and self._background_window:
                 try:
                     self._background_window.destroy()
-                except Exception:
-                    pass
+                except Exception as e:
+                    _swallow_exc(e, note="start_black_background destroy existing")
 
             # Get monitors info
             monitors = list(get_monitors() or [])
@@ -3468,12 +3473,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     try:
                         self._background_window.lower()
                         self._background_window.after(500, keep_in_background)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _swallow_exc(e, note="black background keep_in_background")
             self._background_window.after(500, keep_in_background)
 
         except Exception as e:
             self._log(f"Failed to start black background: {e}")
+            _swallow_exc(e, note="start_black_background")
 
     def _monitor_video_playback(self):
         """Monitor video playback and restore black background when video ends"""
@@ -3488,7 +3494,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._last_video_playing = video_playing
 
         except Exception as e:
-            pass  # Silently ignore errors in monitoring
+            _swallow_exc(e, note="monitor_video_playback")
 
         # Schedule next check
         self.after(500, self._monitor_video_playback)
@@ -3537,7 +3543,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         def _on_click(_e=None):
             try:
                 command()
-            except Exception:
+            except Exception as e:
+                _swallow_exc(e, note="transport button click")
                 return
 
         label.bind("<Button-1>", _on_click)
@@ -3550,32 +3557,32 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception as e:
             try:
                 messagebox.showerror("PPT", str(e), parent=self)
-            except Exception:
-                pass
+            except Exception as e2:
+                _swallow_exc(e2, note="ppt_fullscreen_2nd_screen messagebox")
             try:
                 self._log(f"PPT: 2nd screen failed ({e})")
-            except Exception:
-                pass
+            except Exception as e2:
+                _swallow_exc(e2, note="ppt_fullscreen_2nd_screen log")
 
     def _ppt_end(self) -> None:
         try:
             ppt_end_show()
             try:
                 ppt_hide_window()
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="ppt_end hide_window")
         finally:
             self._ppt_running = False
             try:
                 self._ppt_keep_on_top = False
                 if platform.system() == "Darwin":
                     self.attributes("-topmost", False)
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="ppt_end clear topmost")
             try:
                 self.after(250, self._restore_visuals_after_ppt)
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="ppt_end schedule restore_visuals_after_ppt")
 
     def _restore_visuals_after_ppt(self) -> None:
         # Bring mpv output back and restore whatever VISUALS was showing before PPT.
@@ -3585,26 +3592,26 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             if sess is not None:
                 try:
                     sess.set_property("window-minimized", False)
-                except Exception:
-                    pass
+                except Exception as e:
+                    _swallow_exc(e, note="restore_visuals_after_ppt unminimize")
                 try:
                     sess.set_property("ontop", True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    _swallow_exc(e, note="restore_visuals_after_ppt ontop")
                 try:
                     sess.apply_window_placement()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    _swallow_exc(e, note="restore_visuals_after_ppt apply_window_placement")
+        except Exception as e:
+            _swallow_exc(e, note="restore_visuals_after_ppt ensure_window")
         try:
             self._resume_visuals_if_any()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="restore_visuals_after_ppt resume_visuals")
         try:
             self._restore_last_visual_if_any()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="restore_visuals_after_ppt restore_last_visual")
 
     def _ppt_prev_ui(self) -> None:
         try:
@@ -3612,12 +3619,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         finally:
             try:
                 self.after(80, self._bring_to_front)
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="ppt_prev_ui bring_to_front")
             try:
                 self.after(450, self._ppt_post_nav_check)
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="ppt_prev_ui post_nav_check")
 
     def _ppt_next_ui(self) -> None:
         try:
@@ -3625,12 +3632,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         finally:
             try:
                 self.after(80, self._bring_to_front)
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="ppt_next_ui bring_to_front")
             try:
                 self.after(450, self._ppt_post_nav_check)
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="ppt_next_ui post_nav_check")
 
     def _ppt_post_nav_check(self) -> None:
         # If the slideshow ended (e.g. next on last slide), restore mpv output automatically.
@@ -3646,18 +3653,18 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return
         try:
             self._ppt_running = False
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="ppt_post_nav_check clear running")
         try:
             self._ppt_keep_on_top = False
             if platform.system() == "Darwin":
                 self.attributes("-topmost", False)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="ppt_post_nav_check clear topmost")
         try:
             self._restore_visuals_after_ppt()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="ppt_post_nav_check restore_visuals_after_ppt")
 
     def _set_wave_title(self, deck: str, cue: Cue | None) -> None:
         # Show help only when nothing is selected; once a track is loaded/selected,
@@ -3673,8 +3680,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 self.wave_a_frame.configure(text=text)
             else:
                 self.wave_b_frame.configure(text=text)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="set_wave_title")
 
     # Visual PREVIEW has been removed (it did not mirror the 2nd screen output reliably).
 
@@ -3709,8 +3716,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             try:
                 self.settings.mpv_offer_shown = True
                 self._save_persistent_settings()
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="ensure_dependencies_async save mpv_offer_shown")
             try:
                 wants = messagebox.askyesno(
                     "mpv recommended",
@@ -3830,8 +3837,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                         detail_var.set(f"{int(done_bytes/1024/1024)} / {int(total_bytes/1024/1024)} MB")
                     else:
                         detail_var.set("")
-                except Exception:
-                    pass
+                except Exception as e:
+                    _swallow_exc_debug(e, note="ffmpeg install ui_progress apply")
 
             self._ui_tasks.put(_apply)
 
@@ -3840,11 +3847,11 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 try:
                     try:
                         win.grab_release()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _swallow_exc_debug(e, note="ffmpeg install grab_release")
                     win.destroy()
-                except Exception:
-                    pass
+                except Exception as e:
+                    _swallow_exc_debug(e, note="ffmpeg install dialog destroy")
                 if not success:
                     dest = ""
                     try:
@@ -3860,12 +3867,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     )
                     try:
                         messagebox.showerror("FFmpeg install failed", message, parent=self)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _swallow_exc(e, note="ffmpeg install failed messagebox")
                 try:
                     on_ready()
-                except Exception:
-                    pass
+                except Exception as e:
+                    _swallow_exc(e, note="ffmpeg install on_ready")
 
             self._ui_tasks.put(_apply)
 
@@ -3886,8 +3893,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             x = self.winfo_rootx() + max(0, (self.winfo_width() - win.winfo_width()) // 2)
             y = self.winfo_rooty() + max(0, (self.winfo_height() - win.winfo_height()) // 2)
             win.geometry(f"+{int(x)}+{int(y)}")
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="ffmpeg install dialog geometry")
 
     # Backward-compatible name used by startup sequence.
     def _ensure_ffmpeg_tools_async(self, on_ready: Callable[[], None]) -> None:
@@ -3903,8 +3910,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return
         try:
             self.settings.downloads_dir = p
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="apply_downloads_dir_setting")
 
     def _browse_download_dir(self) -> None:
         try:
