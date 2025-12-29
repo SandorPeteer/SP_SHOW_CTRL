@@ -3731,15 +3731,15 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             if wants:
                 try:
                     self._install_mpv_prompt()
-                except Exception:
-                    pass
+                except Exception as e:
+                    _swallow_exc(e, note="ensure_dependencies_async install_mpv_prompt")
 
         if pref == "mpv" and _resolve_mpv() is None:
             # Auto-fallback to ffplay so the app remains usable without mpv installed.
             try:
                 self.settings.playback_engine = "ffplay"
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="ensure_dependencies_async set playback_engine fallback")
             pref = "ffplay"
         try:
             backend, _exe = _pick_playback_backend(self.settings)
@@ -3764,8 +3764,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         win.resizable(False, False)
         try:
             win.transient(self)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc_debug(e, note="ensure_dependencies_async transient")
 
         status_var = tk.StringVar(value="Preparing…")
         detail_var = tk.StringVar(value="")
@@ -3989,21 +3989,22 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             pass
         try:
             self._ytdlp_spinner_after_id = self.after(120, self._tick_ytdlp_spinner)
-        except Exception:
+        except Exception as e:
+            _swallow_exc_debug(e, note="start_ytdlp_spinner schedule tick")
             self._ytdlp_spinner_after_id = None
 
     def _cancel_ytdlp_download(self) -> None:
         try:
             if self._ytdlp_cancel_event is not None:
                 self._ytdlp_cancel_event.set()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="cancel_ytdlp_download cancel_event")
         try:
             proc = self._ytdlp_proc
             if proc is not None and proc.poll() is None:
                 proc.terminate()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="cancel_ytdlp_download terminate")
 
     def _start_ytdlp_download(self) -> None:
         if self._ytdlp_thread is not None and self._ytdlp_thread.is_alive():
@@ -4016,8 +4017,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if not url:
             try:
                 messagebox.showwarning("Download", "Please paste a YouTube URL.")
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="start_ytdlp_download missing url messagebox")
             return
         try:
             mode = str(getattr(self, "var_ytdlp_mode", tk.StringVar(value="av")).get() or "av").strip().lower()
@@ -4040,16 +4041,16 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             out_dir_s = str(Path.home() / "Downloads")
             try:
                 self.var_download_dir.set(out_dir_s)
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="start_ytdlp_download set var_download_dir default")
         out_dir = Path(out_dir_s).expanduser()
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             try:
                 messagebox.showerror("Download", f"Cannot create folder:\n{out_dir}\n\n{e}")
-            except Exception:
-                pass
+            except Exception as e2:
+                _swallow_exc(e2, note="start_ytdlp_download mkdir messagebox")
             return
 
         def _ui(
@@ -4064,34 +4065,34 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                         self.btn_ytdlp_cancel.configure(state=("normal" if running else "disabled"))
                     try:
                         self._ytdlp_status_base = str(status or "")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _swallow_exc_debug(e, note="ytdlp ui set status_base")
                     if running:
                         try:
                             self._start_ytdlp_spinner()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _swallow_exc_debug(e, note="ytdlp ui start spinner")
                     else:
                         try:
                             self._stop_ytdlp_spinner()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _swallow_exc_debug(e, note="ytdlp ui stop spinner")
                         try:
                             self._ytdlp_status_base = ""
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _swallow_exc_debug(e, note="ytdlp ui clear status_base")
                         try:
                             if hasattr(self, "var_ytdlp_status"):
                                 self.var_ytdlp_status.set(str(status or ""))
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                        except Exception as e:
+                            _swallow_exc_debug(e, note="ytdlp ui set status label")
+                except Exception as e:
+                    _swallow_exc_debug(e, note="ytdlp ui apply")
 
             try:
                 self._ui_tasks.put(_apply)
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="ytdlp ui enqueue")
 
         self._ytdlp_cancel_event = threading.Event()
         _ui(True, "Downloading...")
