@@ -31,9 +31,23 @@ from typing import Callable, Literal
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
+
+# During module import we cannot rely on Settings/logging helpers yet. Keep this tiny.
+_BOOT_DEBUG = str(os.environ.get("SP_SHOW_CTRL_DEBUG", "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _bootstrap_swallow(exc: BaseException, note: str) -> None:
+    if not _BOOT_DEBUG:
+        return
+    try:
+        print(f"[bootstrap] {note}: {type(exc).__name__}: {exc}", file=sys.stderr)
+    except Exception:
+        return
+
 try:
     from screeninfo import get_monitors as _screeninfo_get_monitors  # type: ignore[reportMissingImports]
-except Exception:
+except Exception as e:
+    _bootstrap_swallow(e, "screeninfo import")
     _screeninfo_get_monitors = None
 
 
@@ -46,8 +60,8 @@ def _no_console_subprocess_kwargs() -> dict:
         flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0)
         if flags:
             kwargs["creationflags"] = flags
-    except Exception:
-        pass
+    except Exception as e:
+        _swallow_exc(e, note="_no_console_subprocess_kwargs")
     return kwargs
 
 
@@ -445,8 +459,8 @@ def _resolve_fftool(tool: str) -> str | None:
             if _is_probably_executable_binary(fp):
                 _FFTOOLS_CACHE[tool] = str(found)
                 return str(found)
-    except Exception:
-        pass
+    except Exception as e:
+        _swallow_exc(e, note="_resolve_fftool which")
     return None
 
 
@@ -464,8 +478,8 @@ def _resolve_mpv() -> str | None:
                 p = p / ("mpv.exe" if platform.system() == "Windows" else "mpv")
             if p.exists() and _is_probably_executable_binary(p):
                 return str(p)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="_resolve_mpv env path")
     try:
         env_dir = str(os.environ.get("SP_SHOW_CTRL_MPV_DIR") or "").strip()
     except Exception:
@@ -476,8 +490,8 @@ def _resolve_mpv() -> str | None:
             p = d / ("mpv.exe" if platform.system() == "Windows" else "mpv")
             if p.exists() and _is_probably_executable_binary(p):
                 return str(p)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="_resolve_mpv env dir")
 
     # Prefer bundled mpv in frozen apps (PyInstaller --add-binary).
     try:
@@ -487,16 +501,16 @@ def _resolve_mpv() -> str | None:
             bundled = _resource_path("tools", "mpv", "mpv")
         if bundled.exists() and _is_probably_executable_binary(bundled):
             return str(bundled)
-    except Exception:
-        pass
+    except Exception as e:
+        _swallow_exc(e, note="_resolve_mpv bundled")
 
     # Prefer user-installed/downloaded mpv in our tool dir.
     try:
         p = _mpv_bin_dir() / (_tool_exe_name("mpv"))  # tools/mpv/bin/mpv(.exe)
         if p.exists() and _is_probably_executable_binary(p):
             return str(p)
-    except Exception:
-        pass
+    except Exception as e:
+        _swallow_exc(e, note="_resolve_mpv tools dir")
 
     sysname = platform.system()
     if sysname == "Windows":
@@ -504,13 +518,13 @@ def _resolve_mpv() -> str | None:
         candidates: list[Path] = []
         try:
             candidates.append(Path(os.environ.get("ProgramData") or "C:\\ProgramData") / "chocolatey" / "lib" / "mpv" / "tools" / "mpv.exe")
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="_resolve_mpv candidates chocolatey")
         try:
             up = Path(os.environ.get("USERPROFILE") or str(Path.home()))
             candidates.append(up / "scoop" / "apps" / "mpv" / "current" / "mpv.exe")
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="_resolve_mpv candidates scoop")
         candidates += [
             Path("C:/Program Files/mpv/mpv.exe"),
             Path("C:/Program Files (x86)/mpv/mpv.exe"),
@@ -537,8 +551,8 @@ def _resolve_mpv() -> str | None:
                         adj = fp.with_name("mpv.exe")
                         if adj.exists() and _is_probably_executable_binary(adj):
                             return str(adj)
-                except Exception:
-                    pass
+                except Exception as e:
+                    _swallow_exc(e, note="_resolve_mpv mpv.com check")
                 # Prefer the real binary over shims when possible (Chocolatey/Scoop).
                 try:
                     s = str(fp).replace("/", "\\").lower()
@@ -551,14 +565,14 @@ def _resolve_mpv() -> str | None:
                         real = up / "scoop" / "apps" / "mpv" / "current" / "mpv.exe"
                         if real.exists() and _is_probably_executable_binary(real):
                             return str(real)
-                except Exception:
-                    pass
+                except Exception as e:
+                    _swallow_exc(e, note="_resolve_mpv shim check")
             try:
                 return str(found) if _is_probably_executable_binary(fp) else None
             except Exception:
                 return str(found)
-    except Exception:
-        pass
+    except Exception as e:
+        _swallow_exc(e, note="_resolve_mpv which")
     if sysname == "Darwin":
         for base in (Path("/opt/homebrew/bin"), Path("/usr/local/bin")):
             try:
@@ -582,16 +596,16 @@ def _resolve_ytdlp() -> str | None:
             bundled = _resource_path("tools", "ytdlp", "yt-dlp")
         if bundled.exists() and _is_probably_executable_binary(bundled):
             return str(bundled)
-    except Exception:
-        pass
+    except Exception as e:
+        _swallow_exc(e, note="_resolve_ytdlp bundled")
 
     # Prefer user-installed/downloaded yt-dlp in our tool dir.
     try:
         p = _ytdlp_bin_dir() / tool
         if p.exists() and _is_probably_executable_binary(p):
             return str(p)
-    except Exception:
-        pass
+    except Exception as e:
+        _swallow_exc(e, note="_resolve_ytdlp tools dir")
 
     try:
         found = shutil.which(tool)
@@ -604,8 +618,8 @@ def _resolve_ytdlp() -> str | None:
                 return str(found)
             except Exception:
                 return str(found)
-    except Exception:
-        pass
+    except Exception as e:
+        _swallow_exc(e, note="_resolve_ytdlp which")
     return None
 
 
@@ -713,6 +727,32 @@ def _append_app_log(text: str) -> None:
             f.write(text)
     except Exception:
         pass
+
+
+def _swallow_exc(exc: BaseException, *, note: str = "") -> None:
+    """Best-effort exception reporter for places where we intentionally continue."""
+    try:
+        if not (_is_file_logging_enabled(None) or _is_debug_logging_enabled(None)):
+            return
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        head = f"[{ts}] Suppressed exception"
+        if note:
+            head += f" ({note})"
+        head += f": {type(exc).__name__}: {exc}\n"
+        tb = getattr(exc, "__traceback__", None)
+        detail = "".join(traceback.format_exception(type(exc), exc, tb))
+        try:
+            _append_app_log(head)
+            _append_app_log(detail)
+        except Exception:
+            pass
+        if _is_debug_logging_enabled(None):
+            try:
+                print(head + detail, file=sys.stderr)
+            except Exception:
+                pass
+    except Exception:
+        return
 
 
 def _install_global_exception_logging() -> None:
