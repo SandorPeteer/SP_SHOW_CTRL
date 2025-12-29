@@ -662,6 +662,38 @@ def _mpv_log_file(name: str) -> str:
     return str(base / fname)
 
 
+_FILE_LOGGING_ENABLED: bool = str(os.environ.get("SP_SHOW_CTRL_LOG", "") or "").strip().lower() in ("1", "true", "yes", "on")
+_DEBUG_LOGGING_ENABLED: bool = str(os.environ.get("SP_SHOW_CTRL_DEBUG", "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _is_file_logging_enabled(settings: "Settings | None" = None) -> bool:
+    if str(os.environ.get("SP_SHOW_CTRL_LOG", "") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    if settings is not None:
+        try:
+            return bool(getattr(settings, "log_to_file", False))
+        except Exception:
+            return False
+    return bool(_FILE_LOGGING_ENABLED)
+
+
+def _is_debug_logging_enabled(settings: "Settings | None" = None) -> bool:
+    if str(os.environ.get("SP_SHOW_CTRL_DEBUG", "") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    if settings is not None:
+        try:
+            return bool(getattr(settings, "debug_log", False))
+        except Exception:
+            return False
+    return bool(_DEBUG_LOGGING_ENABLED)
+
+
+def _apply_logging_settings(settings: "Settings | None") -> None:
+    global _FILE_LOGGING_ENABLED, _DEBUG_LOGGING_ENABLED
+    _FILE_LOGGING_ENABLED = bool(_is_file_logging_enabled(settings))
+    _DEBUG_LOGGING_ENABLED = bool(_is_debug_logging_enabled(settings))
+
+
 def _app_log_file() -> str:
     base = _user_data_dir() / "logs"
     try:
@@ -673,6 +705,8 @@ def _app_log_file() -> str:
 
 def _append_app_log(text: str) -> None:
     try:
+        if not _is_file_logging_enabled(None):
+            return
         if not text:
             return
         with open(_app_log_file(), "a", encoding="utf-8", errors="replace") as f:
@@ -695,9 +729,10 @@ def _install_global_exception_logging() -> None:
     def _sys_hook(exc_type, exc, tb) -> None:
         _log_exc("Unhandled exception", exc_type, exc, tb)
         try:
+            log_path = _app_log_file() if _is_file_logging_enabled(None) else "(file logging disabled)"
             messagebox.showerror(
                 "Unhandled error",
-                f"{exc_type.__name__}: {exc}\n\nLog:\n{_app_log_file()}",
+                f"{exc_type.__name__}: {exc}\n\nLog:\n{log_path}",
             )
         except Exception:
             pass
@@ -1266,6 +1301,9 @@ class Settings:
     normalize_enabled: bool = False
     normalize_target_i_lufs: float = -14.0
     normalize_true_peak_db: float = -1.0
+    # Logging / diagnostics
+    log_to_file: bool = True
+    debug_log: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -1283,6 +1321,8 @@ class Settings:
             "normalize_enabled": self.normalize_enabled,
             "normalize_target_i_lufs": self.normalize_target_i_lufs,
             "normalize_true_peak_db": self.normalize_true_peak_db,
+            "log_to_file": self.log_to_file,
+            "debug_log": self.debug_log,
         }
 
     @staticmethod
@@ -1325,6 +1365,14 @@ class Settings:
         s.normalize_enabled = bool(data.get("normalize_enabled", s.normalize_enabled))
         s.normalize_target_i_lufs = _clamp_float(data.get("normalize_target_i_lufs", s.normalize_target_i_lufs), -30.0, -5.0, -14.0)
         s.normalize_true_peak_db = _clamp_float(data.get("normalize_true_peak_db", s.normalize_true_peak_db), -9.0, 0.0, -1.0)
+        try:
+            s.log_to_file = bool(data.get("log_to_file", s.log_to_file))
+        except Exception:
+            s.log_to_file = bool(s.log_to_file)
+        try:
+            s.debug_log = bool(data.get("debug_log", s.debug_log))
+        except Exception:
+            s.debug_log = bool(s.debug_log)
         return s
 
 
@@ -1553,8 +1601,9 @@ class MpvIpcSession:
         if self.log_file:
             args.append(f"--log-file={self.log_file}")
         if platform.system() == "Windows":
-            # Helpful when diagnosing IPC issues on Windows.
-            args.append("--msg-level=ipc=v")
+            # Helpful when diagnosing IPC issues on Windows (only relevant when logging is enabled).
+            if _is_file_logging_enabled(None) or _is_debug_logging_enabled(None):
+                args.append("--msg-level=ipc=v")
         if platform.system() == "Darwin":
             # Avoid weird clamping when using full-display geometry on macOS.
             args.append("--macos-geometry-calculation=whole")
@@ -2033,7 +2082,7 @@ def _get_shared_mpv_output(settings: Settings) -> MpvIpcSession | None:
             sess.second_screen_top = int(getattr(settings, "second_screen_top", 0))
             sess.fullscreen = bool(getattr(settings, "presentation_active", False))
             sess.hwdec = _effective_mpv_hwdec(settings)
-            sess.log_file = _mpv_log_file("output")
+            sess.log_file = _mpv_log_file("output") if _is_file_logging_enabled(settings) else ""
         except Exception:
             pass
         if not sess.is_alive():
@@ -2791,7 +2840,6 @@ class MediaRunner:
     ) -> list[str]:
         vol = _clamp_int(self.settings.startup_volume if volume_override is None else volume_override, 0, 100)
         hwdec = _effective_mpv_hwdec(self.settings)
-        log_file = _mpv_log_file(f"playback_{self.name}")
         args: list[str] = [
             mpv,
             "--no-terminal",
@@ -2799,9 +2847,10 @@ class MediaRunner:
             "--keep-open=no",
             "--force-window=no",
             "--msg-level=all=warn",
-            f"--log-file={log_file}",
             f"--volume={vol}",
         ]
+        if _is_file_logging_enabled(self.settings):
+            args.append(f"--log-file={_mpv_log_file(f'playback_{self.name}')}")
 
         seek = cue.start_sec if seek_override is None else float(seek_override)
         if seek > 0:
@@ -3398,6 +3447,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.settings = Settings()
         try:
             self._load_persistent_settings()
+        except Exception:
+            pass
+        try:
+            _apply_logging_settings(self.settings)
         except Exception:
             pass
         self.audio_runner = MediaRunner(self.settings, name="A")
@@ -4695,9 +4748,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception:
             pass
         try:
+            log_path = _app_log_file() if _is_file_logging_enabled(self.settings) else "(file logging disabled)"
             messagebox.showerror(
                 "Error",
-                f"{exc.__name__}: {val}\n\nLog:\n{_app_log_file()}",
+                f"{exc.__name__}: {val}\n\nLog:\n{log_path}",
                 parent=self,
             )
         except Exception:
@@ -5132,6 +5186,48 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         # Log panel (hidden unless Setup is opened)
         log_wrap = ttk.Frame(tab_log, padding=10)
         log_wrap.pack(fill="both", expand=True)
+
+        log_opts = ttk.Frame(log_wrap)
+        log_opts.pack(fill="x", pady=(0, 8))
+
+        var_log_to_file = tk.BooleanVar(value=bool(_is_file_logging_enabled(self.settings)))
+        var_debug_log = tk.BooleanVar(value=bool(_is_debug_logging_enabled(self.settings)))
+
+        def _apply_log_opts(*_a) -> None:
+            try:
+                self.settings.log_to_file = bool(var_log_to_file.get())
+            except Exception:
+                pass
+            try:
+                self.settings.debug_log = bool(var_debug_log.get())
+            except Exception:
+                pass
+            try:
+                _apply_logging_settings(self.settings)
+            except Exception:
+                pass
+            try:
+                self._save_persistent_settings()
+            except Exception:
+                pass
+            # Apply immediately to mpv sessions so mpv log files follow the setting.
+            try:
+                _shutdown_shared_mpv_output()
+            except Exception:
+                pass
+            try:
+                if bool(getattr(self.settings, "mpv_persistent_output", True)):
+                    self.video_runner.ensure_window()
+            except Exception:
+                pass
+
+        var_log_to_file.trace_add("write", _apply_log_opts)
+        var_debug_log.trace_add("write", _apply_log_opts)
+
+        ttk.Checkbutton(log_opts, text="Log to file (app.log)", variable=var_log_to_file).pack(side="left")
+        ttk.Checkbutton(log_opts, text="Debug log", variable=var_debug_log).pack(side="left", padx=(12, 0))
+        ttk.Button(log_opts, text="Open logs folder", command=self._open_logs_folder).pack(side="right")
+
         self.log_text = ScrolledText(  # type: ignore[assignment]
             log_wrap,
             height=12,
@@ -8588,14 +8684,18 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 pass
             return
         self._log("mpv IPC test: starting…")
-        log_path = _mpv_log_file("ipc_test")
+        log_path = _mpv_log_file("ipc_test") if _is_file_logging_enabled(self.settings) else ""
 
         def _done_ok(version: str) -> None:
             self._log("mpv IPC test: OK")
             msg = "IPC OK."
             if version:
                 msg += f"\n\nmpv-version:\n{version}"
-            msg += f"\n\nLog:\n{log_path}\n\nApp log:\n{_app_log_file()}"
+            if log_path:
+                msg += f"\n\nLog:\n{log_path}"
+            else:
+                msg += "\n\nLog: (file logging disabled)"
+            msg += f"\n\nApp log:\n{_app_log_file() if _is_file_logging_enabled(self.settings) else '(file logging disabled)'}"
             try:
                 messagebox.showinfo("mpv IPC", msg, parent=self)
             except Exception:
@@ -8609,8 +8709,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     f"mpv IPC test failed:\n\n{err}\n\n"
                     "Workaround:\n"
                     "- Setup → Display → mpv output mode: spawn\n\n"
-                    f"Log:\n{log_path}\n\n"
-                    f"App log:\n{_app_log_file()}",
+                    f"Log:\n{log_path if log_path else '(file logging disabled)'}\n\n"
+                    f"App log:\n{_app_log_file() if _is_file_logging_enabled(self.settings) else '(file logging disabled)'}",
                     parent=self,
                 )
             except Exception:
