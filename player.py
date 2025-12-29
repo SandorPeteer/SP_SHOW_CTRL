@@ -48,13 +48,6 @@ def _no_console_subprocess_kwargs() -> dict:
             kwargs["creationflags"] = flags
     except Exception:
         pass
-    try:
-        si = subprocess.STARTUPINFO()
-        si.dwFlags |= int(getattr(subprocess, "STARTF_USESHOWWINDOW", 0) or 0)
-        si.wShowWindow = 0
-        kwargs["startupinfo"] = si
-    except Exception:
-        pass
     return kwargs
 
 
@@ -1535,6 +1528,8 @@ class MpvIpcSession:
 
         args = [
             self.mpv_exe,
+            "--no-config",
+            "--load-scripts=no",
             "--player-operation-mode=pseudo-gui",
             "--no-terminal",
             f"--hwdec={self.hwdec}",
