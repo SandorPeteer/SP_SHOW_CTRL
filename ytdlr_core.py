@@ -51,8 +51,13 @@ def resolve_ytdlp(explicit: str = "") -> str:
                 p = base / "yt-dlp"
                 if p.exists():
                     return str(p)
-    except Exception:
-        pass
+    except Exception as e:
+        try:
+            from ytdlr_tools import swallow_exc  # optional
+
+            swallow_exc(e, note="resolve_ytdlp homebrew scan")
+        except Exception:
+            pass
 
     try:
         from ytdlr_tools import local_ytdlp_path, repo_ytdlp_path  # local module, optional
@@ -63,8 +68,13 @@ def resolve_ytdlp(explicit: str = "") -> str:
         rp = repo_ytdlp_path()
         if rp.exists():
             return str(rp)
-    except Exception:
-        pass
+    except Exception as e:
+        try:
+            from ytdlr_tools import swallow_exc  # optional
+
+            swallow_exc(e, note="resolve_ytdlp tools fallback")
+        except Exception:
+            pass
     raise FileNotFoundError("yt-dlp not found (PATH or tools/ytdlp)")
 
 

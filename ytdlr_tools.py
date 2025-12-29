@@ -7,10 +7,57 @@ import ssl
 import stat
 import subprocess
 import tempfile
+import time
+import traceback
 from pathlib import Path
 from urllib import request as urlrequest
 from urllib.error import URLError
 import sys
+
+
+def _env_flag(name: str) -> bool:
+    try:
+        return str(os.environ.get(name, "") or "").strip().lower() in ("1", "true", "yes", "on")
+    except Exception:
+        return False
+
+
+def _log_dir() -> Path:
+    # tools_root() is .../yt-dlr/tools; keep logs next to it.
+    try:
+        d = tools_root().parent / "logs"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    except Exception:
+        # Fallback: current working dir (last resort)
+        return Path.cwd()
+
+
+def swallow_exc(exc: BaseException, *, note: str = "") -> None:
+    """Best-effort: record suppressed exceptions when debug/log is enabled."""
+    want_debug = _env_flag("YTDLR_DEBUG")
+    want_file = _env_flag("YTDLR_LOG")
+    if not (want_debug or want_file):
+        return
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    head = f"[{ts}] Suppressed exception"
+    if note:
+        head += f" ({note})"
+    head += f": {type(exc).__name__}: {exc}\n"
+    detail = "".join(traceback.format_exception(type(exc), exc, getattr(exc, "__traceback__", None)))
+    if want_debug:
+        try:
+            print(head + detail, file=sys.stderr)
+        except Exception:
+            pass
+    if want_file:
+        try:
+            p = _log_dir() / "ytdlr.log"
+            with open(p, "a", encoding="utf-8", errors="replace") as f:
+                f.write(head)
+                f.write(detail)
+        except Exception:
+            pass
 
 
 def no_console_subprocess_kwargs() -> dict:
@@ -22,15 +69,8 @@ def no_console_subprocess_kwargs() -> dict:
         flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0)
         if flags:
             kwargs["creationflags"] = flags
-    except Exception:
-        pass
-    try:
-        si = subprocess.STARTUPINFO()
-        si.dwFlags |= int(getattr(subprocess, "STARTF_USESHOWWINDOW", 0) or 0)
-        si.wShowWindow = 0
-        kwargs["startupinfo"] = si
-    except Exception:
-        pass
+    except Exception as e:
+        swallow_exc(e, note="no_console_subprocess_kwargs")
     return kwargs
 
 
@@ -126,8 +166,8 @@ def download_latest_ytdlp(*, progress_cb=None) -> Path:
             if cafile:
                 ctx = ssl.create_default_context(cafile=cafile)
                 return urlrequest.urlopen(req, timeout=30, context=ctx)
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="download_latest_ytdlp certifi")
         raise ssl.SSLError(
             "SSL verification failed (missing local issuer). Fix options: "
             "1) `python3 -m pip install certifi`, "
@@ -163,8 +203,8 @@ def download_latest_ytdlp(*, progress_cb=None) -> Path:
                         if progress_cb is not None:
                             try:
                                 progress_cb(done, total)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                swallow_exc(e, note="download_latest_ytdlp progress_cb")
         except Exception as e:
             # Last-resort: system curl often succeeds even when Python SSL is misconfigured.
             if _is_ssl_verify_error(e):
