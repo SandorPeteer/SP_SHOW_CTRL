@@ -174,15 +174,15 @@ def get_monitors():  # type: ignore
             mons = _macos_coregraphics_monitors()
             if mons:
                 return mons
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="get_monitors coregraphics (primary)")
     if _screeninfo_get_monitors is not None:
         try:
             mons = _screeninfo_get_monitors()
             if mons:
                 return mons
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="get_monitors screeninfo")
     if platform.system() == "Darwin":
         try:
             return _macos_coregraphics_monitors()
@@ -207,8 +207,8 @@ def _pick_primary_monitor(monitors: list) -> object | None:
         for mon in monitors:
             if bool(getattr(mon, "is_primary", False)):
                 return mon
-    except Exception:
-        pass
+    except Exception as e:
+        _swallow_exc(e, note="pick_primary_monitor")
     return monitors[0]
 
 
@@ -327,8 +327,8 @@ def _pick_output_monitor_excluding(monitors: list, exclude: object | None) -> ob
             non_primary = [m for m in candidates if m is not primary]
             if non_primary:
                 candidates = non_primary
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="pick_output_monitor_excluding non_primary")
     # Reuse the projector-like scoring by temporarily treating `candidates` as the full set.
     return _pick_output_monitor(candidates) or candidates[0]
 
@@ -420,8 +420,8 @@ def _resolve_fftool(tool: str) -> str | None:
         try:
             if Path(cached).exists():
                 return cached
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note=f"resolve_fftool cached exists: {tool}")
 
     # Optional override: point to a folder that contains ffmpeg/ffplay/ffprobe.
     env_dir = os.environ.get("SP_SHOW_CTRL_FFMPEG_DIR") or os.environ.get("SP_SHOW_CTRL_TOOLS_DIR")
@@ -432,16 +432,16 @@ def _resolve_fftool(tool: str) -> str | None:
             if p.exists():
                 _FFTOOLS_CACHE[tool] = str(p)
                 return str(p)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note=f"resolve_fftool env_dir: {tool}")
 
     try:
         p = _fftools_bin_dir() / _tool_exe_name(tool)
         if p.exists() and _is_probably_executable_binary(p):
             _FFTOOLS_CACHE[tool] = str(p)
             return str(p)
-    except Exception:
-        pass
+    except Exception as e:
+        _swallow_exc(e, note=f"resolve_fftool bundled: {tool}")
 
     # macOS: app bundles often start with a minimal PATH; check common Homebrew locations.
     if platform.system() == "Darwin":
@@ -776,13 +776,13 @@ def _swallow_exc(exc: BaseException, *, note: str = "") -> None:
         try:
             _append_app_log(head)
             _append_app_log(detail)
-        except Exception:
-            pass
+        except Exception as e:
+            _debug_print(f"[sp-show-control] swallow_exc log write failed: {e}")
         if _is_debug_logging_enabled(None):
             try:
                 print(head + detail, file=sys.stderr)
-            except Exception:
-                pass
+            except Exception as e:
+                _debug_print(f"[sp-show-control] swallow_exc stderr print failed: {e}")
     except Exception:
         return
 
@@ -898,8 +898,8 @@ def _download_url_to_file(
                 if on_progress is not None:
                     try:
                         on_progress(done, total)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _swallow_exc(e, note="download_url_to_file on_progress")
 
 
 def _extract_zip_to_dir(zip_path: Path, out_dir: Path) -> None:
@@ -935,15 +935,15 @@ def _find_tool_in_extracted_dir(out_dir: Path, tool: str) -> Path | None:
             if name == want or name == tool:
                 return p
             if name.startswith(tool):
-                if best is None:
-                    best = p
-                else:
-                    # Prefer shorter names like "ffplay" over "ffplay-2025-01-01".
-                    try:
-                        if len(name) < len(best.name):
-                            best = p
-                    except Exception:
-                        pass
+                    if best is None:
+                        best = p
+                    else:
+                        # Prefer shorter names like "ffplay" over "ffplay-2025-01-01".
+                        try:
+                            if len(name) < len(best.name):
+                                best = p
+                        except Exception as e:
+                            _swallow_exc(e, note="find_tool_in_extracted_dir compare")
     except Exception:
         return None
     return best
@@ -978,8 +978,8 @@ def _install_ffmpeg_tools(
             return
         try:
             on_status(msg)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="install_ffmpeg_tools on_status")
 
     # If already present (either in our tool dir or on the system), do nothing.
     # Also, if a file exists but is not a real executable (e.g. a 7z archive), delete it so we can replace it.
@@ -990,10 +990,10 @@ def _install_ffmpeg_tools(
             if p.exists() and not _is_probably_executable_binary(p):
                 try:
                     p.unlink()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    _swallow_exc(e, note=f"install_ffmpeg_tools unlink stale: {t}")
+        except Exception as e:
+            _swallow_exc(e, note=f"install_ffmpeg_tools check stale: {t}")
         if _resolve_fftool(t) is None:
             missing.append(t)
     if not missing:
@@ -1122,16 +1122,16 @@ def _install_ytdlp_binary(
     try:
         if dest.exists() and _is_probably_executable_binary(dest):
             return
-    except Exception:
-        pass
+    except Exception as e:
+        _swallow_exc(e, note="install_ytdlp_binary existing check")
 
     def _status(msg: str) -> None:
         if on_status is None:
             return
         try:
             on_status(msg)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="install_ytdlp_binary on_status")
 
     sysname = platform.system()
     # Prefer native (PyInstaller) binaries to avoid relying on a system python version.
@@ -1165,8 +1165,8 @@ def _install_ytdlp_binary(
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _swallow_exc(e, note="install_ytdlp_binary xattr")
                 if not _is_probably_executable_binary(dest):
                     raise RuntimeError(f"Downloaded yt-dlp is not a native executable [url={url}]")
                 _status("yt-dlp ready.")
@@ -1584,10 +1584,7 @@ _SHARED_MPV_OUTPUT: MpvIpcSession | None = None
 _SHARED_MPV_OUTPUT_LOCK = threading.Lock()
 
 def _mpv_swallow(exc: BaseException, note: str) -> None:
-    try:
-        _swallow_exc(exc, note=note)
-    except Exception:
-        pass
+    _swallow_exc(exc, note=note)
 
 
 def _get_shared_mpv_output(settings: Settings) -> MpvIpcSession | None:
@@ -1595,8 +1592,8 @@ def _get_shared_mpv_output(settings: Settings) -> MpvIpcSession | None:
     try:
         if str(getattr(settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() != "ipc":
             return None
-    except Exception:
-        pass
+    except Exception as e:
+        _swallow_exc(e, note="get_shared_mpv_output mpv_output_mode")
     if not bool(getattr(settings, "mpv_persistent_output", True)):
         return None
     mpv = _resolve_mpv()
@@ -1620,8 +1617,8 @@ def _get_shared_mpv_output(settings: Settings) -> MpvIpcSession | None:
             _SHARED_MPV_OUTPUT = sess
         try:
             sess.mpv_exe = mpv
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="get_shared_mpv_output set mpv_exe")
         try:
             sess.second_screen_left = int(getattr(settings, "second_screen_left", 0))
             sess.second_screen_top = int(getattr(settings, "second_screen_top", 0))
@@ -1629,8 +1626,8 @@ def _get_shared_mpv_output(settings: Settings) -> MpvIpcSession | None:
             sess.hwdec = _effective_mpv_hwdec(settings)
             sess.log_file = _mpv_log_file("output") if _is_file_logging_enabled(settings) else ""
             sess.ipc_verbose = bool(_is_file_logging_enabled(settings) or _is_debug_logging_enabled(settings))
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="get_shared_mpv_output update session fields")
         if not sess.is_alive():
             try:
                 sess.start()
@@ -1649,8 +1646,8 @@ def _shutdown_shared_mpv_output() -> None:
         return
     try:
         sess.shutdown()
-    except Exception:
-        pass
+    except Exception as e:
+        _swallow_exc(e, note="shutdown_shared_mpv_output")
 
 
 class OutputRunner:
@@ -1673,8 +1670,8 @@ class OutputRunner:
                 # Spawn mode does not keep a persistent window; it starts mpv per cue.
                 self._sess = None
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.ensure_window mpv_output_mode")
         sess = _get_shared_mpv_output(self.settings)
         if sess is None:
             self._sess = None
@@ -1686,8 +1683,8 @@ class OutputRunner:
         try:
             if str(getattr(self.settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() == "spawn":
                 return bool(self._spawn_runner.is_playing())
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.is_playing mpv_output_mode")
         sess = self._sess
         if sess is None:
             try:
@@ -1704,10 +1701,10 @@ class OutputRunner:
                 if pos is not None and float(pos) >= float(self._stop_at_sec) - 0.001:
                     try:
                         sess.stop()
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    except Exception as e:
+                        _swallow_exc(e, note="OutputRunner.is_playing stop_at_sec stop")
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.is_playing stop_at_sec")
         playing = bool(sess.is_playing())
         # Fallback end detection: some mpv builds (or some files) may not emit end-file reliably via IPC.
         # For videos only, treat EOF as "not playing" so the app can auto-advance playlists.
@@ -1717,15 +1714,15 @@ class OutputRunner:
                 if eof is True:
                     try:
                         setattr(sess, "_playing", False)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _swallow_exc(e, note="OutputRunner.is_playing eof setattr")
                     playing = False
                     self.last_exit_code = 0
                     self.last_end_reason = "eof"
                     self._paused = False
                     self._stop_at_sec = None
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="OutputRunner.is_playing eof check")
             if playing:
                 try:
                     pos = sess.get_property("time-pos")
@@ -1737,15 +1734,15 @@ class OutputRunner:
                         if dur_f > 0.5 and pos_f >= (dur_f - 0.05):
                             try:
                                 setattr(sess, "_playing", False)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                _swallow_exc(e, note="OutputRunner.is_playing dur setattr")
                             playing = False
                             self.last_exit_code = 0
                             self.last_end_reason = "eof"
                             self._paused = False
                             self._stop_at_sec = None
-                except Exception:
-                    pass
+                except Exception as e:
+                    _swallow_exc(e, note="OutputRunner.is_playing dur check")
         if not playing:
             info = sess.consume_end_info()
             if info is not None:
@@ -1765,8 +1762,8 @@ class OutputRunner:
         try:
             if str(getattr(self.settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() == "spawn":
                 return self._spawn_runner.playback_position_sec()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.playback_position_sec mpv_output_mode")
         cue = self._playing_cue
         if cue is None or cue.kind != "video":
             return None
@@ -1809,21 +1806,21 @@ class OutputRunner:
             if str(getattr(self.settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() == "spawn":
                 try:
                     self._spawn_runner.stop()
-                except Exception:
-                    pass
+                except Exception as e:
+                    _swallow_exc(e, note="OutputRunner.stop spawn stop")
                 self.owner_deck = None
                 self._paused = False
                 self._stop_at_sec = None
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.stop mpv_output_mode")
         sess = self._sess
         if sess is None:
             return
         try:
             sess.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.stop sess.stop")
         self.owner_deck = None
         self._paused = False
         self._stop_at_sec = None
@@ -1834,31 +1831,31 @@ class OutputRunner:
             if str(getattr(self.settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() == "spawn":
                 # Spawn mode cannot pause reliably; keep as no-op.
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.pause mpv_output_mode")
         sess = self._sess
         if sess is None:
             return
         try:
             sess.set_property("pause", True)
             self._paused = True
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.pause set_property")
 
     def resume(self) -> None:
         try:
             if str(getattr(self.settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() == "spawn":
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.resume mpv_output_mode")
         sess = self._sess
         if sess is None:
             return
         try:
             sess.set_property("pause", False)
             self._paused = False
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.resume set_property")
 
     def is_paused(self) -> bool:
         return bool(self._paused)
@@ -1867,15 +1864,15 @@ class OutputRunner:
         try:
             if str(getattr(self.settings, "mpv_output_mode", "ipc") or "ipc").strip().lower() == "spawn":
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.seek_to mpv_output_mode")
         sess = self._sess
         if sess is None:
             return
         try:
             sess.set_property("time-pos", float(max(0.0, position_sec)))
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.seek_to set_property time-pos")
 
     def play_for_deck(self, deck: str, cue: Cue, *, volume_override: int | None = None) -> None:
         self.play_at_for_deck(deck, cue, float(cue.start_sec), volume_override=volume_override)
@@ -1899,8 +1896,8 @@ class OutputRunner:
                 self.last_exit_code = None
                 self.last_end_reason = None
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.play_at_for_deck mpv_output_mode")
 
         if not self.ensure_window():
             raise RuntimeError("mpv output window not available")
@@ -1911,28 +1908,28 @@ class OutputRunner:
         # Ensure the output window is visible (it may have been minimized for external apps like PPT).
         try:
             sess.set_property("window-minimized", False)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.play_at_for_deck unminimize")
         pres = bool(getattr(self.settings, "presentation_active", False))
         try:
             sess.set_property("ontop", bool(pres))
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.play_at_for_deck ontop")
         if pres:
             try:
                 sess.fullscreen = True
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="OutputRunner.play_at_for_deck set fullscreen flag")
             try:
                 sess.apply_window_placement()
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="OutputRunner.play_at_for_deck apply_window_placement")
 
         self.owner_deck = str(deck)
         try:
             sess.owner = str(deck)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.play_at_for_deck set owner")
 
         if cue.kind == "image":
             try:
@@ -1940,8 +1937,8 @@ class OutputRunner:
                     sess.set_property_strict("mute", True)
                 except Exception:
                     sess.set_property("mute", True)
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="OutputRunner.play_at_for_deck image mute")
             self._stop_at_sec = None
             sess.loadfile(cue.path, start=0.0, end=None, volume=0, af_lavfi=None)
             self._playing_cue = cue
@@ -1957,8 +1954,8 @@ class OutputRunner:
                 sess.set_property_strict("mute", bool(is_visuals))
             except Exception:
                 sess.set_property("mute", bool(is_visuals))
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.play_at_for_deck video mute")
         pos = max(0.0, float(position_sec))
         end_at = None
         if cue.stop_at_sec is not None and float(cue.stop_at_sec) > pos:
@@ -1970,25 +1967,25 @@ class OutputRunner:
         try:
             if cue.volume_percent is not None:
                 vol = int(cue.volume_percent) if volume_override is None else int(volume_override)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.play_at_for_deck cue volume_percent")
         af = self._build_normalize_af(cue)
         self._stop_at_sec = float(end_at) if end_at is not None else None
         sess.loadfile(cue.path, start=float(pos), end=end_at, volume=_clamp_int(int(vol), 0, 100), af_lavfi=af)
         try:
             sess.set_property("pause", False)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.play_at_for_deck unpause")
         # Re-apply critical audio properties after load (some mpv builds can race during replace).
         try:
             sess.set_property_strict("mute", bool(is_visuals))
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.play_at_for_deck reapply mute")
         try:
             if not is_visuals:
                 sess.set_property_strict("volume", _clamp_int(int(vol), 0, 100))
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="OutputRunner.play_at_for_deck reapply volume")
         self._playing_cue = cue
         self._paused = False
         self.last_exit_code = None
@@ -2063,21 +2060,22 @@ class MediaRunner:
                     proc.stdin.close()
                     proc.wait(timeout=0.5)
                     return
-            except (BrokenPipeError, OSError):
-                pass
-            except Exception:
-                pass
+            except (BrokenPipeError, OSError) as e:
+                _swallow_exc(e, note="MediaRunner.stop ffplay quit pipe")
+            except Exception as e:
+                _swallow_exc(e, note="MediaRunner.stop ffplay quit")
 
         # If graceful quit failed, try terminate
         try:
             proc.terminate()
             proc.wait(timeout=1.0)
-        except Exception:
+        except Exception as e:
+            _swallow_exc(e, note="MediaRunner.stop terminate")
             # Last resort: kill
             try:
                 proc.kill()
-            except Exception:
-                pass
+            except Exception as e2:
+                _swallow_exc(e2, note="MediaRunner.stop kill")
 
     def _spawn_player(self, backend: str, args: list[str]) -> subprocess.Popen:
         self.last_args = args
@@ -2110,8 +2108,8 @@ class MediaRunner:
                     self.last_stderr_tail.append(line)
                     if len(self.last_stderr_tail) > 80:
                         self.last_stderr_tail = self.last_stderr_tail[-80:]
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="MediaRunner stderr reader")
 
         threading.Thread(target=_read_stderr, daemon=True).start()
         return proc
