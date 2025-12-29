@@ -408,11 +408,12 @@ class MpvIpcSession:
         if platform.system() == "Windows":
             if self._pipe is None:
                 raise RuntimeError("mpv IPC pipe not connected")
-            self._pipe.write(line)
             try:
+                self._pipe.write(line)
                 self._pipe.flush()
-            except Exception:
-                pass
+            except (BrokenPipeError, OSError, ValueError) as e:
+                self._swallow_exc(e, "mpv ipc pipe write/flush")
+                raise RuntimeError("mpv IPC write failed") from e
             return
         if self._sock is None:
             raise RuntimeError("mpv IPC socket not connected")
@@ -434,10 +435,7 @@ class MpvIpcSession:
 
     @staticmethod
     def _is_success(resp: object) -> bool:
-        try:
-            return bool(isinstance(resp, dict) and resp.get("error") == "success")
-        except Exception:
-            return False
+        return bool(isinstance(resp, dict) and resp.get("error") == "success")
 
     @staticmethod
     def _parse_geometry(value: object) -> tuple[int, int, int, int] | None:
@@ -590,9 +588,17 @@ class MpvIpcSession:
             self._playing = False
 
     def _handle_ipc_line(self, line: str) -> None:
+        s = str(line or "").strip()
+        if not s:
+            return
         try:
-            msg = json.loads(str(line or "").strip())
-        except Exception:
+            msg = json.loads(s)
+        except json.JSONDecodeError as e:
+            if self.ipc_verbose:
+                self._swallow_exc(e, f"mpv ipc invalid json: {s[:200]!r}")
+            return
+        except Exception as e:
+            self._swallow_exc(e, "mpv ipc json parse error")
             return
         if not isinstance(msg, dict):
             return
@@ -603,8 +609,10 @@ class MpvIpcSession:
             if q is not None:
                 try:
                     q.put_nowait(msg)
-                except Exception:
-                    pass
+                except queue.Full as e:
+                    self._swallow_exc(e, "mpv ipc response queue full")
+                except Exception as e:
+                    self._swallow_exc(e, "mpv ipc response queue error")
             return
         ev = msg.get("event")
         if ev == "file-loaded":
@@ -612,11 +620,7 @@ class MpvIpcSession:
             return
         if ev == "end-file":
             self._playing = False
-            try:
-                reason = msg.get("reason")
-                err = msg.get("error")
-                self._end_info = (None if reason is None else str(reason), None if err is None else str(err))
-            except Exception:
-                self._end_info = (None, None)
+            reason = msg.get("reason")
+            err = msg.get("error")
+            self._end_info = (None if reason is None else str(reason), None if err is None else str(err))
             return
-

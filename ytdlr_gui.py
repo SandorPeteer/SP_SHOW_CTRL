@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import queue
 import shlex
@@ -88,24 +89,16 @@ class YtDlrGui(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _bring_to_front(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self.deiconify()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             self.lift()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             self.focus_force()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             if self.tk.call("tk", "windowingsystem") == "aqua":
                 self.attributes("-topmost", True)
                 self.after(200, lambda: self.attributes("-topmost", False))
-        except Exception:
-            pass
 
     def _build_ui(self) -> None:
         root = ttk.Frame(self, padding=10)

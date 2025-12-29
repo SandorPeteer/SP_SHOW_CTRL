@@ -62,17 +62,23 @@ def _log_file_path() -> Path:
 
 
 def _redirect_stderr_to_log() -> None:
+    log_file = _log_file_path()
     try:
-        log_file = _log_file_path()
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        f = open(log_file, "a", buffering=1)
-        try:
-            os.dup2(f.fileno(), 2)
-        except Exception:
-            pass
-        sys.stderr = f  # type: ignore[assignment]
     except Exception:
-        pass
+        return
+    try:
+        f = open(log_file, "a", buffering=1)
+    except Exception:
+        return
+    try:
+        os.dup2(f.fileno(), 2)
+    except Exception as e:
+        try:
+            f.write(f"[yt-dlr] stderr redirect failed: {e}\n")
+        except Exception:
+            return
+    sys.stderr = f  # type: ignore[assignment]
 
 
 def main(argv: list[str]) -> int:

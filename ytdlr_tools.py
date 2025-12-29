@@ -22,6 +22,23 @@ def _env_flag(name: str) -> bool:
         return False
 
 
+def _try_print_stderr(text: str) -> bool:
+    try:
+        print(text, file=sys.stderr)
+        return True
+    except Exception:
+        return False
+
+
+def _try_append_text(path: Path, text: str) -> bool:
+    try:
+        with open(path, "a", encoding="utf-8", errors="replace") as f:
+            f.write(text)
+        return True
+    except Exception:
+        return False
+
+
 def _log_dir() -> Path:
     # tools_root() is .../yt-dlr/tools; keep logs next to it.
     try:
@@ -46,18 +63,10 @@ def swallow_exc(exc: BaseException, *, note: str = "") -> None:
     head += f": {type(exc).__name__}: {exc}\n"
     detail = "".join(traceback.format_exception(type(exc), exc, getattr(exc, "__traceback__", None)))
     if want_debug:
-        try:
-            print(head + detail, file=sys.stderr)
-        except Exception:
-            pass
+        _try_print_stderr(head + detail)
     if want_file:
-        try:
-            p = _log_dir() / "ytdlr.log"
-            with open(p, "a", encoding="utf-8", errors="replace") as f:
-                f.write(head)
-                f.write(detail)
-        except Exception:
-            pass
+        p = _log_dir() / "ytdlr.log"
+        _try_append_text(p, head + detail)
 
 
 def no_console_subprocess_kwargs() -> dict:
@@ -121,7 +130,7 @@ def _ensure_executable(p: Path) -> None:
         try:
             p.chmod(0o755)
         except Exception:
-            pass
+            return
 
 
 def _best_ytdlp_url() -> str:
@@ -226,7 +235,7 @@ def download_latest_ytdlp(*, progress_cb=None) -> Path:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                swallow_exc(e, note="download_latest_ytdlp xattr")
 
     return dest

@@ -54,10 +54,10 @@ def resolve_ytdlp(explicit: str = "") -> str:
     except Exception as e:
         try:
             from ytdlr_tools import swallow_exc  # optional
-
-            swallow_exc(e, note="resolve_ytdlp homebrew scan")
         except Exception:
-            pass
+            swallow_exc = None
+        if swallow_exc is not None:
+            swallow_exc(e, note="resolve_ytdlp homebrew scan")
 
     try:
         from ytdlr_tools import local_ytdlp_path, repo_ytdlp_path  # local module, optional
@@ -71,10 +71,10 @@ def resolve_ytdlp(explicit: str = "") -> str:
     except Exception as e:
         try:
             from ytdlr_tools import swallow_exc  # optional
-
-            swallow_exc(e, note="resolve_ytdlp tools fallback")
         except Exception:
-            pass
+            swallow_exc = None
+        if swallow_exc is not None:
+            swallow_exc(e, note="resolve_ytdlp tools fallback")
     raise FileNotFoundError("yt-dlp not found (PATH or tools/ytdlp)")
 
 

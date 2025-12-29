@@ -8,10 +8,7 @@ def main() -> int:
     # Default to quiet logs in GUI mode.
     os.environ.setdefault("QT_LOGGING_RULES", "qt.multimedia.*=false")
     # Prefer system yt-dlp when available, but allow overriding via env.
-    try:
-        os.environ.setdefault("YTDLR_YTDLP", "")
-    except Exception:
-        pass
+    os.environ.setdefault("YTDLR_YTDLP", "")
 
     from ytdlr_qt import run
 
@@ -21,4 +18,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
