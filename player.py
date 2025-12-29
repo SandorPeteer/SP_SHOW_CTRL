@@ -668,12 +668,33 @@ def _effective_mpv_hwdec(settings: Settings | None = None) -> str:
     return "no" if platform.system() == "Windows" else "auto-safe"
 
 
-def _mpv_log_file(name: str) -> str:
-    base = _user_data_dir() / "logs"
+def _env_truthy(name: str) -> bool:
+    return str(os.environ.get(name, "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _debug_print(msg: str) -> None:
+    if not _env_truthy("SP_SHOW_CTRL_DEBUG"):
+        return
     try:
-        base.mkdir(parents=True, exist_ok=True)
+        print(str(msg), file=sys.stderr)
     except Exception:
-        pass
+        return
+
+
+def _mpv_log_file(name: str) -> str:
+    candidates = [
+        _user_data_dir() / "logs",
+        Path.home() / "SP_Show_Control_logs",
+        Path.cwd() / "SP_Show_Control_logs",
+    ]
+    base = candidates[0]
+    for d in candidates:
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            base = d
+            break
+        except Exception as e:
+            _debug_print(f"[sp-show-control] cannot create log dir {d}: {e}")
     fname = f"mpv_{(name or 'log').strip().lower()}.log"
     return str(base / fname)
 
@@ -711,11 +732,19 @@ def _apply_logging_settings(settings: "Settings | None") -> None:
 
 
 def _app_log_file() -> str:
-    base = _user_data_dir() / "logs"
-    try:
-        base.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
+    candidates = [
+        _user_data_dir() / "logs",
+        Path.home() / "SP_Show_Control_logs",
+        Path.cwd() / "SP_Show_Control_logs",
+    ]
+    base = candidates[0]
+    for d in candidates:
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            base = d
+            break
+        except Exception as e:
+            _debug_print(f"[sp-show-control] cannot create log dir {d}: {e}")
     return str(base / "app.log")
 
 
@@ -727,8 +756,9 @@ def _append_app_log(text: str) -> None:
             return
         with open(_app_log_file(), "a", encoding="utf-8", errors="replace") as f:
             f.write(text)
-    except Exception:
-        pass
+    except Exception as e:
+        _debug_print(f"[sp-show-control] log append failed: {e}")
+        return
 
 
 def _swallow_exc(exc: BaseException, *, note: str = "") -> None:
@@ -765,8 +795,8 @@ def _install_global_exception_logging() -> None:
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
             _append_app_log(f"\n[{ts}] {prefix}: {exc_type.__name__}: {exc}\n")
             _append_app_log("".join(traceback.format_exception(exc_type, exc, tb)))
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="global exception logging (write)")
 
     def _sys_hook(exc_type, exc, tb) -> None:
         _log_exc("Unhandled exception", exc_type, exc, tb)
@@ -776,13 +806,13 @@ def _install_global_exception_logging() -> None:
                 "Unhandled error",
                 f"{exc_type.__name__}: {exc}\n\nLog:\n{log_path}",
             )
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="global exception hook (messagebox)")
 
     try:
         sys.excepthook = _sys_hook  # type: ignore[assignment]
-    except Exception:
-        pass
+    except Exception as e:
+        _swallow_exc(e, note="install sys.excepthook")
 
     try:
         th_hook = getattr(threading, "excepthook", None)
@@ -790,8 +820,8 @@ def _install_global_exception_logging() -> None:
             def _thread_hook(args) -> None:  # type: ignore[no-redef]
                 _log_exc("Thread exception", args.exc_type, args.exc_value, args.exc_traceback)
             threading.excepthook = _thread_hook  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    except Exception as e:
+        _swallow_exc(e, note="install threading.excepthook")
 
 
 def _download_url_to_file(

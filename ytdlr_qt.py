@@ -5,11 +5,12 @@ import queue
 import re
 import shlex
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from PyQt6.QtCore import QTimer, Qt, QUrl
+from PyQt6.QtCore import QSettings, QTimer, Qt, QUrl
 from PyQt6.QtGui import QAction, QFont, QFontMetrics, QStandardItem, QStandardItemModel
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QVideoWidget
@@ -36,7 +37,7 @@ from PyQt6.QtWidgets import (
 )
 
 import ytdlr_core as core
-from ytdlr_tools import no_console_subprocess_kwargs
+from ytdlr_tools import no_console_subprocess_kwargs, swallow_exc, tools_root
 
 
 def _split_args(text: str) -> list[str]:
@@ -45,7 +46,8 @@ def _split_args(text: str) -> list[str]:
         return []
     try:
         return shlex.split(t)
-    except Exception:
+    except ValueError as e:
+        swallow_exc(e, note="qt split_args shlex")
         return t.split()
 
 
@@ -233,6 +235,26 @@ def _fmt_time(ms: int) -> str:
     return core.format_duration(s)
 
 
+def _env_flag(name: str) -> bool:
+    return str(os.environ.get(name, "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_flag_is_set(name: str) -> bool:
+    return bool(name in os.environ)
+
+
+def _set_env_flag(name: str, enabled: bool) -> None:
+    if enabled:
+        os.environ[name] = "1"
+    else:
+        os.environ.pop(name, None)
+
+
+def _logs_dir() -> Path:
+    # Keep consistent with ytdlr_tools.swallow_exc: logs next to the app tools dir.
+    return tools_root().parent / "logs"
+
+
 class YtDlrQt(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -281,6 +303,60 @@ class YtDlrQt(QMainWindow):
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._drain_bg_queue)
         self._poll_timer.start(80)
+
+        self._settings = QSettings()
+        self._restore_logging_settings()
+
+    def _restore_logging_settings(self) -> None:
+        try:
+            want_file = bool(self._settings.value("log_to_file", False, type=bool))
+            want_debug = bool(self._settings.value("debug_log", False, type=bool))
+        except Exception as e:
+            swallow_exc(e, note="qt read QSettings")
+            want_file = False
+            want_debug = False
+
+        if not _env_flag_is_set("YTDLR_LOG"):
+            _set_env_flag("YTDLR_LOG", want_file)
+        if not _env_flag_is_set("YTDLR_DEBUG"):
+            _set_env_flag("YTDLR_DEBUG", want_debug)
+
+        try:
+            self.act_log_file.setChecked(_env_flag("YTDLR_LOG"))
+            self.act_log_debug.setChecked(_env_flag("YTDLR_DEBUG"))
+        except Exception as e:
+            swallow_exc(e, note="qt restore log actions")
+
+    def _set_log_file_enabled(self, enabled: bool) -> None:
+        _set_env_flag("YTDLR_LOG", bool(enabled))
+        try:
+            self._settings.setValue("log_to_file", bool(enabled))
+        except Exception as e:
+            swallow_exc(e, note="qt save log_to_file")
+
+    def _set_log_debug_enabled(self, enabled: bool) -> None:
+        _set_env_flag("YTDLR_DEBUG", bool(enabled))
+        try:
+            self._settings.setValue("debug_log", bool(enabled))
+        except Exception as e:
+            swallow_exc(e, note="qt save debug_log")
+
+    def _open_logs_folder(self) -> None:
+        try:
+            d = _logs_dir()
+            d.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self._show_error(f"Cannot create logs folder: {e}")
+            return
+        try:
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["explorer", str(d)], **no_console_subprocess_kwargs())
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(d)])
+            else:
+                subprocess.Popen(["xdg-open", str(d)])
+        except Exception as e:
+            self._show_error(f"Cannot open logs folder: {e}")
 
     def _init_ui(self) -> None:
         root = QWidget()
@@ -491,6 +567,23 @@ class YtDlrQt(QMainWindow):
         act_update.triggered.connect(self._on_update_ytdlp)
         tools.addAction(act_update)
 
+        tools.addSeparator()
+        self.act_log_file = QAction("Log to file (ytdlr.log)", self)
+        self.act_log_file.setCheckable(True)
+        self.act_log_file.setChecked(_env_flag("YTDLR_LOG"))
+        self.act_log_file.triggered.connect(lambda checked: self._set_log_file_enabled(bool(checked)))
+        tools.addAction(self.act_log_file)
+
+        self.act_log_debug = QAction("Debug log (stderr)", self)
+        self.act_log_debug.setCheckable(True)
+        self.act_log_debug.setChecked(_env_flag("YTDLR_DEBUG"))
+        self.act_log_debug.triggered.connect(lambda checked: self._set_log_debug_enabled(bool(checked)))
+        tools.addAction(self.act_log_debug)
+
+        act_open_logs = QAction("Open logs folder", self)
+        act_open_logs.triggered.connect(self._open_logs_folder)
+        tools.addAction(act_open_logs)
+
         act_quit = QAction("Quit", self)
         act_quit.triggered.connect(self.close)
         self.menuBar().addAction(act_quit)
@@ -498,8 +591,8 @@ class YtDlrQt(QMainWindow):
     def closeEvent(self, event) -> None:  # type: ignore[override]
         try:
             self._player.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="qt closeEvent stop player")
         event.accept()
 
     def _on_video_changed(self) -> None:
@@ -693,8 +786,8 @@ class YtDlrQt(QMainWindow):
                     self._results.put(("tools_done", str(p)))
                     try:
                         self._results.put(("tools_status", f"yt-dlp ready: {local_ytdlp_path()}"))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        swallow_exc(e, note="qt update_ytdlp tools_status")
                 except Exception as e:
                     self._results.put(
                         (
@@ -737,33 +830,33 @@ class YtDlrQt(QMainWindow):
                 try:
                     self.dl_progress.setVisible(True)
                     self.dl_progress.setValue(int(payload or 0))
-                except Exception:
-                    pass
+                except Exception as e:
+                    swallow_exc(e, note="qt ui download_progress")
             elif task == "download_status":
                 try:
                     self.lbl_dl.setFullText(str(payload or ""))
-                except Exception:
-                    pass
+                except Exception as e:
+                    swallow_exc(e, note="qt ui download_status")
             elif task == "download_done":
                 self._downloading = False
                 try:
                     self.btn_dj_download.setEnabled(True)
                     self.btn_clip_download.setEnabled(True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    swallow_exc(e, note="qt ui download_done enable buttons")
                 self.statusBar().showMessage(f"Downloaded: {payload}", 9000)
                 try:
                     self.lbl_dl.setFullText(f"Done: {payload}")
                     self.dl_progress.setValue(100)
-                except Exception:
-                    pass
+                except Exception as e:
+                    swallow_exc(e, note="qt ui download_done finalize")
             elif task == "error":
                 self._downloading = False
                 try:
                     self.btn_dj_download.setEnabled(True)
                     self.btn_clip_download.setEnabled(True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    swallow_exc(e, note="qt ui error enable buttons")
                 self._busy_pop()
                 self._show_error(str(payload))
             elif task == "tools_progress":
@@ -776,21 +869,21 @@ class YtDlrQt(QMainWindow):
                         self.dl_progress.setValue(pct)
                     else:
                         self.dl_progress.setRange(0, 0)  # indeterminate
-                except Exception:
-                    pass
+                except Exception as e:
+                    swallow_exc(e, note="qt ui tools_progress")
             elif task == "tools_status":
                 try:
                     self.lbl_dl.setFullText(str(payload or ""))
-                except Exception:
-                    pass
+                except Exception as e:
+                    swallow_exc(e, note="qt ui tools_status")
             elif task == "tools_done":
                 self._updating_tools = False
                 try:
                     self.dl_progress.setRange(0, 100)
                     self.dl_progress.setValue(100)
                     self.lbl_dl.setFullText(f"yt-dlp updated: {payload}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    swallow_exc(e, note="qt ui tools_done")
                 self.statusBar().showMessage(f"yt-dlp updated: {payload}", 8000)
             else:
                 pass
@@ -803,8 +896,10 @@ class YtDlrQt(QMainWindow):
         try:
             core.resolve_ytdlp("")
             return
-        except Exception:
+        except FileNotFoundError:
             pass
+        except Exception as e:
+            swallow_exc(e, note="qt ensure_ytdlp_ready resolve_ytdlp")
         r = QMessageBox.question(
             self,
             "yt-dlr",
@@ -821,19 +916,17 @@ class YtDlrQt(QMainWindow):
             self.dl_progress.setVisible(True)
             self.dl_progress.setRange(0, 0)
             self.lbl_dl.setFullText("Updating yt-dlp…")
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="qt ui _on_update_ytdlp")
         self._tasks.put(("update_ytdlp", None))
 
     def _use_system_ytdlp(self) -> None:
-        try:
-            os.environ.pop("YTDLR_YTDLP", None)
-        except Exception:
-            pass
+        os.environ.pop("YTDLR_YTDLP", None)
         try:
             p = core.which_or_none("yt-dlp") or ""
             self.statusBar().showMessage(f"Using system yt-dlp: {p}" if p else "Using system yt-dlp (PATH)", 7000)
-        except Exception:
+        except Exception as e:
+            swallow_exc(e, note="qt ui _use_system_ytdlp showMessage")
             self.statusBar().showMessage("Using system yt-dlp (PATH)", 5000)
 
     def _use_managed_ytdlp(self) -> None:
@@ -882,8 +975,9 @@ class YtDlrQt(QMainWindow):
         self._preview_slider_dragging = False
         try:
             self._player.setPosition(v)
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="qt preview seek")
+            self.statusBar().showMessage("Seek failed", 5000)
 
     def _on_search(self) -> None:
         q = (self.search_edit.text() or "").strip()
@@ -1108,8 +1202,8 @@ class YtDlrQt(QMainWindow):
             self.busy_bar.setVisible(True)
             self.busy_lbl.setVisible(True)
             self.busy_lbl.setText(f"{base} {self._busy_frame()}")
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="qt busy_push")
 
     def _busy_pop(self) -> None:
         if self._busy_count > 0:
@@ -1119,8 +1213,8 @@ class YtDlrQt(QMainWindow):
             try:
                 self.busy_bar.setVisible(False)
                 self.busy_lbl.setVisible(False)
-            except Exception:
-                pass
+            except Exception as e:
+                swallow_exc(e, note="qt busy_pop")
 
     def _busy_frame(self) -> str:
         frames = ["|", "/", "-", "\\\\"]
@@ -1139,8 +1233,8 @@ class YtDlrQt(QMainWindow):
             if parts:
                 parts[-1] = self._busy_frame()
                 self.busy_lbl.setText(" ".join(parts))
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="qt tick_busy")
 
     def _on_preview_pause(self) -> None:
         st = self._player.playbackState()
@@ -1181,14 +1275,14 @@ class YtDlrQt(QMainWindow):
         self._downloading = True
         try:
             self.btn_dj_download.setEnabled(False)
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="qt ui _on_dj_download disable")
         try:
             self.dl_progress.setVisible(True)
             self.dl_progress.setValue(0)
             self.lbl_dl.setFullText("Starting…")
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="qt ui _on_dj_download progress")
         self.statusBar().showMessage("Downloading…")
         self._tasks.put(
             (
@@ -1238,14 +1332,14 @@ class YtDlrQt(QMainWindow):
         try:
             self.btn_dj_download.setEnabled(False)
             self.btn_clip_download.setEnabled(False)
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="qt ui _on_clip_download disable")
         try:
             self.dl_progress.setVisible(True)
             self.dl_progress.setValue(0)
             self.lbl_dl.setFullText("Starting…")
-        except Exception:
-            pass
+        except Exception as e:
+            swallow_exc(e, note="qt ui _on_clip_download progress")
         self.statusBar().showMessage("Downloading clip…")
         self._tasks.put(
             (
@@ -1266,6 +1360,7 @@ class YtDlrQt(QMainWindow):
 
 def run() -> None:
     app = QApplication([])
+    app.setOrganizationName("SandorPeteer")
     app.setApplicationName("yt-dlr")
     w = YtDlrQt()
     f = QFont()
