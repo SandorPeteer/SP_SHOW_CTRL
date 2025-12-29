@@ -1608,8 +1608,8 @@ class MpvIpcSession:
                 p = Path(self.ipc_server)
                 if p.exists():
                     p.unlink()
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="mpv ipc unlink stale socket")
 
         # Start windowed: user can drag the output window to the desired display, then hit "Presentation".
         geometry = "960x540+80+80"
@@ -1646,10 +1646,7 @@ class MpvIpcSession:
             # Default to pseudo-fullscreen on macOS (avoid Spaces).
             args.append("--native-fs=no")
 
-        try:
-            _append_app_log(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] mpv start: {args!r}\n")
-        except Exception:
-            pass
+        _append_app_log(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] mpv start: {args!r}\n")
 
         self._proc = subprocess.Popen(
             args,
@@ -1671,49 +1668,49 @@ class MpvIpcSession:
             if is_macos:
                 use_native = bool(want_fullscreen) and bool(getattr(self, "native_fullscreen", False))
                 self.set_property_strict("native-fs", bool(use_native), timeout=0.9, retries=3)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="mpv apply_window_placement native-fs")
         try:
             self.set_property_strict("auto-window-resize", False, timeout=0.9, retries=3)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="mpv apply_window_placement auto-window-resize")
         try:
             self.set_property_strict("keepaspect-window", False, timeout=0.9, retries=3)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="mpv apply_window_placement keepaspect-window")
 
         if want_fullscreen:
             try:
                 self.set_property_strict("fs-screen", "current", timeout=1.0, retries=3)
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="mpv apply_window_placement fs-screen")
             try:
                 self.set_property_strict("border", False, timeout=0.9, retries=3)
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="mpv apply_window_placement border off")
             try:
                 self.set_property_strict("ontop", True, timeout=0.9, retries=3)
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="mpv apply_window_placement ontop on")
             try:
                 self.set_property_strict("fullscreen", True, timeout=1.4, retries=8)
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="mpv apply_window_placement fullscreen on")
             return
 
         # Windowed mode
         try:
             self.set_property_strict("fullscreen", False, timeout=1.2, retries=6)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="mpv apply_window_placement fullscreen off")
         try:
             self.set_property_strict("border", True, timeout=0.9, retries=3)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="mpv apply_window_placement border on")
         try:
             self.set_property_strict("ontop", False, timeout=0.9, retries=3)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="mpv apply_window_placement ontop off")
 
     def _connect_ipc(self) -> None:
         deadline = time.monotonic() + 5.0
@@ -1822,8 +1819,8 @@ class MpvIpcSession:
             try:
                 if Path(self.ipc_server).exists():
                     break
-            except Exception:
-                pass
+            except Exception as e:
+                _swallow_exc(e, note="mpv ipc socket exists check")
             time.sleep(0.05)
         else:
             raise RuntimeError("mpv IPC socket did not become available")
@@ -1849,16 +1846,16 @@ class MpvIpcSession:
             if self._sock is not None:
                 try:
                     self._sock.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    _swallow_exc(e, note="mpv ipc socket close")
         finally:
             self._sock = None
         try:
             if self._pipe is not None:
                 try:
                     self._pipe.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    _swallow_exc(e, note="mpv ipc pipe close")
         finally:
             self._pipe = None
 
@@ -1867,11 +1864,12 @@ class MpvIpcSession:
         try:
             proc.terminate()
             proc.wait(timeout=1.0)
-        except Exception:
+        except Exception as e:
+            _swallow_exc(e, note="mpv proc terminate")
             try:
                 proc.kill()
-            except Exception:
-                pass
+            except Exception as e2:
+                _swallow_exc(e2, note="mpv proc kill")
 
     def _next_request_id(self) -> int:
         with self._lock:
@@ -1885,6 +1883,10 @@ class MpvIpcSession:
             if self._pipe is None:
                 raise RuntimeError("mpv IPC pipe not connected")
             self._pipe.write(line)
+            try:
+                self._pipe.flush()
+            except Exception:
+                pass
             return
         if self._sock is None:
             raise RuntimeError("mpv IPC socket not connected")
@@ -1898,8 +1900,8 @@ class MpvIpcSession:
         self._send_json({"command": cmd, "request_id": rid})
         try:
             return q.get(timeout=float(timeout))
-        except Exception:
-            raise TimeoutError("mpv IPC request timed out")
+        except queue.Empty as e:
+            raise TimeoutError("mpv IPC request timed out") from e
         finally:
             with self._lock:
                 self._pending.pop(rid, None)
@@ -1933,21 +1935,26 @@ class MpvIpcSession:
     def set_property(self, name: str, value: object) -> bool:
         try:
             resp = self.command(["set_property", str(name), value], timeout=0.6)
-        except Exception:
+        except Exception as e:
+            _swallow_exc(e, note=f"mpv set_property {name}")
             return False
         return self._is_success(resp)
 
     def set_property_strict(self, name: str, value: object, *, timeout: float = 1.2, retries: int = 4) -> bool:
         """Set an mpv property with retries (useful for critical properties like mute/volume)."""
+        last_err: Exception | None = None
         for _ in range(max(1, int(retries))):
             try:
                 resp = self.command(["set_property", str(name), value], timeout=float(timeout))
                 if not self._is_success(resp):
                     raise RuntimeError(f"mpv set_property failed: {name}")
                 return True
-            except Exception:
+            except Exception as e:
+                last_err = e
                 time.sleep(0.05)
                 continue
+        if last_err is not None:
+            _swallow_exc(last_err, note=f"mpv set_property_strict {name}")
         return False
 
     def get_property(self, name: str) -> object | None:
@@ -1955,15 +1962,16 @@ class MpvIpcSession:
             resp = self.command(["get_property", str(name)], timeout=0.4)
             if isinstance(resp, dict) and resp.get("error") == "success":
                 return resp.get("data")
-        except Exception:
+        except Exception as e:
+            _swallow_exc(e, note=f"mpv get_property {name}")
             return None
         return None
 
     def stop(self) -> None:
         try:
             self.command(["stop"], timeout=0.4)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="mpv stop")
         self._playing = False
         self.owner = None
 
@@ -1985,14 +1993,15 @@ class MpvIpcSession:
             opts.append(f"end={end_v:.3f}")
         try:
             resp = self.command(["loadfile", str(path), "replace", *opts], timeout=1.5)
-        except Exception:
+        except Exception as e:
+            _swallow_exc(e, note="mpv loadfile initial")
             resp = {}
         # If mpv rejected options, retry without them so playback still starts.
         try:
             if isinstance(resp, dict) and resp.get("error") not in (None, "success"):
                 self.command(["loadfile", str(path), "replace"], timeout=1.5)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="mpv loadfile retry")
         self._playing = True
 
         # Enforce IN (start) via an explicit seek; `start=` loadfile options are not reliable across mpv builds.
@@ -2002,10 +2011,12 @@ class MpvIpcSession:
             start_v = 0.0
         if start_v > 0.0:
             deadline = time.monotonic() + 0.8
+            last_seek_err: Exception | None = None
             while time.monotonic() < deadline:
                 try:
                     self.command(["seek", float(start_v), "absolute", "exact"], timeout=0.6)
-                except Exception:
+                except Exception as e:
+                    last_seek_err = e
                     time.sleep(0.05)
                     continue
                 # Verify we actually moved (best-effort).
@@ -2016,6 +2027,9 @@ class MpvIpcSession:
                 except Exception:
                     break
                 time.sleep(0.05)
+            else:
+                if last_seek_err is not None:
+                    _swallow_exc(last_seek_err, note="mpv seek (enforce start) failed")
         if volume is not None:
             self.set_property("volume", _clamp_int(int(volume), 0, 100))
         if af_lavfi:
@@ -2029,8 +2043,8 @@ class MpvIpcSession:
         try:
             for line in f:
                 self._handle_ipc_line(line)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="mpv ipc reader socket")
         finally:
             self._playing = False
 
@@ -2044,8 +2058,8 @@ class MpvIpcSession:
                 if not line:
                     break
                 self._handle_ipc_line(line)
-        except Exception:
-            pass
+        except Exception as e:
+            _swallow_exc(e, note="mpv ipc reader pipe")
         finally:
             self._playing = False
 
