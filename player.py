@@ -1630,7 +1630,7 @@ class MpvIpcSession:
             "--no-input-default-bindings",
             "--osd-level=0",
             "--border=yes",
-            "--msg-level=all=warn",
+            "--msg-level=" + ("all=warn,ipc=v" if (_is_file_logging_enabled(None) or _is_debug_logging_enabled(None)) else "all=warn"),
             "--ontop=no",
             "--image-display-duration=inf",
             f"--title=SP Show Control Output ({self.name})",
@@ -1640,10 +1640,6 @@ class MpvIpcSession:
             args.append(f"--geometry={geometry}")
         if self.log_file:
             args.append(f"--log-file={self.log_file}")
-        if platform.system() == "Windows":
-            # Helpful when diagnosing IPC issues on Windows (only relevant when logging is enabled).
-            if _is_file_logging_enabled(None) or _is_debug_logging_enabled(None):
-                args.append("--msg-level=ipc=v")
         if platform.system() == "Darwin":
             # Avoid weird clamping when using full-display geometry on macOS.
             args.append("--macos-geometry-calculation=whole")
