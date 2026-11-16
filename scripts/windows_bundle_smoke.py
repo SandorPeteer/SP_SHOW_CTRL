@@ -51,7 +51,7 @@ def smoke():
     with tempfile.TemporaryDirectory(prefix="Show Control próba ") as test:
         env = {k: v for k, v in os.environ.items() if not k.startswith("SP_SHOW_CTRL_")}
         env["APPDATA"] = test
-        env["PATH"] = str(Path(env["SystemRoot"]) / "System32")
+        env["PATH"] = str(Path(os.environ["SystemRoot"]) / "System32")
         clip = Path(test) / "árvíz teszt.mp4"
         media = APP / "_internal" / "tools" / "ffmpeg"
         subprocess.run([media / "ffmpeg.exe", "-v", "error", "-f", "lavfi", "-i",
@@ -76,6 +76,14 @@ def smoke():
             else:
                 raise RuntimeError("Show Control window did not start")
             subprocess.run([sys.executable, __file__, "output", str(clip)], check=True, timeout=40)
+        except Exception:
+            def report_window(hwnd, _):
+                if win32process.GetWindowThreadProcessId(hwnd)[1] == app.pid:
+                    print("Application window:", ascii(win32gui.GetWindowText(hwnd)), flush=True)
+            win32gui.EnumWindows(report_window, None)
+            for log in (Path(test) / "SP_Show_Control" / "logs").glob("*.log"):
+                print(log.name, ascii(log.read_text(encoding="utf-8", errors="replace")[-3000:]), flush=True)
+            raise
         finally:
             subprocess.run(["taskkill", "/PID", str(app.pid), "/T", "/F"], capture_output=True)
             app.wait(timeout=10)
