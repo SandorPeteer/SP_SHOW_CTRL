@@ -18,7 +18,7 @@ Kapcsolódó doksik:
 - **IN/OUT pontok**: cue-onként vágási pontok (időkód mezők + waveform marker).
 - **Waveform**: generálás + kattintható markerek (audio/video).
 - **Kivetítés / 2nd screen output**: mpv (ajánlott) vagy ffplay backend, 2nd screen pozíció beállítással.
-- **PowerPoint cue**: PPT megnyitás + slideshow vezérlés (platformfüggő; macOS-en Accessibility engedély kellhet).
+- **PowerPoint cue**: Windows alatt diánként előkészített kép vagy videó, lapozás a folyamatos mpv-kimeneten. macOS-en PowerPoint-diavetítés vezérlése (Accessibility engedély kellhet).
 
 ### Indítás (forrásból)
 

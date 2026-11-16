@@ -1,5 +1,7 @@
 """Run the production A/B transport handlers with real bundled players on a Windows CI desktop."""
 import faulthandler
+import hashlib
+import shutil
 import json
 import os
 from pathlib import Path
@@ -37,6 +39,15 @@ def rehearse(folder):
     image = root / "assets/logo.png"
     subprocess.run([tools / "ffmpeg/ffmpeg.exe", "-v", "error", "-f", "lavfi", "-i",
                     "sine=frequency=220:duration=45", music], check=True)
+    # A bound rehearsal export exercises the real presentation transport on CI without Office.
+    ppt = folder / "próba.pptx"
+    ppt.write_bytes(b"CI source for prepared slide media")
+    sidecar = ppt.with_name(ppt.name + ".mpv")
+    sidecar.mkdir()
+    shutil.copyfile(image, sidecar / "0001.png")
+    shutil.copyfile(clip, sidecar / "0002.mp4")
+    (sidecar / "slides.json").write_text(json.dumps({"version": 1,
+        "sha256": hashlib.sha256(ppt.read_bytes()).hexdigest(), "slides": ["png", "mp4"]}))
     app = App()
     try:
         app.update()
@@ -45,8 +56,9 @@ def rehearse(folder):
         showfile.write_text(json.dumps({"version": 3, "media_paths": "show-folder",
             "cues_a": [{"id": "A1", "kind": "audio", "path": "./" + music.name}],
             "cues_b": [{"id": "B1", "kind": "image", "path": str(image)},
-                       {"id": "B2", "kind": "video", "path": "./" + clip.name}],
-            "scenes": [{"id": "school", "name": "School", "cue_ids_a": ["A1"], "cue_ids_b": ["B1", "B2"]}]}),
+                       {"id": "B2", "kind": "video", "path": "./" + clip.name},
+                       {"id": "B3", "kind": "ppt", "path": "./" + ppt.name}],
+            "scenes": [{"id": "school", "name": "School", "cue_ids_a": ["A1"], "cue_ids_b": ["B1", "B2", "B3"]}]}),
             encoding="utf-8")
         app._load_show_from_path(showfile, set_show_path=True)
         assert Path(app._cues_a[0].path) == music
@@ -65,6 +77,50 @@ def rehearse(folder):
             wait_for(lambda: visual.get_property("video-params"), bool)
             assert visual.get_property("mute") is True
             before = wait_for(lambda: audio.get_property("time-pos"), lambda v: v and v > before)
+        import win32gui
+        import win32process
+
+        def output_hwnd():
+            windows = []
+            def collect(hwnd, _):
+                if (win32gui.IsWindowVisible(hwnd) and
+                        win32process.GetWindowThreadProcessId(hwnd)[1] == visual._proc.pid):
+                    windows.append(hwnd)
+            win32gui.EnumWindows(collect, None)
+            assert windows
+            return windows[0]
+
+        app._ppt_fullscreen_2nd_screen()
+        hwnd = output_hwnd()
+        app._selected_b = 2
+        app._play_selected_ppt_b()
+        def current_slide():
+            app._drain_ui_tasks()
+            return visual.get_property("path")
+
+        def assert_slide(name):
+            wait_for(current_slide, lambda v: v and Path(v) == sidecar / name)
+            wait_for(lambda: visual.get_property("video-params"), bool)
+            assert visual.get_property("fullscreen") is True
+            assert output_hwnd() == hwnd
+            assert visual.get_property("mute") is True
+
+        assert_slide("0001.png")
+        app._ppt_next_ui()
+        assert_slide("0002.mp4")
+        app.var_ppt_sound.set(True)
+        app._ppt_apply_sound()
+        assert visual.get_property("mute") is False
+        app._ppt_prev_ui()
+        assert_slide("0001.png")
+        app._ppt_end()
+        wait_for(current_slide, lambda v: v and Path(v) == image)
+        assert visual.get_property("fullscreen") is True and output_hwnd() == hwnd
+        app._play_selected_ppt_b()
+        app._transport_stop("B")
+        wait_for(lambda: (app._drain_ui_tasks(), app._ppt_preparer.pending)[1], lambda v: not v)
+        assert not app._ppt_running
+        print("PASS: slide/image/video navigation and End retained the same fullscreen Windows HWND; stopped requests did not take the output")
         app._transport_stop("B")
         wait_for(lambda: audio.get_property("time-pos"), lambda v: v and v > before)
         assert app.audio_runner.is_playing()

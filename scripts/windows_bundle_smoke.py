@@ -84,6 +84,7 @@ def smoke():
         finally:
             subprocess.run(["taskkill", "/PID", str(app.pid), "/T", "/F"], capture_output=True)
             app.wait(timeout=10)
+        subprocess.run([sys.executable, Path(__file__).with_name("test_ppt_media.py")], env=env, check=True)
         subprocess.run([sys.executable, Path(__file__).with_name("windows_show_rehearsal.py"), test],
                        env=env, cwd=test, check=True, timeout=60)
     print("PASS: portable GUI, FFmpeg/ffprobe/ffplay, Show Control IPC play/pause/resume and decoded mpv video")

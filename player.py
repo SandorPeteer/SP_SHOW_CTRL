@@ -2582,8 +2582,7 @@ def ppt_open_and_start(
         return
 
     if system == "Windows":
-        windows_ppt.open(path)
-        return
+        raise RuntimeError("Windows: indítsd a bemutatót a Show Control PPT lapjáról.")
 
     subprocess.run(["xdg-open", path])
 
@@ -3101,6 +3100,15 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._vu_visible: dict[str, bool] = {"A": False, "B": False}
         self._vu_db_cache: dict[str, str] = {"A": "", "B": ""}
         self._ui_tasks: queue.SimpleQueue = queue.SimpleQueue()
+        self._ppt_pending = None
+        self._ppt_cue = None
+        self._ppt_slides = []
+        self._ppt_index = 0
+        if sys.platform == "win32":
+            from ppt_media import SlidePreparer
+            self._ppt_preparer = SlidePreparer(_user_data_dir() / "ppt-media-v1", self._ui_tasks)
+            self.var_ppt_status = tk.StringVar(value="")
+            self.var_ppt_sound = tk.BooleanVar(value=False)
         self._disp_apply_after_id: str | None = None
         self._wave_req_seq: dict[str, int] = {"A": 0, "B": 0}
         self._wave_req_cue_id: dict[str, str | None] = {"A": None, "B": None}
@@ -3564,7 +3572,76 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         label.bind("<Button-1>", _on_click)
         return label
 
+    def _queue_ppt(self, cue, *, play=False):
+        if sys.platform != "win32" or cue is None or cue.kind != "ppt":
+            return
+        if play:
+            self._ppt_pending = cue
+        path = cue.path
+        def progress(msg):
+            if self._ppt_pending and self._ppt_pending.path == path or not self._ppt_running and not self._ppt_pending:
+                self.var_ppt_status.set(f"{Path(path).name} • {msg}")
+        progress("Előkészítés…")
+        self._ppt_preparer.submit(path, progress, self._ppt_prepared)
+
+    def _ppt_prepared(self, path, files, error):
+        pending = self._ppt_pending
+        take = pending is not None and pending.path == path
+        status = f"{Path(path).name} • " + (f"Hiba: {error}" if error else f"Kész ({len(files)} dia)")
+        self._log(status)
+        if take or (not self._ppt_running and not pending):
+            self.var_ppt_status.set(status)
+        if not take:
+            return
+        self._ppt_pending = None
+        if error:
+            return
+        self._show_mpv_slide(pending, files, 0)
+
+    def _show_mpv_slide(self, cue, files, index):
+        if not 0 <= index < len(files):
+            return
+        slide = files[index]
+        try:
+            if self.settings.mpv_output_mode != "ipc" or not self.settings.mpv_persistent_output:
+                raise ValueError("A Settings ablakban válaszd az IPC módot és a folyamatos mpv-kimenetet.")
+            media = Cue(id=cue.id, path=str(slide), kind="video" if slide.suffix == ".mp4" else "image")
+            if not self._ppt_running:
+                self._capture_visuals_resume_state()
+            self.video_runner.play_for_deck("B", media)
+            sess = self.video_runner._sess
+            sess.set_property("loop-file", "no")
+            sess.set_property("pause", False)
+            self._ppt_cue, self._ppt_slides, self._ppt_index = cue, files, index
+            self._ppt_running = True
+            self._active_runner = self.video_runner
+            self._last_output_owner, self._last_output_cue_id = "B", cue.id
+            self._ppt_apply_sound()
+            self.var_ppt_status.set(f"{cue.display_name()} • {index + 1}/{len(files)}")
+        except Exception as exc:
+            self.var_ppt_status.set(f"Vetítési hiba: {exc}")
+            self._log(self.var_ppt_status.get())
+
+    def _ppt_apply_sound(self):
+        if self._ppt_running and self.video_runner.owner_deck == "B":
+            sess = self.video_runner._sess
+            if sess is not None:
+                audible = self.var_ppt_sound.get() and self._ppt_slides[self._ppt_index].suffix == ".mp4"
+                sess.set_property("volume", self.settings.startup_volume if audible else 0)
+                sess.set_property("mute", not audible)
+
+    def _clear_mpv_ppt(self):
+        self._ppt_pending = None
+        self._ppt_cue = None
+        self._ppt_slides = []
+        self._ppt_index = 0
+        self._ppt_running = False
+        self.var_ppt_status.set("")
+
     def _ppt_fullscreen_2nd_screen(self) -> None:
+        if sys.platform == "win32":
+            self._enter_presentation_mode()
+            return
         try:
             ppt_start_slideshow()
             self._log("PPT: started slideshow.")
@@ -3579,6 +3656,16 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 _swallow_exc(e2, note="ppt_fullscreen_2nd_screen log")
 
     def _ppt_end(self) -> None:
+        if sys.platform == "win32":
+            active = self._ppt_running
+            self._clear_mpv_ppt()
+            if active and self.video_runner.owner_deck == "B":
+                self._suppress_finish["B"] = "stop"
+                self.video_runner.stop()
+                self._resume_visuals_if_any()
+                if not self.video_runner.is_playing():
+                    self._restore_last_visual_if_any()
+            return
         try:
             ppt_end_show()
             try:
@@ -3628,6 +3715,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             _swallow_exc(e, note="restore_visuals_after_ppt restore_last_visual")
 
     def _ppt_prev_ui(self) -> None:
+        if sys.platform == "win32":
+            if self._ppt_running:
+                self._show_mpv_slide(self._ppt_cue, self._ppt_slides, self._ppt_index - 1)
+            return
         try:
             ppt_prev_slide()
         finally:
@@ -3641,6 +3732,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 _swallow_exc(e, note="ppt_prev_ui post_nav_check")
 
     def _ppt_next_ui(self) -> None:
+        if sys.platform == "win32":
+            if self._ppt_running:
+                self._show_mpv_slide(self._ppt_cue, self._ppt_slides, self._ppt_index + 1)
+            return
         try:
             ppt_next_slide()
         finally:
@@ -5436,6 +5531,11 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         # PPT tab (Deck B)
         ppt_tab = ttk.Frame(self.tab_b_ppt, padding=6)
         ppt_tab.pack(fill="x")
+        if sys.platform == "win32":
+            ttk.Button(ppt_tab, text="Előkészítés", command=lambda: self._queue_ppt(self._selected_cue_for_deck("B"))).pack(fill="x")
+            ttk.Label(ppt_tab, textvariable=self.var_ppt_status, wraplength=230).pack(fill="x")
+            ttk.Checkbutton(ppt_tab, text="Dia saját hangja", variable=self.var_ppt_sound,
+                            command=self._ppt_apply_sound).pack(anchor="w")
         ttk.Button(ppt_tab, text="▶ Start", command=self._play_selected_ppt_b, width=10).pack(fill="x")
         ttk.Button(ppt_tab, text="⛶ 2nd Screen", command=self._ppt_fullscreen_2nd_screen, width=10).pack(fill="x", pady=(2, 0))
         ppt_nav_b = ttk.Frame(ppt_tab)
@@ -6539,6 +6639,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         )
         self._cues_b.append(cue)
         self._all_cues_b.append(cue)
+        self._queue_ppt(cue)
         if not scene.cue_ids_b:
             scene.cue_ids_b = []
         scene.cue_ids_b.append(cue.id)
@@ -6613,6 +6714,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
         self._cues_b.append(cue)
         self._all_cues_b.append(cue)
+        self._queue_ppt(cue)
         if not scene.cue_ids_b:
             scene.cue_ids_b = []
         scene.cue_ids_b.append(cue.id)
@@ -7215,6 +7317,14 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if cue is None:
             return
 
+        if sys.platform == "win32":
+            if cue.kind == "ppt":
+                self._queue_ppt(cue, play=True)
+                return
+            if (deck == "B" and cue.kind in ("image", "video")) or (
+                    deck == "A" and cue.kind == "video" and cue.video_mode == "output"):
+                self._clear_mpv_ppt()
+
         # Deck B is visuals only (image/PPT).
         if deck == "B":
             if cue.kind == "ppt":
@@ -7522,6 +7632,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return
 
         # Deck B
+        if sys.platform == "win32":
+            self._ppt_pending = None
+            if self._ppt_running:
+                self._ppt_end()
+                self._update_transport_button_visuals()
+                return
         try:
             if bool(getattr(self, "_ppt_running", False)):
                 try:
@@ -8856,6 +8972,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         cue = self._selected_cue()
         if not cue:
             return
+        if sys.platform == "win32" and cue.kind == "ppt":
+            self._queue_ppt(cue, play=True)
+            return
         try:
             self._paused_cue_id = None
             self._paused_kind = None
@@ -8896,6 +9015,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
     def _play_selected_ppt_only(self) -> None:
         cue = self._selected_cue()
         if not cue or cue.kind != "ppt":
+            return
+        if sys.platform == "win32" and cue.kind == "ppt":
+            self._queue_ppt(cue, play=True)
             return
         try:
             try:
@@ -8953,6 +9075,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._transport_play_pause("B")
 
     def _stop(self) -> None:
+        if sys.platform == "win32":
+            self._ppt_end()
         self._inhibit_auto_advance = True
         self._paused_cue_id = None
         self._paused_kind = None
@@ -9309,6 +9433,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._playing_iid_b = new_iid_b
 
     def _handle_runner_finished(self, deck: str, runner) -> None:
+        if sys.platform == "win32" and deck == "B" and self._ppt_running:
+            return
         # Do not advance on user stop/pause, only on natural OUT/file end.
         if deck in self._suppress_finish:
             reason = self._suppress_finish.pop(deck, None)
@@ -10291,6 +10417,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
     def _new_show(self) -> None:
         if (self._cues_a or self._cues_b) and not messagebox.askyesno("New", "Discard current show?"):
             return
+        if sys.platform == "win32":
+            self._ppt_end()
         self._show_path = None
         self._loaded_preset_path = None
         self._cues_a = []
@@ -10313,6 +10441,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
     def _load_show_from_path(self, path: Path, *, set_show_path: bool) -> None:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if sys.platform == "win32":
+            self._ppt_end()
         self.settings = Settings.from_dict(data.get("settings", {}))
         # Persistent settings are user-level and must survive preset/show loads.
         try:
@@ -10334,6 +10464,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             for cue in self._cues_a + self._cues_b:
                 if cue.path.startswith("./"):
                     cue.path = str(path.absolute().parent / cue.path)
+
+        for cue in self._cues_a + self._cues_b:
+            self._queue_ppt(cue)
 
         # Load scenes (backward compatible - defaults to empty list if not present)
         self._scenes = [Scene.from_dict(x) for x in data.get("scenes", [])]
@@ -10777,6 +10910,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
     def _activate_scene(self):
         """Load the selected scene's cues into both decks"""
+        if sys.platform == "win32":
+            self._ppt_pending = None
         # Must have a valid scene selected
         if self._selected_scene_idx < 0 or self._selected_scene_idx >= len(self._scenes):
             # Clear cue lists if no valid scene

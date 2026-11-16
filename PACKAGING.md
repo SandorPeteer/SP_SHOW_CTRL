@@ -30,7 +30,9 @@ Kimenet:
 
 ### Windows x64 hordozható kiadás
 
-A teljes `SP-Show-Control-windows.zip` fájlt csomagold ki egy mappába, és onnan indítsd az **SP Show Control.exe** fájlt. Az `_internal` mappa az EXE mellett maradjon. A lejátszáshoz, hullámformához és médiainformációkhoz a csomag tartalmazza az mpv-t, az FFmpeg-et, az ffprobe-ot és az ffplay-t. Python csak a fejlesztői gépre kell. PPT/PPTX cue-hoz a Windows asztali Microsoft PowerPoint szükséges. A diavetítés monitorát a PowerPoint Diavetítés lapján válaszd ki.
+A teljes `SP-Show-Control-windows.zip` fájlt csomagold ki egy mappába, és onnan indítsd az **SP Show Control.exe** fájlt. Az `_internal` mappa az EXE mellett maradjon. A lejátszáshoz, hullámformához és médiainformációkhoz a csomag tartalmazza az mpv-t, az FFmpeg-et, az ffprobe-ot és az ffplay-t. Python csak a fejlesztői gépre kell. Windows alatt a PPT/PPTX hozzáadásakor vagy a műsor megnyitásakor az app a háttérben készíti elő a diákat a helyi asztali PowerPointtal. A PPT lapon az **Előkészítés** gombbal is indítható. Várd meg a **Kész** jelzést. Az mpv-ablakot húzd a kivetítőre, kapcsold be a **PRESENTATION** módot, majd a PPT lapon használd a **Start**, **◀**, **▶** és **End** gombot. A képek, videók és diák ugyanabban az ablakban jelennek meg. A B deck a diákat alapból némítja, a videódia hangját a **Dia saját hangja** kapcsoló engedi át.
+
+A statikus PPTX-diák képként, a felismert animált vagy médiás diák és a régi PPT-formátum diái videóként készülnek el. A videódia a saját időzítése szerint fut, a végén a kép megáll. A diák között kézzel léptetsz. A dián belüli kattintásokat, hivatkozásokat, összetett áttűnéseket és az egész bemutatón átívelő hangot próbáld végig előre. Külső médiafájlt vigyél magaddal, és frissített külső média esetén ments új PPTX-et beágyazott médiával.
 
 A build ellenőrzi a letöltött médiacsomagok SHA-256 értékét. A Windows-próba a frissen elkészült EXE-t külön profilból nyitja meg, és egy generált videóval ellenőrzi az mpv-kimenetet:
 ```powershell
