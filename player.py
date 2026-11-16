@@ -34,6 +34,9 @@ from tkinter.scrolledtext import ScrolledText
 
 from mpv_ipc import MpvIpcSession
 
+if sys.platform == "win32":
+    from windows_powerpoint import show as windows_ppt
+
 # During module import we cannot rely on Settings/logging helpers yet. Keep this tiny.
 _BOOT_DEBUG = str(os.environ.get("SP_SHOW_CTRL_DEBUG", "") or "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -434,6 +437,12 @@ def _resolve_fftool(tool: str) -> str | None:
                 return str(p)
         except Exception as e:
             _swallow_exc(e, note=f"resolve_fftool env_dir: {tool}")
+
+    if sys.platform == "win32" and _is_frozen():
+        bundled = _resource_path("tools", "ffmpeg", _tool_exe_name(tool))
+        if _is_probably_executable_binary(bundled):
+            _FFTOOLS_CACHE[tool] = str(bundled)
+            return str(bundled)
 
     try:
         p = _fftools_bin_dir() / _tool_exe_name(tool)
@@ -2573,18 +2582,15 @@ def ppt_open_and_start(
         return
 
     if system == "Windows":
-        try:
-            import os
-
-            os.startfile(path)  # type: ignore[attr-defined]
-        except Exception as e:
-            raise RuntimeError(f"Failed to open PPT: {e}") from e
+        windows_ppt.open(path)
         return
 
     subprocess.run(["xdg-open", path])
 
 
 def ppt_next_slide() -> None:
+    if sys.platform == "win32":
+        return windows_ppt.move(True)
     if platform.system() != "Darwin":
         return
     script = r'''
@@ -2600,6 +2606,8 @@ end tell
 
 
 def ppt_prev_slide() -> None:
+    if sys.platform == "win32":
+        return windows_ppt.move(False)
     if platform.system() != "Darwin":
         return
     script = r'''
@@ -2615,6 +2623,8 @@ end tell
 
 
 def ppt_end_show() -> None:
+    if sys.platform == "win32":
+        return windows_ppt.end()
     if platform.system() != "Darwin":
         return
     script = r'''
@@ -2649,6 +2659,8 @@ end tell
 
 def ppt_is_slideshow_active() -> bool:
     """Best-effort detection whether PowerPoint is currently in Slide Show mode (macOS)."""
+    if sys.platform == "win32":
+        return windows_ppt.active()
     if platform.system() != "Darwin":
         return False
     # Match common slideshow window name fragments (varies by language/version).
@@ -2687,6 +2699,8 @@ def ppt_start_slideshow() -> None:
     This is more robust than relying on PowerPoint's AppleScript dictionary, which can fail to parse
     in some packaged app environments.
     """
+    if sys.platform == "win32":
+        return windows_ppt.start()
     if platform.system() != "Darwin":
         return
     script = r'''
@@ -7247,6 +7261,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     except Exception:
                         pass
                 except Exception as e:
+                    self._ppt_running = False
+                    self._restore_visuals_after_ppt()
                     self._log(f"PPT failed: {e}")
                 return
             if cue.kind not in ("image", "video"):
@@ -8925,6 +8941,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             except Exception:
                 pass
         except Exception as e:
+            self._ppt_running = False
+            self._restore_visuals_after_ppt()
             messagebox.showerror("PPT failed", str(e))
             self._log(f"PPT failed: {e}")
 

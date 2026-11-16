@@ -15,3 +15,5 @@ tools/ytdlp/
 
 # Local tooling
 .claude/
+
+.venv_build_windows/

@@ -55,17 +55,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install mpv (Windows)
-        shell: pwsh
-        run: |
-          if (Get-Command choco -ErrorAction SilentlyContinue) {
-            choco install mpv -y --no-progress
-          } else {
-            Write-Host "Chocolatey not available; skipping mpv install."
-          }
       - name: Build SP Show Control (Windows)
         shell: pwsh
         run: .\packaging\build_windows.ps1
+      - name: Test packaged Show Control (Windows)
+        shell: pwsh
+        run: .\.venv_build_windows\Scripts\python.exe scripts\windows_bundle_smoke.py
       - name: Build yt-dlr (Windows)
         shell: pwsh
         run: .\packaging\build_yt_dlr_windows.ps1

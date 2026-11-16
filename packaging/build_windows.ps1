@@ -1,97 +1,21 @@
 $ErrorActionPreference = "Stop"
-
-$Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-Set-Location $Root
-
-$Venv = ".venv_build"
-if (!(Test-Path $Venv)) {
-  python -m venv $Venv
+Set-Location (Split-Path -Parent $PSScriptRoot)
+function Run([string]$Exe, [string[]]$Arguments) {
+    & $Exe @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "$Exe failed (exit $LASTEXITCODE)" }
 }
 
-$Py = Join-Path $Venv "Scripts\python.exe"
-$Pi = Join-Path $Venv "Scripts\pyinstaller.exe"
-
-& $Py -m pip install --upgrade --quiet pip
-& $Py -m pip install --upgrade --quiet pyinstaller pillow certifi
-& $Py -m pip install --upgrade --quiet -r requirements.txt screeninfo
-
-$MpvExe = ""
-try {
-  $MpvExe = (Get-Command mpv -ErrorAction Stop).Source
-} catch {
-  $MpvExe = ""
-}
-
-$MpvDir = ""
-if ($MpvExe) {
-  try {
-    # Chocolatey often exposes a shim in `...\\chocolatey\\bin\\mpv.exe` which is not the real binary.
-    $MpvExeLower = $MpvExe.ToLowerInvariant()
-    if ($MpvExeLower -like "*\\chocolatey\\bin\\mpv.exe") {
-      $ChocoReal = Join-Path $Env:ProgramData "chocolatey\\lib\\mpv\\tools\\mpv.exe"
-      if (Test-Path $ChocoReal) {
-        $MpvExe = $ChocoReal
-      }
-    }
-  } catch {
-    # ignore
-  }
-  try {
-    $MpvDir = Split-Path -Parent $MpvExe
-  } catch {
-    $MpvDir = ""
-  }
-}
-
-$IconPng = "assets\logo.png"
-$IconIco = "assets\app_icon.ico"
-if ((Test-Path $IconPng) -and !(Test-Path $IconIco)) {
-  @'
-from pathlib import Path
-try:
-    from PIL import Image
-except Exception as e:
-    raise SystemExit(f"Pillow required to generate icon: {e}")
-
-png = Path("assets/logo.png")
-ico = Path("assets/app_icon.ico")
-img0 = Image.open(png).convert("RGBA")
-w, h = img0.size
-size = max(w, h)
-img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-img.paste(img0, ((size - w) // 2, (size - h) // 2), img0)
-sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
-img.save(ico, format="ICO", sizes=sizes)
-print("Generated", ico)
-'@ | & $Py -
-}
-
-$Args = @(
-  "--noconfirm",
-  "--clean",
-  "--noconsole",
-  "--name", "SP Show Control",
-  "--collect-data", "certifi",
-  "--collect-all", "tkinterdnd2",
-  "--add-data", "assets\\logo.png;assets"
-)
-
-if (Test-Path $IconIco) {
-  $Args += @("--icon", "$IconIco")
-}
-
-if ($MpvExe) {
-  # mpv on Windows usually needs DLLs next to mpv.exe, so bundle the full folder contents.
-  if ($MpvDir -and (Test-Path $MpvDir)) {
-    $MpvFiles = Get-ChildItem -File $MpvDir | Where-Object { $_.Extension -in ".exe", ".dll", ".com" }
-    foreach ($f in $MpvFiles) {
-      $Args += @("--add-binary", "$($f.FullName);tools\\mpv")
-    }
-  } else {
-    $Args += @("--add-binary", "$MpvExe;tools\\mpv")
-  }
-}
-
-& $Pi @Args "player.py"
-
-Write-Host "Built: dist\\SP Show Control\\SP Show Control.exe"
+$Py = ".venv_build_windows\Scripts\python.exe"
+if (!(Test-Path $Py)) { Run python @("-m", "venv", ".venv_build_windows") }
+Run $Py @("-c", "import sys,platform; assert sys.version_info >= (3,11) and platform.machine().upper() in ('AMD64','X86_64'), 'Python x64 3.11+ required'")
+Run $Py @("-m", "pip", "install", "pyinstaller>=6,<7", "certifi", "-r", "requirements.txt")
+Run $Py @("packaging/windows_media_tools.py", "build/windows-tools", "build/windows-media")
+New-Item -ItemType Directory -Force build/windows-spec | Out-Null
+Run $Py @("-m", "PyInstaller", "--clean", "--noconfirm", "--windowed", "--noupx",
+    "--name", "SP Show Control", "--icon", "$(Resolve-Path assets/logo.png)", "--specpath", "build/windows-spec",
+    "--collect-data", "certifi", "--collect-all", "tkinterdnd2",
+    "--add-data", "$(Resolve-Path assets/logo.png);assets",
+    "--add-data", "$(Resolve-Path build/windows-media);tools", "$(Resolve-Path player.py)")
+$App = "dist/SP Show Control"
+if (!(Test-Path "$App/SP Show Control.exe")) { throw "Missing built executable" }
+Write-Host "Built: $App/SP Show Control.exe"
