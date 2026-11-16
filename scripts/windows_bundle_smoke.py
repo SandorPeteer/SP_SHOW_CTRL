@@ -51,7 +51,8 @@ def smoke():
         clip = Path(test) / "árvíz teszt.mp4"
         media = APP / "_internal" / "tools" / "ffmpeg"
         subprocess.run([media / "ffmpeg.exe", "-v", "error", "-f", "lavfi", "-i",
-                        "color=size=64x64:rate=5", "-t", "2", "-c:v", "mpeg4", clip],
+                        "color=size=64x64:rate=5", "-f", "lavfi", "-i", "sine=frequency=880",
+                        "-t", "4", "-c:v", "mpeg4", "-c:a", "aac", clip],
                        check=True, cwd=test, env=env, timeout=20)
         probe = subprocess.check_output([media / "ffprobe.exe", "-v", "error", "-show_entries",
                                          "stream=width", "-of", "csv=p=0", clip], env=env, timeout=10)
@@ -83,6 +84,8 @@ def smoke():
         finally:
             subprocess.run(["taskkill", "/PID", str(app.pid), "/T", "/F"], capture_output=True)
             app.wait(timeout=10)
+        subprocess.run([sys.executable, Path(__file__).with_name("windows_show_rehearsal.py"), test],
+                       env=env, cwd=test, check=True, timeout=60)
     print("PASS: portable GUI, FFmpeg/ffprobe/ffplay, Show Control IPC play/pause/resume and decoded mpv video")
 
 
