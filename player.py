@@ -3579,7 +3579,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._ppt_pending = cue
         path = cue.path
         def progress(msg):
-            if self._ppt_pending and self._ppt_pending.path == path or not self._ppt_running and not self._ppt_pending:
+            if (self._ppt_pending and self._ppt_pending.path == path) or (not self._ppt_running and not self._ppt_pending):
                 self.var_ppt_status.set(f"{Path(path).name} • {msg}")
         progress("Előkészítés…")
         self._ppt_preparer.submit(path, progress, self._ppt_prepared)
@@ -3603,6 +3603,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return
         slide = files[index]
         try:
+            if not slide.is_file():
+                self._ppt_preparer.ready.pop(cue.path, None)
+                raise FileNotFoundError("A diakép vagy videó hiányzik. Kérd újra az előkészítést.")
             if self.settings.mpv_output_mode != "ipc" or not self.settings.mpv_persistent_output:
                 raise ValueError("A Settings ablakban válaszd az IPC módot és a folyamatos mpv-kimenetet.")
             media = Cue(id=cue.id, path=str(slide), kind="video" if slide.suffix == ".mp4" else "image")

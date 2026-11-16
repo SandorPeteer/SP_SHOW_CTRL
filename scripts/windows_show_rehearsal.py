@@ -99,7 +99,7 @@ def rehearse(folder):
             return visual.get_property("path")
 
         def assert_slide(name):
-            wait_for(current_slide, lambda v: v and Path(v) == sidecar / name)
+            wait_for(current_slide, lambda v: v and Path(v).samefile(sidecar / name))
             wait_for(lambda: visual.get_property("video-params"), bool)
             assert visual.get_property("fullscreen") is True
             assert output_hwnd() == hwnd

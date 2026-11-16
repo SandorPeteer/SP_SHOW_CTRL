@@ -1,5 +1,6 @@
 """Regression tests for PowerPoint preparation without requiring an Office installation."""
 import hashlib
+import queue
 import tempfile
 from pathlib import Path
 import sys
@@ -7,7 +8,7 @@ import unittest
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ppt_media import _moving_slides, _open_copy, prepare
+from ppt_media import SlidePreparer, _moving_slides, _open_copy, _stamp, prepare
 
 
 class ConversionTests(unittest.TestCase):
@@ -41,6 +42,24 @@ class ConversionTests(unittest.TestCase):
             self.assertNotEqual(files, new)
             new[0].unlink()
             self.assertEqual(prepare(source, cache, print, render), new)
+
+    def test_ready_deck_plays_while_another_is_converting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path, slide = Path(tmp) / "deck.ppt", Path(tmp) / "0001.png"
+            path.write_bytes(b"presentation")
+            slide.write_bytes(b"slide")
+            ui = queue.Queue()
+            prep = SlidePreparer(Path(tmp), ui)
+            prep.worker = object()  # A busy worker cannot service another conversion.
+            prep.ready[path] = (_stamp(path), [slide])
+            received = []
+            prep.submit(path, print, lambda *result: received.append(result))
+            ui.get_nowait()()
+            self.assertEqual(received, [(path, [slide], None)])
+            path.write_bytes(b"new presentation")
+            prep.submit(path, print, None)
+            self.assertTrue(ui.empty())
+            self.assertIn(path, prep.pending)
 
     def test_open_hidden_copy_restores_automation_security_on_error(self):
         class Office:

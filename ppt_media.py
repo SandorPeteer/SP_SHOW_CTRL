@@ -144,8 +144,14 @@ def _render_video(app, source, index, output, seconds):
         copy.Close()
 
 
+def _stamp(source):
+    info = Path(source).stat()
+    return info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
 def prepare(source, cache, progress, render=_render):
     source = Path(source).resolve(strict=True)
+    initial = _stamp(source)
     with source.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     target = cache / digest
@@ -159,6 +165,8 @@ def prepare(source, cache, progress, render=_render):
         stage.mkdir()
         kinds = render(source, stage, progress)
         (stage / "slides.json").write_text(json.dumps({"version": 1, "sha256": digest, "slides": kinds}), encoding="utf-8")
+        if initial != _stamp(source):
+            raise ValueError("A bemutató előkészítés közben megváltozott. Indítsd újra az előkészítést.")
         if not _read_deck(stage, digest):
             raise ValueError("Hiányos PowerPoint-export.")
         try:
@@ -182,8 +190,19 @@ class SlidePreparer:
         self.jobs = queue.Queue()
         self.worker = None
         self.pending = set()
+        self.ready = {}
 
     def submit(self, path, progress, done):
+        # Prepared decks must be selectable even while Office renders the next deck.
+        known = self.ready.get(path)
+        if known is not None:
+            try:
+                if _stamp(path) == known[0] and known[1][0].is_file():
+                    self.ui_queue.put(lambda: done(path, known[1], None))
+                    return
+            except OSError:
+                pass
+            self.ready.pop(path, None)
         if path in self.pending:
             return
         self.pending.add(path)
@@ -196,11 +215,16 @@ class SlidePreparer:
         while True:
             path, progress, done = self.jobs.get()
             try:
+                stamp = _stamp(path)
                 files = prepare(path, self.cache, lambda s: self.ui_queue.put(lambda msg=s, cb=progress: cb(msg)))
+                if _stamp(path) != stamp:
+                    raise ValueError("A bemutató közben megváltozott. Kérd újra az előkészítést.")
                 error = None
             except Exception as exc:
-                files, error = [], str(exc)
-            def finish(p=path, items=files, err=error, cb=done):
+                files, error, stamp = [], str(exc), None
+            def finish(p=path, items=files, err=error, signature=stamp, cb=done):
                 self.pending.discard(p)
+                if not err:
+                    self.ready[p] = (signature, items)
                 cb(p, items, err)
             self.ui_queue.put(finish)
