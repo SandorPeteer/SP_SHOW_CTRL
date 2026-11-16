@@ -125,6 +125,11 @@ def rehearse(folder):
         wait_for(lambda: audio.get_property("time-pos"), lambda v: v and v > before)
         assert app.audio_runner.is_playing()
         print("PASS: Deck A music advanced throughout Deck B image/video/image/stop, visuals muted")
+    except Exception:
+        print("PPT status:", ascii(app.var_ppt_status.get()), flush=True)
+        print("Recent events:", ascii(app._log_buffer[-10:]) if isinstance(app._log_buffer, list)
+              else ascii(list(app._log_buffer)[-10:]), flush=True)
+        raise
     finally:
         audio.shutdown()
         app._on_closing()
@@ -132,5 +137,10 @@ def rehearse(folder):
 
 if __name__ == "__main__":
     faulthandler.dump_traceback_later(30)
-    rehearse(Path(sys.argv[1]))
+    try:
+        rehearse(Path(sys.argv[1]))
+    except Exception:
+        # The production GUI displays unhandled errors in a modal. CI needs stderr.
+        sys.excepthook = sys.__excepthook__
+        raise
     faulthandler.cancel_dump_traceback_later()
