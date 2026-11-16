@@ -1,5 +1,4 @@
 """Exercise the unpacked x64 application from a fresh profile on a Windows test desktop."""
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -8,40 +7,37 @@ import tempfile
 import time
 
 APP = Path(__file__).resolve().parents[1] / "dist" / "SP Show Control"
-PIPE = r"\\.\pipe\sp_show_control_mpv_OUTPUT"
 
 
 def check_output():
     # Run in a separate process so the parent can bound blocking Windows pipe I/O.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from mpv_ipc import MpvIpcSession
+
+    session = MpvIpcSession(str(APP / "_internal/tools/mpv/mpv.exe"), name="OUTPUT",
+                            second_screen_left=0, second_screen_top=0, fullscreen=False)
     deadline = time.monotonic() + 20
     while True:
         try:
-            pipe = open(PIPE, "r+b", buffering=0)
+            session._connect_ipc()
             break
-        except OSError:
+        except RuntimeError:
             if time.monotonic() >= deadline:
                 raise
-            time.sleep(0.2)
-    with pipe:
-        def command(request_id, *args):
-            payload = {"command": list(args), "request_id": request_id}
-            pipe.write((json.dumps(payload) + "\n").encode())
-            while True:
-                reply = json.loads(pipe.readline())
-                if reply.get("request_id") == request_id:
-                    if reply["error"] == "property unavailable" and args == ("get_property", "video-params"):
-                        return None
-                    assert reply["error"] == "success", reply
-                    return reply.get("data")
-
-        assert command(1, "get_property", "mpv-version")
-        command(2, "loadfile", sys.argv[2], "replace")
-        for request_id in range(3, 103):
-            if command(request_id, "get_property", "video-params") is not None:
-                break
-            time.sleep(0.1)
-        else:
-            raise RuntimeError("Timed out decoding test video")
+    print("Show Control IPC connected", flush=True)
+    assert session.get_property("mpv-version"), "No response on the application IPC channel"
+    session.loadfile(sys.argv[2])
+    for _ in range(50):
+        if session.get_property("video-params"):
+            break
+        time.sleep(0.1)
+    else:
+        raise RuntimeError("Timed out decoding test video")
+    for paused in (True, False):
+        assert session.set_property("pause", paused)
+        assert session.get_property("pause") is paused
+    session.stop()
+    session.shutdown()
 
 
 def smoke():
@@ -87,7 +83,7 @@ def smoke():
         finally:
             subprocess.run(["taskkill", "/PID", str(app.pid), "/T", "/F"], capture_output=True)
             app.wait(timeout=10)
-    print("PASS: portable GUI, FFmpeg/ffprobe/ffplay, named pipe and decoded mpv video")
+    print("PASS: portable GUI, FFmpeg/ffprobe/ffplay, Show Control IPC play/pause/resume and decoded mpv video")
 
 
 if __name__ == "__main__":
