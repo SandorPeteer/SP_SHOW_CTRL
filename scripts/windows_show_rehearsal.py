@@ -1,4 +1,6 @@
 """Run the production A/B transport handlers with real bundled players on a Windows CI desktop."""
+import faulthandler
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -7,7 +9,7 @@ import time
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root))
-from player import App, Cue, MpvIpcSession
+from player import App, MpvIpcSession
 
 def wait_for(read, matches):
     until = time.monotonic() + 5
@@ -38,12 +40,22 @@ def rehearse(folder):
     app = App()
     try:
         app.update()
-        app._cues_a = [Cue("A1", "audio", str(music))]
+        # Open a show saved on another machine, from outside its media directory.
+        showfile = folder / "portable.json"
+        showfile.write_text(json.dumps({"version": 3, "media_paths": "show-folder",
+            "cues_a": [{"id": "A1", "kind": "audio", "path": "./" + music.name}],
+            "cues_b": [{"id": "B1", "kind": "image", "path": str(image)},
+                       {"id": "B2", "kind": "video", "path": "./" + clip.name}],
+            "scenes": [{"id": "school", "name": "School", "cue_ids_a": ["A1"], "cue_ids_b": ["B1", "B2"]}]}),
+            encoding="utf-8")
+        app._load_show_from_path(showfile, set_show_path=True)
+        assert Path(app._cues_a[0].path) == music
+        assert Path(app._cues_b[1].path) == clip
+        assert app._cue_for_show(app._cues_a[0], folder)["path"] == "./" + music.name
         app._selected_a = 0
         app._transport_play_pause("A")
         audio._connect_ipc()
         before = wait_for(lambda: audio.get_property("time-pos"), lambda v: isinstance(v, (int, float)) and v > 0)
-        app._cues_b = [Cue("B1", "image", str(image)), Cue("B2", "video", str(clip))]
         for index in (0, 1, 0):
             app._selected_b = index
             app._transport_play_pause("B")
@@ -59,10 +71,10 @@ def rehearse(folder):
         print("PASS: Deck A music advanced throughout Deck B image/video/image/stop, visuals muted")
     finally:
         audio.shutdown()
-        app.audio_runner.shutdown()
-        app.video_runner.shutdown()
-        app.destroy()
+        app._on_closing()
 
 
 if __name__ == "__main__":
+    faulthandler.dump_traceback_later(30)
     rehearse(Path(sys.argv[1]))
+    faulthandler.cancel_dump_traceback_later()

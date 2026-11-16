@@ -10303,6 +10303,14 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._log("New show.")
         self._update_showfile_label()
 
+    @staticmethod
+    def _cue_for_show(cue: Cue, folder: Path) -> dict:
+        row = cue.to_dict()
+        media = Path(cue.path)
+        if media.is_absolute() and media.is_relative_to(folder):
+            row["path"] = "./" + media.relative_to(folder).as_posix()
+        return row
+
     def _load_show_from_path(self, path: Path, *, set_show_path: bool) -> None:
         data = json.loads(path.read_text(encoding="utf-8"))
         self.settings = Settings.from_dict(data.get("settings", {}))
@@ -10321,6 +10329,11 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         # Legacy support - if old format, load to deck A
         if not self._cues_a and not self._cues_b and "cues" in data:
             self._cues_a = [Cue.from_dict(x) for x in data.get("cues", [])]
+
+        if data.get("media_paths") == "show-folder":
+            for cue in self._cues_a + self._cues_b:
+                if cue.path.startswith("./"):
+                    cue.path = str(path.absolute().parent / cue.path)
 
         # Load scenes (backward compatible - defaults to empty list if not present)
         self._scenes = [Scene.from_dict(x) for x in data.get("scenes", [])]
@@ -11015,10 +11028,11 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 pass
             payload = {
                 "version": 3,  # Bumped to 3 for scene support
+                "media_paths": "show-folder",
                 "settings": self.settings.to_dict(),
                 # IMPORTANT: Save ALL cues from master lists, not filtered scene view
-                "cues_a": [c.to_dict() for c in self._all_cues_a],
-                "cues_b": [c.to_dict() for c in self._all_cues_b],
+                "cues_a": [self._cue_for_show(c, path.absolute().parent) for c in self._all_cues_a],
+                "cues_b": [self._cue_for_show(c, path.absolute().parent) for c in self._all_cues_b],
                 "scenes": [s.to_dict() for s in self._scenes],
             }
             path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
