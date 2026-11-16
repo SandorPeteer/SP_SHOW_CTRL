@@ -183,7 +183,11 @@ class MpvIpcSession:
             bufsize=0,
             **self._subprocess_kwargs(),
         )
-        self._connect_ipc()
+        try:
+            self._connect_ipc()
+        except Exception:
+            self.shutdown()
+            raise
 
     def apply_window_placement(self) -> None:
         """Best-effort: apply windowed vs presentation fullscreen without moving the window."""
@@ -242,102 +246,11 @@ class MpvIpcSession:
         deadline = time.monotonic() + 5.0
 
         if platform.system() == "Windows":
-            import io
+            from windows_mpv_pipe import MpvPipe
 
-            def _connect_named_pipe(pipe: str) -> object:
-                # Avoid blocking on open() for named pipes: use CreateFileW + WaitNamedPipeW.
-                import os as _os
-
-                try:
-                    import ctypes
-                    from ctypes import wintypes
-                    import msvcrt
-                except Exception as e:
-                    raise RuntimeError(f"Windows IPC: missing ctypes/msvcrt: {e}") from e
-
-                flags_rdwr = int(getattr(_os, "O_RDWR", 0)) | int(getattr(_os, "O_BINARY", 0))
-                GENERIC_READ = 0x80000000
-                GENERIC_WRITE = 0x40000000
-                OPEN_EXISTING = 3
-                FILE_ATTRIBUTE_NORMAL = 0x80
-                INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value  # type: ignore[attr-defined]
-                ERROR_PIPE_BUSY = 231
-                ERROR_FILE_NOT_FOUND = 2
-                ERROR_PATH_NOT_FOUND = 3
-
-                CreateFileW = ctypes.windll.kernel32.CreateFileW
-                CreateFileW.argtypes = [
-                    wintypes.LPCWSTR,
-                    wintypes.DWORD,
-                    wintypes.DWORD,
-                    wintypes.LPVOID,
-                    wintypes.DWORD,
-                    wintypes.DWORD,
-                    wintypes.HANDLE,
-                ]
-                CreateFileW.restype = wintypes.HANDLE
-
-                WaitNamedPipeW = ctypes.windll.kernel32.WaitNamedPipeW
-                WaitNamedPipeW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
-                WaitNamedPipeW.restype = wintypes.BOOL
-
-                GetLastError = ctypes.windll.kernel32.GetLastError
-                GetLastError.argtypes = []
-                GetLastError.restype = wintypes.DWORD
-
-                while time.monotonic() < deadline:
-                    try:
-                        ok = bool(WaitNamedPipeW(str(pipe), 200))
-                    except Exception:
-                        ok = False
-                    if not ok:
-                        err = int(GetLastError() or 0)
-                        if err in (ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND):
-                            time.sleep(0.05)
-                            continue
-                        if err == ERROR_PIPE_BUSY:
-                            time.sleep(0.05)
-                            continue
-                    h = CreateFileW(
-                        str(pipe),
-                        int(GENERIC_READ | GENERIC_WRITE),
-                        0,
-                        None,
-                        int(OPEN_EXISTING),
-                        int(FILE_ATTRIBUTE_NORMAL),
-                        None,
-                    )
-                    hv = int(h)
-                    if hv != int(INVALID_HANDLE_VALUE):
-                        fd = msvcrt.open_osfhandle(hv, flags_rdwr)
-                        return _os.fdopen(fd, "r+b", buffering=0)
-                    err = int(GetLastError() or 0)
-                    if err == ERROR_PIPE_BUSY:
-                        # Server exists but all instances are busy: wait briefly.
-                        WaitNamedPipeW(str(pipe), 200)
-                        continue
-                    if err in (ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND):
-                        time.sleep(0.05)
-                        continue
-                    time.sleep(0.05)
-                raise RuntimeError("mpv IPC pipe did not become available")
-
-            f = None
-            last_err: Exception | None = None
-            while time.monotonic() < deadline:
-                try:
-                    f = _connect_named_pipe(self.ipc_server)
-                    break
-                except Exception as e:
-                    last_err = e
-                    time.sleep(0.05)
-                    continue
-            if f is None:
-                raise RuntimeError(f"mpv IPC pipe did not become available: {last_err}")
-            self._pipe = f
-            self._pipe_text = io.TextIOWrapper(f, encoding="utf-8", errors="ignore", newline="\n")  # type: ignore[attr-defined]
-
-            self._reader_thread = threading.Thread(target=self._reader_loop_pipe, daemon=True)
+            self._pipe = MpvPipe(self.ipc_server, deadline)
+            self._reader_thread = threading.Thread(
+                target=self._reader_loop_pipe, args=(self._pipe,), daemon=True)
             self._reader_thread.start()
             return
 
@@ -410,7 +323,7 @@ class MpvIpcSession:
                 raise RuntimeError("mpv IPC pipe not connected")
             try:
                 self._pipe.write(line)
-                self._pipe.flush()
+
             except (BrokenPipeError, OSError, ValueError) as e:
                 self._swallow_exc(e, "mpv ipc pipe write/flush")
                 raise RuntimeError("mpv IPC write failed") from e
@@ -424,8 +337,8 @@ class MpvIpcSession:
         q: "queue.Queue[dict]" = queue.Queue(maxsize=1)
         with self._lock:
             self._pending[rid] = q
-        self._send_json({"command": cmd, "request_id": rid})
         try:
+            self._send_json({"command": cmd, "request_id": rid})
             return q.get(timeout=float(timeout))
         except queue.Empty as e:
             raise TimeoutError("mpv IPC request timed out") from e
@@ -572,20 +485,15 @@ class MpvIpcSession:
         finally:
             self._playing = False
 
-    def _reader_loop_pipe(self) -> None:
-        f = getattr(self, "_pipe_text", None)
-        if f is None:
-            return
+    def _reader_loop_pipe(self, pipe) -> None:
         try:
-            while True:
-                line = f.readline()
-                if not line:
-                    break
+            for line in pipe.lines():
                 self._handle_ipc_line(line)
-        except Exception as e:
-            self._swallow_exc(e, "mpv ipc reader pipe")
+        except OSError as exc:
+            self._swallow_exc(exc, "mpv ipc reader pipe")
         finally:
-            self._playing = False
+            if self._pipe is pipe:
+                self._playing = False
 
     def _handle_ipc_line(self, line: str) -> None:
         s = str(line or "").strip()

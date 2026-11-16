@@ -21,7 +21,7 @@ def check_output():
         try:
             session._connect_ipc()
             break
-        except RuntimeError:
+        except (RuntimeError, OSError):
             if time.monotonic() >= deadline:
                 raise
     print("Show Control IPC connected", flush=True)
