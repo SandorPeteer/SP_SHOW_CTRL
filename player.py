@@ -49,13 +49,6 @@ def _bootstrap_swallow(exc: BaseException, note: str) -> None:
     except Exception:
         return
 
-try:
-    from screeninfo import get_monitors as _screeninfo_get_monitors  # type: ignore[reportMissingImports]
-except Exception as e:
-    _bootstrap_swallow(e, "screeninfo import")
-    _screeninfo_get_monitors = None
-
-
 def _no_console_subprocess_kwargs() -> dict:
     """Hide console windows when spawning subprocesses on Windows GUI builds."""
     if platform.system() != "Windows":
@@ -78,6 +71,34 @@ class MonitorInfo:
     height: int
     name: str = ""
     is_primary: bool = False
+    handle: int | None = None
+
+
+def _windows_monitors(*, physical: bool = True) -> list[MonitorInfo]:
+    from ctypes import c_void_p, WinDLL, WinError
+    import win32api
+
+    set_context = WinDLL("user32", use_last_error=True).SetThreadDpiAwarenessContext
+    set_context.argtypes = [c_void_p]
+    set_context.restype = c_void_p
+    previous = None
+    if physical:
+        # External players use physical coordinates. Limit that context to this
+        # query so media imports never change how Windows scales the Tk window.
+        previous = set_context(c_void_p(-3))  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE
+        if previous is None:
+            raise WinError()
+    try:
+        monitors = []
+        for handle, _, _ in win32api.EnumDisplayMonitors():
+            info = win32api.GetMonitorInfo(handle)
+            left, top, right, bottom = info["Monitor"]
+            monitors.append(MonitorInfo(left, top, right - left, bottom - top,
+                                        info["Device"], bool(info["Flags"] & 1), int(handle)))
+        return monitors
+    finally:
+        if previous is not None:
+            set_context(previous)
 
 
 def _macos_coregraphics_monitors() -> list[MonitorInfo]:
@@ -168,29 +189,29 @@ def _macos_coregraphics_monitors() -> list[MonitorInfo]:
     return [primary, *others]
 
 
-def get_monitors():  # type: ignore
-    """Cross-platform monitor enumeration with a macOS CoreGraphics fallback."""
-    # On macOS, prefer CoreGraphics: screeninfo (AppKit) can be incomplete/flaky in some extended setups
-    # and in PyInstaller builds.
-    if platform.system() == "Darwin":
+def get_monitors() -> list[MonitorInfo]:
+    """Return monitor bounds in the coordinate space used by external players."""
+    if sys.platform == "win32":
         try:
-            mons = _macos_coregraphics_monitors()
-            if mons:
-                return mons
+            return _windows_monitors()
         except Exception as e:
-            _swallow_exc(e, note="get_monitors coregraphics (primary)")
-    if _screeninfo_get_monitors is not None:
-        try:
-            mons = _screeninfo_get_monitors()
-            if mons:
-                return mons
-        except Exception as e:
-            _swallow_exc(e, note="get_monitors screeninfo")
-    if platform.system() == "Darwin":
-        try:
-            return _macos_coregraphics_monitors()
-        except Exception:
+            _swallow_exc(e, note="get_monitors Windows")
             return []
+    if platform.system() == "Darwin":
+        try:
+            monitors = _macos_coregraphics_monitors()
+            if monitors:
+                return monitors
+        except Exception as e:
+            _swallow_exc(e, note="get_monitors CoreGraphics")
+    try:
+        from screeninfo import get_monitors as screeninfo_get_monitors
+    except ImportError:
+        return []
+    try:
+        return screeninfo_get_monitors()
+    except Exception as e:
+        _swallow_exc(e, note="get_monitors screeninfo")
     return []
 
 
@@ -2330,7 +2351,7 @@ class MediaRunner:
                 except Exception:
                     has_second = False
                 if cue.open_on_second_screen:
-                    # Use screeninfo to get second monitor coordinates
+                    # Read second monitor coordinates
                     try:
                         monitors = list(get_monitors() or [])
                         cfg_left = int(getattr(self.settings, "second_screen_left", 0))
@@ -3164,6 +3185,14 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         """Best-effort: find the monitor that contains the controller (this) window."""
         if not monitors:
             return None
+        if sys.platform == "win32":
+            import win32api
+            try:
+                handle = int(win32api.MonitorFromWindow(self.winfo_id(), 2))  # MONITOR_DEFAULTTONEAREST
+                return next((m for m in monitors if m.handle == handle), _pick_primary_monitor(monitors))
+            except Exception as e:
+                _swallow_exc(e, note="controller_monitor Windows")
+                return _pick_primary_monitor(monitors)
         try:
             self.update_idletasks()
         except Exception as e:
@@ -3486,6 +3515,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 # Prefer the largest non-primary display (projector) when unset/unknown.
                 if second is None:
                     second = _pick_output_monitor(monitors) or monitors[1]
+                if sys.platform == "win32":
+                    # This fallback window is owned by Tk and uses scaled coordinates.
+                    logical = _windows_monitors(physical=False)
+                    second = next((m for m in logical if m.handle == second.handle), _pick_primary_monitor(logical))
                 # First set full geometry, then fullscreen (this is the working method!)
                 self._background_window.geometry(f"{second.width}x{second.height}+{second.x}+{second.y}")
                 self._background_window.attributes('-fullscreen', True)

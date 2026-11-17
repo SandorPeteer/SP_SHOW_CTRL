@@ -10,5 +10,4 @@ Pillow>=10.0.0
 pyobjc-framework-Quartz>=12.0; sys_platform == 'darwin'
 
 # Windows monitor detection and PowerPoint slideshow control
-screeninfo; sys_platform == "win32"
 pywin32; sys_platform == "win32"

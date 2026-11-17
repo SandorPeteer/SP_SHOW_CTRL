@@ -42,8 +42,19 @@ def check_output():
 
 
 def smoke():
+    from xml.etree import ElementTree
+    import win32api
     import win32gui
     import win32process
+
+    exe = APP / "SP Show Control.exe"
+    resources = win32api.LoadLibraryEx(str(exe), 0, 2)  # LOAD_LIBRARY_AS_DATAFILE
+    try:
+        manifest = ElementTree.fromstring(win32api.LoadResource(resources, 24, 1))  # RT_MANIFEST
+        assert manifest.findtext(".//{*}dpiAwareness") == "Unaware"
+    finally:
+        win32api.FreeLibrary(resources)
+    print("PASS: packaged controller requests Windows scaling at startup")
 
     with tempfile.TemporaryDirectory(prefix="Show Control próba ") as test:
         env = {k: v for k, v in os.environ.items() if not k.startswith("SP_SHOW_CTRL_")}
@@ -68,7 +79,7 @@ def smoke():
             "cues_b": [], "scenes": [{"id": "rehearsal", "name": "Rehearsal",
                                       "cue_ids_a": ["waveform"], "cue_ids_b": []}],
         }), encoding="utf-8")
-        app = subprocess.Popen([APP / "SP Show Control.exe"], env=env, cwd=test)
+        app = subprocess.Popen([exe], env=env, cwd=test)
         try:
             deadline = time.monotonic() + 45
             while time.monotonic() < deadline:

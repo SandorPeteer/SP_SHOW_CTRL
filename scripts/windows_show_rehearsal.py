@@ -8,10 +8,25 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from unittest.mock import patch
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root))
-from player import App, MpvIpcSession
+from player import App, MpvIpcSession, get_monitors
+
+
+def controller_dpi(app):
+    from ctypes import byref, c_int, c_void_p, windll
+    from tkinter import font
+
+    mode = c_int()
+    assert windll.shcore.GetProcessDpiAwareness(None, byref(mode)) == 0
+    current = windll.user32.GetThreadDpiAwarenessContext
+    current.restype = c_void_p
+    app.update_idletasks()
+    return (mode.value, current(), float(app.tk.call("tk", "scaling")),
+            font.nametofont("TkDefaultFont", root=app).metrics("linespace"),
+            app.winfo_width(), app.winfo_height())
 
 def wait_for(read, matches):
     until = time.monotonic() + 5
@@ -83,6 +98,14 @@ def rehearse(folder):
             "scenes": [{"id": "school", "name": "School", "cue_ids_a": ["A1"], "cue_ids_b": ["B1", "B2", "B3", "B4"]}]}),
             encoding="utf-8")
         app._load_show_from_path(showfile, set_show_path=True)
+        before_import = controller_dpi(app)
+        with patch("player.filedialog.askopenfilenames", return_value=(str(ppt),)):
+            app._add_media_b()
+        assert Path(app._cues_b[-1].path) == ppt
+        monitors = get_monitors()
+        assert monitors and app._controller_monitor(monitors) in monitors
+        assert controller_dpi(app) == before_import, "PPT import changed the controller DPI or size"
+        print(f"PASS: monitor query and PPT import kept controller DPI and size {before_import}")
         def waveform_ready():
             app.update()
             return app.canvas_a.find_withtag("waveform")
@@ -133,6 +156,7 @@ def rehearse(folder):
             assert visual.get_property("mute") is True
 
         assert_slide("0001.png")
+        assert controller_dpi(app) == before_import, "PPT playback changed the controller DPI or size"
         app._poll_output_monitor()
         def monitors_ready():
             app.update()
