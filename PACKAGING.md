@@ -34,6 +34,8 @@ A teljes `SP-Show-Control-windows.zip` fájlt csomagold ki egy mappába, és onn
 
 A statikus PPTX-diák képként, a felismert animált vagy médiás diák és a régi PPT-formátum diái videóként készülnek el. A videódia a saját időzítése szerint fut, a végén a kép megáll. A diák között kézzel léptetsz. A dián belüli kattintásokat, hivatkozásokat, összetett áttűnéseket és az egész bemutatón átívelő hangot próbáld végig előre. Külső médiafájlt vigyél magaddal, és frissített külső média esetén ments új PPTX-et beágyazott médiával.
 
+A Windows-felület egységes sötét témát használ. A kijelölt fül kék, a feliratok minden állapotban kontrasztosak. A PPT lapon az **Export mappa** gombbal megnyitható az elkészült képek és videók mappája, így ugyanaz az MP4 más lejátszóban is ellenőrizhető.
+
 A B decken a **Kivetítő** előnézet a futó mpv-kimenetből fél másodpercenként kér képet. A **Következő dia** panel az aktív bemutató következő diáját mutatja. Indítás előtt a kiválasztott kép, videó vagy előkészített PPT első diája látszik benne. A régebben előkészített videódiákhoz az app a videó első képkockáját használja, az új előkészítések külön statikus diaképet is tartalmaznak. A mintavételezett kimeneti kép a lejátszó képét követi, a fizikai projektor és HDMI-kapcsolat állapotáról nem ad visszajelzést.
 
 A hullámforma a csomagban lévő FFmpeg-et és Pillow-t használja. A háttérben egyszerre egy elemzési feladat fut, új kijelöléskor a korábbi hullámformakérés megszakad. A várakozást és a hibát a hullámforma helyén mutatja az app.

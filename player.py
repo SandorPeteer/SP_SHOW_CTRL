@@ -3284,9 +3284,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return
         try:
             if bool(getattr(self.settings, "presentation_active", False)):
-                v.set("⏹ EXIT PRESENTATION")
+                v.set("EXIT PRESENTATION")
             else:
-                v.set("🎥 PRESENTATION")
+                v.set("PRESENTATION")
         except Exception as e:
             _swallow_exc(e, note="sync_presentation_button")
 
@@ -3642,6 +3642,15 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._ppt_index = 0
         self._ppt_running = False
         self.var_ppt_status.set("")
+
+    def _open_ppt_export(self):
+        cue = self._ppt_cue if self._ppt_running else self._selected_cue_for_deck("B")
+        if cue and cue.kind == "ppt":
+            ready = self._ppt_preparer.ready.get(cue.path)
+            if ready:
+                os.startfile(str(ready[1][0].parent))
+                return
+        self.var_ppt_status.set("Előbb készítsd elő a kiválasztott PPT-t.")
 
     def _ppt_fullscreen_2nd_screen(self) -> None:
         if sys.platform == "win32":
@@ -5115,6 +5124,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception:
             pass
 
+        if sys.platform == "win32":
+            from windows_theme import apply_windows_theme
+            apply_windows_theme(self)
+
         # File / preset toolbar
         filebar = ttk.Frame(root)
         filebar.pack(fill="x", pady=(0, 6))
@@ -5129,7 +5142,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         ttk.Button(filebar, text="Load preset", command=self._load_preset).pack(side="left", padx=(6, 0))
 
         self.var_showfile = tk.StringVar(value="")
-        self.var_presentation_btn = tk.StringVar(value="🎥 PRESENTATION")
+        self.var_presentation_btn = tk.StringVar(value="PRESENTATION")
         ttk.Button(filebar, text="⚙", width=3, command=self._open_global_setup).pack(side="right", padx=(6, 0))
         ttk.Button(filebar, text="⛶ mpv native fs", command=self._force_mpv_fullscreen).pack(side="right", padx=(6, 0))
         ttk.Button(filebar, textvariable=self.var_presentation_btn, command=self._toggle_presentation).pack(side="right")
@@ -5212,6 +5225,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.tree_a.column("kind", width=55, minwidth=55, stretch=False)
         self.tree_a.column("name", width=380, minwidth=120, stretch=True)
         self.tree_a.column("duration", width=86, minwidth=78, stretch=False, anchor="e")
+        self.tree_a.configure(height=4)
         self.tree_a.pack(fill="both", expand=True)
         try:
             self.tree_a.tag_configure("playing", background="#2e7d32", foreground="#ffffff")
@@ -5429,6 +5443,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.tree_b.column("kind", width=55, minwidth=55, stretch=False)
         self.tree_b.column("name", width=380, minwidth=120, stretch=True)
         self.tree_b.column("duration", width=86, minwidth=78, stretch=False, anchor="e")
+        self.tree_b.configure(height=4)
         self.tree_b.pack(fill="both", expand=True)
         try:
             self.tree_b.tag_configure("playing", background="#2e7d32", foreground="#ffffff")
@@ -5543,17 +5558,27 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         ppt_tab = ttk.Frame(self.tab_b_ppt, padding=6)
         ppt_tab.pack(fill="x")
         if sys.platform == "win32":
-            ttk.Button(ppt_tab, text="Előkészítés", command=lambda: self._queue_ppt(self._selected_cue_for_deck("B"))).pack(fill="x")
-            ttk.Label(ppt_tab, textvariable=self.var_ppt_status, wraplength=230).pack(fill="x")
-            ttk.Checkbutton(ppt_tab, text="Dia saját hangja", variable=self.var_ppt_sound,
-                            command=self._ppt_apply_sound).pack(anchor="w")
-        ttk.Button(ppt_tab, text="▶ Start", command=self._play_selected_ppt_b, width=10).pack(fill="x")
-        ttk.Button(ppt_tab, text="⛶ 2nd Screen", command=self._ppt_fullscreen_2nd_screen, width=10).pack(fill="x", pady=(2, 0))
+            ttk.Label(ppt_tab, textvariable=self.var_ppt_status, wraplength=310).pack(fill="x", pady=(0, 4))
         ppt_nav_b = ttk.Frame(ppt_tab)
-        ppt_nav_b.pack(fill="x", pady=(6, 0))
-        ttk.Button(ppt_nav_b, text="◀", command=self._ppt_prev_ui, width=5).pack(side="left", expand=True, fill="x")
-        ttk.Button(ppt_nav_b, text="▶", command=self._ppt_next_ui, width=5).pack(side="left", expand=True, fill="x", padx=(2, 0))
-        ttk.Button(ppt_tab, text="⏹ End", command=self._ppt_end, width=10).pack(fill="x", pady=(6, 0))
+        ppt_nav_b.pack(fill="x")
+        for column, (text, command) in enumerate((
+                ("Start", self._play_selected_ppt_b), ("◀", self._ppt_prev_ui),
+                ("▶", self._ppt_next_ui), ("End", self._ppt_end))):
+            ppt_nav_b.columnconfigure(column, weight=1, uniform="ppt-nav")
+            ttk.Button(ppt_nav_b, text=text, command=command, width=5).grid(
+                row=0, column=column, sticky="ew", padx=1)
+        ppt_tools = ttk.Frame(ppt_tab)
+        ppt_tools.pack(fill="x", pady=(4, 0))
+        if sys.platform == "win32":
+            ttk.Button(ppt_tools, text="Előkészítés", command=lambda: self._queue_ppt(
+                self._selected_cue_for_deck("B"))).pack(side="left", fill="x", expand=True, padx=1)
+            ttk.Button(ppt_tools, text="Export mappa", command=self._open_ppt_export).pack(
+                side="left", fill="x", expand=True, padx=1)
+        ttk.Button(ppt_tools, text="Teljes képernyő", command=self._ppt_fullscreen_2nd_screen).pack(
+            side="left", fill="x", expand=True, padx=1)
+        if sys.platform == "win32":
+            ttk.Checkbutton(ppt_tab, text="Dia saját hangja", variable=self.var_ppt_sound,
+                            command=self._ppt_apply_sound).pack(anchor="w", pady=(4, 0))
 
         # Download tab (Deck B) - yt-dlp integration
         dl_b = ttk.Frame(self.tab_b_download, padding=6)

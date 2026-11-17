@@ -51,6 +51,17 @@ def rehearse(folder):
     app = App()
     try:
         app.update()
+        from tkinter import ttk
+        style = ttk.Style(app)
+        assert style.theme_use() == "clam"
+        def luminance(color):
+            rgb = [channel / 65535 for channel in app.winfo_rgb(color)]
+            rgb = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4 for v in rgb]
+            return sum(channel * weight for channel, weight in zip(rgb, (0.2126, 0.7152, 0.0722)))
+        for state in ((), ("selected",), ("active",), ("disabled",)):
+            fg = luminance(style.lookup("Deck.TNotebook.Tab", "foreground", state))
+            bg = luminance(style.lookup("Deck.TNotebook.Tab", "background", state))
+            assert (max(fg, bg) + 0.05) / (min(fg, bg) + 0.05) >= 4.5, state
         # Open a show saved on another machine, from outside its media directory.
         showfile = folder / "portable.json"
         showfile.write_text(json.dumps({"version": 3, "media_paths": "show-folder",
@@ -124,7 +135,12 @@ def rehearse(folder):
         app._exit_presentation_mode()
         visual.set_property("window-minimized", True)
         app._bring_to_front()
+        app.tabs_a.select(app.tab_a_inout)
+        app.tabs_b.select(app.tab_b_ppt)
         app.update()
+        for panel in (app.tab_a_inout, app.tab_b_ppt):
+            assert panel.winfo_rooty() + panel.winfo_height() <= app.winfo_rooty() + app.winfo_height()
+        print("PASS: normal/selected/hover/disabled tabs meet 4.5:1 contrast; PPT controls fit the laptop window")
         ImageGrab.grab().save(root / "dist/windows-rehearsal-preview.png")
         visual.set_property("window-minimized", False)
         app._ppt_fullscreen_2nd_screen()
