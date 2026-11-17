@@ -110,6 +110,7 @@ def rehearse(folder):
         with patch("player.filedialog.askopenfilenames", return_value=(str(ppt),)):
             app._add_media_b()
         assert Path(app._cues_b[-1].path) == ppt
+        assert app.canvas_a.find_withtag("waveform")
         monitors = get_monitors()
         assert monitors and app._controller_monitor(monitors) in monitors
         assert controller_dpi(app) == before_import, "PPT import changed the controller DPI or size"
@@ -272,14 +273,16 @@ def rehearse(folder):
         app._all_cues_a.append(duplicate)
         app._scenes[0].cue_ids_a.append(duplicate.id)
         app._scenes.append(Scene(id="second", name="Grade 13C", cue_ids_a=[duplicate.id], cue_ids_b=["B1"]))
+        app.var_ppt_interval.set("8")
         app.btn_save_show.invoke()
         wait_for(lambda: (app.update(), app._saving_show)[1], lambda busy: not busy)
         assert app._auto_open_last_show()
-        assert app._show_path == showfile and len(app._scenes) == 2
+        assert app._show_path.samefile(showfile) and len(app._scenes) == 2
+        assert app.var_ppt_interval.get() == "8"
         assert app._scenes[0].cue_ids_a == ["A1", "A2"] and app._scenes[1].cue_ids_a == ["A2"]
         first, second = app._cues_a
         assert first.id != second.id and second.start_sec == 3.0 and first.path == second.path
-        assert Path(first.path).is_relative_to(showfile.with_suffix(".media"))
+        assert Path(first.path).resolve().is_relative_to(showfile.with_suffix(".media").resolve())
         saved_ppt = Path(app._cues_b[2].path)
         assert saved_ppt.with_name(saved_ppt.name + ".mpv").joinpath("0001.png").is_file()
         assert music.is_file() and ppt.is_file()

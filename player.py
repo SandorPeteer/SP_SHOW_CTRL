@@ -3502,10 +3502,6 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception as e:
             _swallow_exc(e, note="exit_presentation_mode log_state")
 
-    def _wave_help_text(self) -> str:
-        # Keep this short-ish to avoid affecting layout.
-        return "Click to seek (during playback)"
-
     def _apply_output_aspect(self, _event=None) -> None:
         choice = self.var_output_aspect.get()
         ratio = "no" if choice == "Source" else choice
@@ -3897,10 +3893,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             _swallow_exc(e, note="ppt_post_nav_check restore_visuals_after_ppt")
 
     def _set_wave_title(self, deck: str, cue: Cue | None) -> None:
-        # Show help only when nothing is selected; once a track is loaded/selected,
-        # the title is just the track name.
         if cue is None:
-            text = f"Waveform - {self._wave_help_text()}"
+            text = "Waveform"
         elif cue.kind in ("audio", "video"):
             text = _shorten_middle(cue.display_name(), 42)
         else:
@@ -5343,7 +5337,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         icons.button(btn_a, "up", "Move item up", lambda: self._move_a(-1)).pack(side="right", padx=4)
 
         # Waveform placeholder (Deck A)
-        self.wave_a_frame = ttk.LabelFrame(deck_a, text=f"Waveform - {self._wave_help_text()}", padding=2)
+        self.wave_a_frame = ttk.LabelFrame(deck_a, text="Waveform", padding=2)
         self.wave_a_frame.pack(fill="x", pady=(4, 0))
         self.canvas_a = tk.Canvas(self.wave_a_frame, height=60, bg="#2b2b2b", highlightthickness=0, cursor="crosshair")
         self.canvas_a.pack(fill="x")
@@ -5381,12 +5375,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         now_a_ctrl.columnconfigure(2, weight=1, uniform="playrow_a")
         self.var_play_a = tk.StringVar(value="Play")
         self.btn_play_a = self._make_transport_button(now_a_ctrl, self.var_play_a, self._play_deck_a, "play", "Play / pause", True)
-        self.btn_play_a.grid(row=0, column=0, sticky="ew", padx=2)
+        self.btn_play_a.grid(row=0, column=0, sticky="nsew", padx=2)
         self.btn_stop_a = self._make_transport_button(now_a_ctrl, "Stop", self._stop_deck_a, "stop", "Stop audio")
-        self.btn_stop_a.grid(row=0, column=1, sticky="ew", padx=2)
+        self.btn_stop_a.grid(row=0, column=1, sticky="nsew", padx=2)
         self.var_loop_a = tk.StringVar(value="Repeat off")
         self.btn_loop_a = self._make_transport_button(now_a_ctrl, self.var_loop_a, lambda: self._toggle_loop("A"), "repeat", "Repeat audio")
-        self.btn_loop_a.grid(row=0, column=2, sticky="ew", padx=2)
+        self.btn_loop_a.grid(row=0, column=2, sticky="nsew", padx=2)
 
         # Tabs under playback block (Deck A)
         self.tab_a_setup = tk.Frame(self.tabs_a, bg="#2b2b2b")
@@ -5534,16 +5528,16 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         visuals_ctrl.columnconfigure(2, weight=1, uniform="visuals_ctrl")
         self.var_play_b = tk.StringVar(value="Show")
         self.btn_play_b = self._make_transport_button(visuals_ctrl, self.var_play_b, self._play_deck_b, "play", "Show selected item", True)
-        self.btn_play_b.grid(row=0, column=0, sticky="ew", padx=2)
+        self.btn_play_b.grid(row=0, column=0, sticky="nsew", padx=2)
         self.btn_stop_b = self._make_transport_button(visuals_ctrl, "Clear", self._stop_deck_b, "stop", "Clear projection")
-        self.btn_stop_b.grid(row=0, column=1, sticky="ew", padx=2)
+        self.btn_stop_b.grid(row=0, column=1, sticky="nsew", padx=2)
         self.var_loop_b = tk.StringVar(value="Repeat off")
         self.btn_loop_b = self._make_transport_button(visuals_ctrl, self.var_loop_b, lambda: self._toggle_loop("B"), "repeat", "Repeat projection")
-        self.btn_loop_b.grid(row=0, column=2, sticky="ew", padx=2)
+        self.btn_loop_b.grid(row=0, column=2, sticky="nsew", padx=2)
         self.btn_prev_slide = icons.button(visuals_ctrl, "previous", "Previous slide", self._ppt_prev_ui)
         self.btn_next_slide = icons.button(visuals_ctrl, "next", "Next slide", self._ppt_next_ui)
-        self.btn_prev_slide.grid(row=0, column=3, sticky="ew", padx=(6, 2))
-        self.btn_next_slide.grid(row=0, column=4, sticky="ew", padx=2)
+        self.btn_prev_slide.grid(row=0, column=3, sticky="nsew", padx=(6, 2))
+        self.btn_next_slide.grid(row=0, column=4, sticky="nsew", padx=2)
 
         self.tree_b = ttk.Treeview(
             deck_b,
@@ -6668,7 +6662,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 "▶" if cue.auto_play else "",
                 i+1,
                 cue.kind,
-                _shorten_middle(Path(cue.path).name, 64),
+                _shorten_middle(cue.display_name(), 64),
                 duration_str
             ))
 
@@ -6706,7 +6700,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 "▶" if cue.auto_play else "",
                 i+1,
                 cue.kind,
-                _shorten_middle(Path(cue.path).name, 64),
+                _shorten_middle(cue.display_name(), 64),
                 duration_str
             ))
 
@@ -6910,7 +6904,6 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if not paths:
             return
         self._add_paths_visuals(list(paths), scene)
-        self._refresh_tree_a()
         self._refresh_tree_b()
         self._refresh_scene_list()  # Update scene cue counts
 
@@ -6938,7 +6931,6 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         scene = self._scenes[self._selected_scene_idx]
         paths = self._parse_drop_data(event_data)
         self._add_paths_visuals(paths, scene)
-        self._refresh_tree_a()
         self._refresh_tree_b()
         self._refresh_scene_list()
 
@@ -10548,6 +10540,15 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.audio_runner.settings = self.settings
         self.video_runner.settings = self.settings
         self.var_output_aspect.set(self.settings.output_aspect)
+        playback = data.get("playback")
+        if isinstance(playback, dict):
+            self._loop_a_enabled = bool(playback.get("repeat_audio"))
+            self._loop_b_enabled = bool(playback.get("repeat_projection"))
+            self.var_loop_a.set("Repeat on" if self._loop_a_enabled else "Repeat off")
+            self.var_loop_b.set("Repeat on" if self._loop_b_enabled else "Repeat off")
+            if sys.platform == "win32":
+                self.var_ppt_sound.set(bool(playback.get("slide_audio")))
+                self.var_ppt_interval.set(str(playback.get("slide_seconds", "5")))
 
         # Load dual deck cues
         self._cues_a = [Cue.from_dict(x) for x in data.get("cues_a", [])]
@@ -10748,10 +10749,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             "version": 3,
             "active_scene": active,
             "settings": self.settings.to_dict(),
+            "playback": {"repeat_audio": self._loop_a_enabled, "repeat_projection": self._loop_b_enabled},
             "cues_a": [cue.to_dict() for cue in self._all_cues_a if cue.id in used_a],
             "cues_b": [cue.to_dict() for cue in self._all_cues_b if cue.id in used_b],
             "scenes": [scene.to_dict() for scene in self._scenes],
         })
+        if sys.platform == "win32":
+            payload["playback"].update(slide_audio=self.var_ppt_sound.get(), slide_seconds=self.var_ppt_interval.get())
         prepared = ({source: ready[1][0].parent for source, ready in self._ppt_preparer.ready.items()}
                     if sys.platform == "win32" else {})
         self._saving_show = True
