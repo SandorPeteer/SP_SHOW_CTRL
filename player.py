@@ -3865,6 +3865,31 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             except Exception as e:
                 _swallow_exc(e, note="ppt_next_ui post_nav_check")
 
+    def _bind_slide_keys(self, workspace) -> None:
+        tag = "ShowControlSlideKeys"
+
+        def navigate(command):
+            if not self._ppt_running:
+                return None
+            command()
+            return "break"
+
+        for key, command in (("Left", self._ppt_prev_ui), ("Prior", self._ppt_prev_ui),
+                             ("Right", self._ppt_next_ui), ("Next", self._ppt_next_ui)):
+            self.bind_class(tag, f"<KeyPress-{key}>", lambda _event, action=command: navigate(action))
+
+        def attach(widget):
+            if isinstance(widget, (tk.Menu, tk.Toplevel, tk.Entry, ttk.Entry, tk.Spinbox, ttk.Spinbox)):
+                return
+            if isinstance(widget, tk.Text) and widget.cget("state") != "disabled":
+                return
+            widget.bindtags((tag, *widget.bindtags()))
+            for child in widget.winfo_children():
+                attach(child)
+
+        self.bindtags((tag, *self.bindtags()))
+        attach(workspace)
+
     def _ppt_post_nav_check(self) -> None:
         # If the slideshow ended (e.g. next on last slide), restore mpv output automatically.
         try:
@@ -5715,6 +5740,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._update_showfile_label()
         self._update_now_playing()
         self._log("UI ready.")
+        self._bind_slide_keys(root)
 
         # Auto-select first scene if available
         if self._scenes:

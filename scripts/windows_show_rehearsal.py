@@ -230,6 +230,19 @@ def rehearse(folder):
         app.var_ppt_sound.set(True)
         app._ppt_apply_sound()
         assert visual.get_property("mute") is False
+        app.btn_output_fullscreen.invoke()
+        visual.set_property("window-minimized", True)
+        app.tree_b.focus_force()
+        app.update()
+        assert app.focus_get() == app.tree_b
+        for key, index in (("Prior", 0), ("Right", 1), ("Left", 0), ("Next", 1)):
+            app.tree_b.event_generate(f"<KeyPress-{key}>")
+            expected = sidecar / ("0001.png" if index == 0 else "0002.mp4")
+            assert app._ppt_index == index, (key, app._ppt_index)
+            wait_for(current_slide, lambda path: path and Path(path).samefile(expected))
+        visual.set_property("window-minimized", False)
+        app.btn_output_fullscreen.invoke()
+        print("PASS: arrow and presenter Page Up/Page Down keys step the live slideshow")
         app._ppt_prev_ui()
         assert_slide("0001.png")
         app._ppt_end()
