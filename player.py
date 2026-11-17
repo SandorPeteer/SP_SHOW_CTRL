@@ -3797,8 +3797,6 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception as e:
             _swallow_exc(e, note="set_wave_title")
 
-    # Visual PREVIEW has been removed (it did not mirror the 2nd screen output reliably).
-
     def _preset_path(self) -> Path:
         if _is_frozen():
             try:

@@ -38,9 +38,15 @@ class MediaTests(unittest.TestCase):
         popen = subprocess.Popen
 
         def slow_read(command, **kwargs):
-            index = command.index("-i")
-            command[index:index] = ["-readrate", "0.08", "-readrate_initial_burst", "0"]
-            return popen(command, **kwargs)
+            delayed = (
+                "import subprocess,sys,time; "
+                "result=subprocess.run(sys.argv[1:],capture_output=True); "
+                "time.sleep(10.3); "
+                "sys.stdout.buffer.write(result.stdout); "
+                "sys.stderr.buffer.write(result.stderr); "
+                "sys.exit(result.returncode)"
+            )
+            return popen([sys.executable, "-c", delayed, *command], **kwargs)
 
         start = time.monotonic()
         with patch("media_waveform.subprocess.Popen", slow_read):
