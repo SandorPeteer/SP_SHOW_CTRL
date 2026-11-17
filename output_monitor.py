@@ -12,32 +12,78 @@ from tkinter import ttk
 from PIL import Image, ImageOps, ImageTk
 
 
+_PREVIEW_SIZE = (640, 360)
+_OVERRIDE_RATIOS = {"4:3": 4 / 3, "16:9": 16 / 9}
+
+
+def _fit_size(width, height):
+    factor = min(_PREVIEW_SIZE[0] / width, _PREVIEW_SIZE[1] / height)
+    return max(1, round(width * factor)), max(1, round(height * factor))
+
+
+def _output_preview(frame, viewport):
+    if not isinstance(viewport, dict):
+        return ImageOps.contain(frame, _PREVIEW_SIZE)
+    width, height = viewport.get("w", 0), viewport.get("h", 0)
+    left, right = viewport.get("ml", 0), viewport.get("mr", 0)
+    top, bottom = viewport.get("mt", 0), viewport.get("mb", 0)
+    video_width, video_height = width - left - right, height - top - bottom
+    if min(width, height, video_width, video_height) <= 0:
+        return ImageOps.contain(frame, _PREVIEW_SIZE)
+    par = viewport.get("par", 1) or 1
+    w, h = _fit_size(width * par, height)
+    # Convert the renderer's video rectangle into preview pixels. Negative margins
+    # represent crop; clip first so even a zoomed image stays within the budget.
+    x0, y0 = round(left * w / width), round(top * h / height)
+    x1, y1 = round((width - right) * w / width), round((height - bottom) * h / height)
+    x, y = max(0, x0), max(0, y0)
+    end_x, end_y = min(w, x1), min(h, y1)
+    canvas = Image.new("RGB", (w, h))
+    if end_x > x and end_y > y:
+        scale_x = frame.width / (x1 - x0)
+        scale_y = frame.height / (y1 - y0)
+        area = ((x - x0) * scale_x, (y - y0) * scale_y,
+                min(frame.width, (end_x - x0) * scale_x), min(frame.height, (end_y - y0) * scale_y))
+        canvas.paste(frame.resize((end_x - x, end_y - y), Image.Resampling.LANCZOS, box=area), (x, y))
+    return canvas
+
+
 def capture_output(session):
     if session is None or not session.is_alive() or session.get_property("idle-active"):
         return None
     before = session.get_property("path")
     if not before:
         return None
-    # Software screenshots run off the presentation renderer's thread.
+    # Software 'window' screenshots stretch the video to the entire viewport.
+    # Capture only the video and apply the renderer's layout ourselves.
     with tempfile.TemporaryDirectory(prefix="sp-monitor-") as tmp:
         target = Path(tmp) / "frame.jpg"
-        result = session.command(["screenshot-to-file", str(target), "window"], timeout=2)
+        result = session.command(["screenshot-to-file", str(target), "subtitles"], timeout=2)
         if result.get("error") != "success":
             raise RuntimeError(result.get("error", "mpv screenshot failed"))
+        viewport = session.get_property("osd-dimensions")
         if session.get_property("path") != before:
             return None
         with Image.open(target) as frame:
-            return ImageOps.contain(frame.convert("RGB"), (640, 360))
+            frame.draft("RGB", _PREVIEW_SIZE)
+            return _output_preview(frame.convert("RGB"), viewport)
 
 
-def load_preview(path, ffmpeg, subprocess_kwargs, cancel=None):
+def _next_preview(frame, aspect):
+    image = frame.convert("RGB")
+    if aspect in _OVERRIDE_RATIOS:
+        return image.resize(_fit_size(_OVERRIDE_RATIOS[aspect], 1), Image.Resampling.LANCZOS)
+    return ImageOps.contain(image, _PREVIEW_SIZE)
+
+
+def load_preview(path, ffmpeg, subprocess_kwargs, cancel=None, aspect="Source"):
     path = Path(path)
     poster = path.with_suffix(".preview.png")
     if poster.is_file():
         path = poster
     try:
         with Image.open(path) as frame:
-            return ImageOps.contain(ImageOps.exif_transpose(frame).convert("RGB"), (640, 360))
+            return _next_preview(ImageOps.exif_transpose(frame), aspect)
     except (OSError, ValueError):
         pass
     if not ffmpeg:
@@ -45,7 +91,7 @@ def load_preview(path, ffmpeg, subprocess_kwargs, cancel=None):
     command = [
         ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-threads", "1",
         "-i", str(path), "-map", "0:v:0", "-an", "-frames:v", "1", "-threads", "1",
-        "-vf", "scale=640:360:force_original_aspect_ratio=decrease",
+        "-vf", "scale=640:360:force_original_aspect_ratio=decrease:reset_sar=1",
         "-f", "image2pipe", "-vcodec", "png", "-",
     ]
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **subprocess_kwargs) as process:
@@ -67,7 +113,7 @@ def load_preview(path, ffmpeg, subprocess_kwargs, cancel=None):
         if process.returncode or not output:
             raise RuntimeError(errors.decode(errors="replace").strip() or "Üres előnézet.")
     with Image.open(BytesIO(output)) as frame:
-        return frame.convert("RGB")
+        return _next_preview(frame, aspect)
 
 
 class OutputMonitor(ttk.Frame):
@@ -120,24 +166,26 @@ class OutputMonitor(ttk.Frame):
         self.photos[key] = photo
         canvas.create_image(width // 2, height // 2, image=photo)
 
-    def update_targets(self, session, next_path, next_caption, live_caption):
+    def update_targets(self, session, next_path, next_caption, live_caption, aspect="Source"):
         if self.closed:
             return
         self.captions["live"].set(live_caption)
         self.captions["next"].set(next_caption)
-        live_target = (session, live_caption)
+        live_target = (session, live_caption, aspect)
         if live_target != self.targets["live"]:
             self.frames["live"] = None
             self._draw("live")
         self.targets["live"] = live_target
-        if next_path != self.targets["next"]:
-            self.targets["next"] = next_path
+        next_target = (next_path, aspect) if next_path else None
+        if next_target != self.targets["next"]:
+            self.targets["next"] = next_target
             self.frames["next"] = None
             self.errors.pop("next", None)
             self._draw("next", "Loading preview…" if next_path else "")
         self._request("live", lambda: capture_output(session))
         if next_path and self.frames["next"] is None and not self.errors.get("next"):
-            self._request("next", lambda: load_preview(next_path, self.ffmpeg(), self.subprocess_kwargs(), self.cancelled))
+            self._request("next", lambda: load_preview(next_path, self.ffmpeg(), self.subprocess_kwargs(),
+                                                       self.cancelled, aspect))
 
     def _request(self, key, work):
         if self.busy[key]:

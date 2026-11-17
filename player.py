@@ -5755,7 +5755,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         caption = current.display_name() if current else ""
         if self._ppt_running and self._ppt_cue:
             caption = f"{self._ppt_index + 1}/{len(self._ppt_slides)} · {self._ppt_cue.display_name()}"
-        self.output_monitor.update_targets(self.video_runner._sess, next_path, next_caption, caption)
+        self.output_monitor.update_targets(self.video_runner._sess, next_path, next_caption, caption,
+                                           self.settings.output_aspect)
         self._monitor_after_id = self.after(500, self._poll_output_monitor)
 
     def _on_closing(self):

@@ -16,7 +16,7 @@ root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root))
 from PIL import Image
 from media_waveform import WaveformWorker, render_waveform
-from output_monitor import load_preview
+from output_monitor import _output_preview, load_preview
 
 ffmpeg = str(root / "dist/SP Show Control/_internal/tools/ffmpeg/ffmpeg.exe") if sys.platform == "win32" else shutil.which("ffmpeg")
 subprocess_options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
@@ -86,6 +86,22 @@ class MediaTests(unittest.TestCase):
         Image.new("RGB", (300, 180), "blue").save(video.with_suffix(".preview.png"))
         preview = load_preview(video, None, subprocess_options)
         self.assertEqual(preview.getpixel((20, 20)), (0, 0, 255))
+
+    def test_live_preview_uses_video_margins(self):
+        frame = Image.new("RGB", (640, 360), "red")
+        projector = {"w": 1920, "h": 1080, "ml": 240, "mr": 240, "mt": 0, "mb": 0}
+        preview = _output_preview(frame, projector)
+        self.assertEqual(preview.size, (640, 360))
+        self.assertEqual(preview.getbbox(), (80, 0, 560, 360))
+
+    def test_next_preview_uses_display_aspect_and_override(self):
+        video = self.folder / "anamorphic.mp4"
+        subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i",
+                        "color=c=blue:size=160x90:duration=0.2", "-vf", "setsar=4/3",
+                        "-c:v", "mpeg4", str(video)], check=True, **subprocess_options)
+        self.assertEqual(load_preview(video, ffmpeg, subprocess_options).size, (640, 270))
+        preview = load_preview(video, ffmpeg, subprocess_options, aspect="4:3")
+        self.assertEqual(preview.size, (480, 360))
 
 
 if __name__ == "__main__":

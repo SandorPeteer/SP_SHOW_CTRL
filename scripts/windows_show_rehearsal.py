@@ -201,13 +201,27 @@ def rehearse(folder):
         assert_slide("0002.mp4")
         aspect = lambda: visual.get_property("video-aspect-override")
         source_aspect = aspect()
+        from output_monitor import capture_output
+
+        def visible_aspect():
+            layout = visual.get_property("osd-dimensions")
+            w = layout["w"] - layout["ml"] - layout["mr"]
+            h = layout["h"] - layout["mt"] - layout["mb"]
+            return w * layout["par"] / h
+
         for label, expected in (("4:3", 4 / 3), ("16:9", 16 / 9), ("Source", source_aspect)):
             app.var_output_aspect.set(label)
             app._apply_output_aspect()
             actual = aspect()
             assert actual == expected or abs(actual - expected) < 0.001, (label, actual)
             assert output_hwnd() == hwnd
+            ratio = 4 / 3 if label == "4:3" else 16 / 9
+            wait_for(visible_aspect, lambda value: abs(value - ratio) < 0.02)
+            frame = capture_output(visual)
+            left, top, right, bottom = frame.getbbox()
+            assert abs((right - left) / (bottom - top) - ratio) < 0.02, (label, frame.size, frame.getbbox())
         print("PASS: 4:3, 16:9 and source aspect settings apply to the same live output")
+        print("PASS: preview pixels keep the projected aspect ratio and letterbox margins")
         app._poll_output_monitor()
         wait_for(monitors_ready, lambda _: app.output_monitor.frames["live"] is not None)
         assert app.output_monitor.frames["next"] is None
