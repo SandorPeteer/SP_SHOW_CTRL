@@ -194,9 +194,10 @@ def rehearse(folder):
             app.update()
             if app._ppt_index != order[-1]:
                 order.append(app._ppt_index)
-            if app._ppt_index == 3:
-                app._poll_output_monitor()
-                assert Path(app.output_monitor.targets["next"]).name == "0001.png"
+                if app._ppt_index == 3:
+                    app.after_cancel(app._monitor_after_id)
+                    app._poll_output_monitor()
+                    assert Path(app.output_monitor.targets["next"]).name == "0001.png"
             time.sleep(0.03)
         assert order == [0, 1, 2, 3, 0, 1, 2, 3, 0], order
         assert visual.get_property("fullscreen") is True and output_hwnd() == hwnd
