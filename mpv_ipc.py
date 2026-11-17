@@ -153,6 +153,8 @@ class MpvIpcSession:
             "--no-auto-window-resize",
             "--no-keepaspect-window",
             "--no-osc",
+            "--screenshot-sw=yes",
+            "--screenshot-jpeg-quality=70",
             "--no-input-default-bindings",
             "--osd-level=0",
             "--border=yes",

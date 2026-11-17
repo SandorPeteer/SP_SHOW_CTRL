@@ -1,5 +1,6 @@
 """Exercise the unpacked x64 application from a fresh profile on a Windows test desktop."""
 import os
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -51,15 +52,22 @@ def smoke():
         clip = Path(test) / "árvíz teszt.mp4"
         media = APP / "_internal" / "tools" / "ffmpeg"
         subprocess.run([media / "ffmpeg.exe", "-v", "error", "-f", "lavfi", "-i",
-                        "color=size=64x64:rate=5", "-f", "lavfi", "-i", "sine=frequency=880",
+                        "testsrc2=size=160x90:rate=10", "-f", "lavfi", "-i", "sine=frequency=880",
                         "-t", "4", "-c:v", "mpeg4", "-c:a", "aac", clip],
                        check=True, cwd=test, env=env, timeout=20)
         probe = subprocess.check_output([media / "ffprobe.exe", "-v", "error", "-show_entries",
                                          "stream=width", "-of", "csv=p=0", clip], env=env, timeout=10)
-        assert probe.strip() == b"64", probe
+        assert probe.strip() == b"160", probe
         subprocess.run([media / "ffplay.exe", "-version"], stdout=subprocess.DEVNULL,
                        check=True, env=env, timeout=10)
 
+        profile = Path(test) / "SP_Show_Control"
+        profile.mkdir(exist_ok=True)
+        (profile / "show_preset.json").write_text(json.dumps({
+            "version": 3, "cues_a": [{"id": "waveform", "kind": "audio", "path": str(clip)}],
+            "cues_b": [], "scenes": [{"id": "rehearsal", "name": "Rehearsal",
+                                      "cue_ids_a": ["waveform"], "cue_ids_b": []}],
+        }), encoding="utf-8")
         app = subprocess.Popen([APP / "SP Show Control.exe"], env=env, cwd=test)
         try:
             deadline = time.monotonic() + 45
@@ -72,6 +80,27 @@ def smoke():
                 time.sleep(0.2)
             else:
                 raise RuntimeError("Show Control window did not start")
+            # Read pixels from the actual frozen executable with a clean PATH/profile.
+            from PIL import ImageGrab
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                output_hwnd = win32gui.FindWindow(None, "SP Show Control Output (OUTPUT)")
+                if output_hwnd:
+                    win32gui.ShowWindow(output_hwnd, 6)
+                bounds = win32gui.GetWindowRect(hwnd)
+                frame = ImageGrab.grab(bbox=bounds)
+                blue = sum(count for count, rgb in (frame.convert("RGB").getcolors(frame.width * frame.height) or [])
+                           if abs(rgb[0] - 74) < 5 and abs(rgb[1] - 158) < 5 and abs(rgb[2] - 255) < 5)
+                if blue > 700:
+                    break
+                time.sleep(0.2)
+            else:
+                frame.save(APP.parent / "windows-waveform-failure.png")
+                raise AssertionError(f"Packaged waveform not painted, matching pixels {blue}")
+            print(f"PASS: frozen EXE rendered waveform ({blue} blue pixels), with no external tools on PATH")
+            frame.save(APP.parent / "windows-controller-preview.png")
+            if output_hwnd:
+                win32gui.ShowWindow(output_hwnd, 9)
             subprocess.run([sys.executable, __file__, "output", str(clip)], check=True, timeout=40)
         except Exception:
             def report_window(hwnd, _):
@@ -84,7 +113,8 @@ def smoke():
         finally:
             subprocess.run(["taskkill", "/PID", str(app.pid), "/T", "/F"], capture_output=True)
             app.wait(timeout=10)
-        subprocess.run([sys.executable, Path(__file__).with_name("test_ppt_media.py")], env=env, check=True)
+        for test_script in ("test_ppt_media.py", "test_media_previews.py"):
+            subprocess.run([sys.executable, Path(__file__).with_name(test_script)], env=env, check=True)
         subprocess.run([sys.executable, Path(__file__).with_name("windows_show_rehearsal.py"), test],
                        env=env, cwd=test, check=True, timeout=60)
     print("PASS: portable GUI, FFmpeg/ffprobe/ffplay, Show Control IPC play/pause/resume and decoded mpv video")

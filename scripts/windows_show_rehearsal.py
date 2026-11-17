@@ -61,6 +61,11 @@ def rehearse(folder):
             "scenes": [{"id": "school", "name": "School", "cue_ids_a": ["A1"], "cue_ids_b": ["B1", "B2", "B3"]}]}),
             encoding="utf-8")
         app._load_show_from_path(showfile, set_show_path=True)
+        def waveform_ready():
+            app.update()
+            return app.canvas_a.find_withtag("waveform")
+        wait_for(waveform_ready, bool)
+        print("PASS: real Windows waveform generation and Tk drawing")
         assert Path(app._cues_a[0].path) == music
         assert Path(app._cues_b[1].path) == clip
         assert app._cue_for_show(app._cues_a[0], folder)["path"] == "./" + music.name
@@ -106,8 +111,30 @@ def rehearse(folder):
             assert visual.get_property("mute") is True
 
         assert_slide("0001.png")
+        app._poll_output_monitor()
+        def monitors_ready():
+            app.update()
+            return all(frame is not None for frame in app.output_monitor.frames.values())
+        wait_for(monitors_ready, bool)
+        assert app.output_monitor.captions["next"].get().startswith("2/2")
+        assert visual.get_property("path").endswith("0001.png")
+        from PIL import ImageGrab
+        app.update_idletasks()
+        # Save the GUI for layout review before the source app closes.
+        app._exit_presentation_mode()
+        visual.set_property("window-minimized", True)
+        app._bring_to_front()
+        app.update()
+        ImageGrab.grab().save(root / "dist/windows-rehearsal-preview.png")
+        visual.set_property("window-minimized", False)
+        app._ppt_fullscreen_2nd_screen()
         app._ppt_next_ui()
         assert_slide("0002.mp4")
+        app._poll_output_monitor()
+        wait_for(monitors_ready, lambda _: app.output_monitor.frames["live"] is not None)
+        assert app.output_monitor.frames["next"] is None
+        assert app.output_monitor.captions["next"].get() == "Utolsó dia"
+        print("PASS: output monitor and upcoming slide rendered without advancing or replacing projector media")
         app.var_ppt_sound.set(True)
         app._ppt_apply_sound()
         assert visual.get_property("mute") is False

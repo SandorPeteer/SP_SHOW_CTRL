@@ -346,7 +346,7 @@ except ImportError:
 CueKind = Literal["audio", "video", "ppt", "image"]
 
 APP_NAME = "S.P. Show Control"
-APP_VERSION = "v01"
+APP_VERSION = "2026.11.17 · előnézet"
 
 _APP_DIR = Path(__file__).resolve().parent
 _FFTOOLS_CACHE: dict[str, str] = {}
@@ -3100,6 +3100,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._vu_visible: dict[str, bool] = {"A": False, "B": False}
         self._vu_db_cache: dict[str, str] = {"A": "", "B": ""}
         self._ui_tasks: queue.SimpleQueue = queue.SimpleQueue()
+        from media_waveform import WaveformWorker
+        self._waveform_worker = WaveformWorker(self._ui_tasks)
         self._ppt_pending = None
         self._ppt_cue = None
         self._ppt_slides = []
@@ -5458,6 +5460,14 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         ttk.Button(btn_b, text="▲", width=2, command=lambda: self._move_b(-1)).grid(row=0, column=2, sticky="ew", padx=2)
         ttk.Button(btn_b, text="▼", width=2, command=lambda: self._move_b(1)).grid(row=0, column=3, sticky="ew", padx=2)
 
+        from output_monitor import OutputMonitor
+        self.output_monitor = OutputMonitor(
+            deck_b, self._ui_tasks, lambda: _resolve_fftool("ffmpeg"),
+            _no_console_subprocess_kwargs, self._log,
+        )
+        self.output_monitor.pack(fill="x", pady=(4, 0))
+        self._monitor_after_id = self.after(500, self._poll_output_monitor)
+
         # VISUALS controls: no waveform + no IN/OUT editor on this side.
         visuals_ctrl = ttk.Frame(deck_b, padding=(0, 4, 0, 0))
         visuals_ctrl.pack(fill="x", pady=(4, 0))
@@ -5625,8 +5635,38 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         # Set cleanup protocol for window close
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
 
+    def _poll_output_monitor(self):
+        next_path, next_caption = None, ""
+        if self._ppt_running and self._ppt_slides:
+            next_index = self._ppt_index + 1
+            if next_index < len(self._ppt_slides):
+                next_path = str(self._ppt_slides[next_index])
+                next_caption = f"{next_index + 1}/{len(self._ppt_slides)} · {self._ppt_cue.display_name()}"
+            else:
+                next_caption = "Utolsó dia"
+        else:
+            cue = self._selected_cue_for_deck("B")
+            if cue and cue.kind == "ppt" and sys.platform == "win32":
+                ready = self._ppt_preparer.ready.get(cue.path)
+                if ready:
+                    next_path = str(ready[1][0])
+                    next_caption = f"1/{len(ready[1])} · {cue.display_name()}"
+                else:
+                    next_caption = "A PPT előkészítésére vár"
+            elif cue and cue.kind in ("image", "video"):
+                next_path, next_caption = cue.path, cue.display_name()
+        current = self.video_runner.current_cue()
+        caption = current.display_name() if current else ""
+        if self._ppt_running and self._ppt_cue:
+            caption = f"{self._ppt_index + 1}/{len(self._ppt_slides)} · {self._ppt_cue.display_name()}"
+        self.output_monitor.update_targets(self.video_runner._sess, next_path, next_caption, caption)
+        self._monitor_after_id = self.after(500, self._poll_output_monitor)
+
     def _on_closing(self):
         """Clean up media players before closing the application"""
+        self.after_cancel(self._monitor_after_id)
+        self.output_monitor.close()
+        self._waveform_worker.close()
         try:
             # Stop both media runners
             if hasattr(self, 'audio_runner'):
@@ -5667,6 +5707,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
     # ── Dual Deck Data Management ───────────────────────────────────────
     def _on_deck_a_select(self):
+        self._waveform_worker.cancel("A")
         sel = self.tree_a.selection()
         self._selected_a = int(sel[0]) if sel else -1
         if self._selected_a >= 0:
@@ -5881,41 +5922,14 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         token = int(self._wave_req_seq[deck])
         self._wave_req_cue_id[deck] = cue.id
 
-        def _worker():
-            png_bytes: bytes | None = None
-            err_text: str | None = None
-            try:
-                ffmpeg = _resolve_fftool("ffmpeg")
-                if not ffmpeg:
-                    raise RuntimeError("ffmpeg not found")
-                cmd = [
-                    ffmpeg,
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-i",
-                    str(cue.path),
-                    "-filter_complex",
-                    f"showwavespic=s={width}x{height}:colors=#4a9eff",
-                    "-frames:v",
-                    "1",
-                    "-f",
-                    "image2pipe",
-                    "-vcodec",
-                    "png",
-                    "-",
-                ]
-                result = subprocess.run(cmd, capture_output=True, timeout=10, **_no_console_subprocess_kwargs())
-                if result.returncode == 0 and result.stdout:
-                    png_bytes = bytes(result.stdout)
-                else:
-                    err_text = (result.stderr or b"").decode(errors="ignore") if isinstance(result.stderr, (bytes, bytearray)) else str(result.stderr)
-            except Exception as e:
-                err_text = str(e)
-
-            self._ui_tasks.put(lambda: self._apply_waveform_result(deck, cue.id, token, png_bytes, err_text))
-
-        threading.Thread(target=_worker, daemon=True).start()
+        canvas.delete("all")
+        self._playback_items[deck] = None
+        canvas.create_text(width // 2, height // 2, text="Hullámforma készül…", fill="#bdbdbd")
+        self._waveform_worker.request(
+            deck, _resolve_fftool("ffmpeg"), cue.path, width, height,
+            lambda png, error: self._apply_waveform_result(deck, cue.id, token, png, error),
+            _no_console_subprocess_kwargs(),
+        )
 
     def _compute_vu_levels_from_image(self, img) -> list[float]:
         try:
@@ -6005,46 +6019,19 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 return
         if cue.id in self._vu_req_inflight:
             return
+        self._vu_req_inflight.clear()
         self._vu_req_inflight.add(cue.id)
 
-        def _worker() -> None:
-            levels: list[float] = []
-            err_text: str | None = None
-            try:
-                ffmpeg = _resolve_fftool("ffmpeg")
-                if not ffmpeg:
-                    raise RuntimeError("ffmpeg not found")
-                cmd = [
-                    ffmpeg,
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-i",
-                    str(cue.path),
-                    "-filter_complex",
-                    "showwavespic=s=480x80:colors=#4a9eff",
-                    "-frames:v",
-                    "1",
-                    "-f",
-                    "image2pipe",
-                    "-vcodec",
-                    "png",
-                    "-",
-                ]
-                result = subprocess.run(cmd, capture_output=True, timeout=10, **_no_console_subprocess_kwargs())
-                if result.returncode == 0 and result.stdout:
-                    try:
-                        from io import BytesIO
-                        from PIL import Image  # type: ignore[reportMissingImports]
-
-                        img = Image.open(BytesIO(result.stdout))
-                        levels = self._compute_vu_levels_from_image(img)
-                    except Exception as e:
-                        err_text = str(e)
-                else:
-                    err_text = (result.stderr or b"").decode(errors="ignore") if isinstance(result.stderr, (bytes, bytearray)) else str(result.stderr)
-            except Exception as e:
-                err_text = str(e)
+        def _result(png, err_text):
+            levels = []
+            if png:
+                try:
+                    from io import BytesIO
+                    from PIL import Image
+                    with Image.open(BytesIO(png)) as image:
+                        levels = self._compute_vu_levels_from_image(image)
+                except Exception as exc:
+                    err_text = str(exc)
 
             def _apply() -> None:
                 try:
@@ -6070,9 +6057,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                         except Exception:
                             pass
 
-            self._ui_tasks.put(_apply)
+            _apply()
 
-        threading.Thread(target=_worker, daemon=True).start()
+        self._waveform_worker.request(
+            "vu", _resolve_fftool("ffmpeg"), cue.path, 480, 80, _result,
+            _no_console_subprocess_kwargs(),
+        )
 
     def _request_loudness_analysis(self, cue: Cue, *, force: bool = False, track_progress: bool = False) -> None:
         if cue.kind not in ("audio", "video"):
@@ -6273,7 +6263,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 except Exception:
                     pass
                 photo = ImageTk.PhotoImage(img)
-            except Exception:
+            except Exception as exc:
+                err_text = str(exc)
                 photo = None
 
         if photo is not None:
@@ -6294,7 +6285,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 canvas.create_text(
                     width // 2,
                     height // 2,
-                    text="Waveform preview unavailable",
+                    text="Hullámforma hiba\n" + (err_text or "Ismeretlen hiba")[:160],
+                    width=max(1, width - 12),
                     fill="#888888",
                     font=("Arial", 10),
                 )
@@ -6302,7 +6294,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 pass
             if err_text:
                 try:
-                    self._log(f"Deck {deck}: Waveform preview unavailable ({err_text.strip()[:120]})")
+                    self._log(f"Deck {deck}: Waveform preview unavailable ({err_text.strip()})")
                 except Exception:
                     pass
 

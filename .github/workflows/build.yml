@@ -61,6 +61,13 @@ jobs:
       - name: Test packaged Show Control (Windows)
         shell: pwsh
         run: .\.venv_build_windows\Scripts\python.exe scripts\windows_bundle_smoke.py
+      - name: Upload Windows UI verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ui-verification
+          path: dist/windows-*.png
+          if-no-files-found: ignore
       - name: Build yt-dlr (Windows)
         shell: pwsh
         run: .\packaging\build_yt_dlr_windows.ps1

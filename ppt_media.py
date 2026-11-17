@@ -106,6 +106,7 @@ def _render(source, stage, progress):
                 out = stage / f"{len(kinds)+1:04d}.{kind}"
                 progress(f"Dia {i}/{doc.Slides.Count} • {kind.upper()}")
                 if moving:
+                    slide.Export(str(out.with_suffix(".preview.png")), "PNG", width, 1080)
                     _render_video(ppt, source, i, out, max(5, length, math.ceil(transition.AdvanceTime)))
                 else:
                     slide.Export(str(out), "PNG", width, 1080)
