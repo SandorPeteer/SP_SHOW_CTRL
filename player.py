@@ -5287,9 +5287,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         deck_a = ttk.Frame(decks_container, padding=10)
         audio_head = ttk.Frame(deck_a)
         audio_head.pack(fill="x", pady=(0, 8))
-        ttk.Label(audio_head, text="Audio", style="CardTitle.TLabel").pack(side="left")
-        self.audio_tools, self.tabs_a = tool_window(self, "Audio tools")
-        icons.button(audio_head, "settings", "Audio tools", lambda: show_tools(
+        ttk.Label(audio_head, text="Audio / Video", style="CardTitle.TLabel").pack(side="left")
+        self.audio_tools, self.tabs_a = tool_window(self, "Media tools")
+        icons.button(audio_head, "settings", "Media tools", lambda: show_tools(
             self.audio_tools, self.tabs_a, self.tab_a_inout)).pack(side="right")
 
         self.tree_a = ttk.Treeview(
@@ -5376,10 +5376,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.var_play_a = tk.StringVar(value="Play")
         self.btn_play_a = self._make_transport_button(now_a_ctrl, self.var_play_a, self._play_deck_a, "play", "Play / pause", True)
         self.btn_play_a.grid(row=0, column=0, sticky="nsew", padx=2)
-        self.btn_stop_a = self._make_transport_button(now_a_ctrl, "Stop", self._stop_deck_a, "stop", "Stop audio")
+        self.btn_stop_a = self._make_transport_button(now_a_ctrl, "Stop", self._stop_deck_a, "stop", "Stop media")
         self.btn_stop_a.grid(row=0, column=1, sticky="nsew", padx=2)
         self.var_loop_a = tk.StringVar(value="Repeat off")
-        self.btn_loop_a = self._make_transport_button(now_a_ctrl, self.var_loop_a, lambda: self._toggle_loop("A"), "repeat", "Repeat audio")
+        self.btn_loop_a = self._make_transport_button(now_a_ctrl, self.var_loop_a, lambda: self._toggle_loop("A"), "repeat", "Repeat media")
         self.btn_loop_a.grid(row=0, column=2, sticky="nsew", padx=2)
 
         # Tabs under playback block (Deck A)
