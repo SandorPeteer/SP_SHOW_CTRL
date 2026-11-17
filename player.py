@@ -5217,8 +5217,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         decks_container = ttk.Frame(root)
         decks_container.pack(fill="both", expand=True, pady=(0, 6))
         decks_container.columnconfigure(0, weight=0, minsize=145)  # Scenes column (fixed width)
-        decks_container.columnconfigure(1, weight=1)  # Deck A
-        decks_container.columnconfigure(2, weight=2)  # Deck B
+        decks_container.columnconfigure(1, weight=1, uniform="decks")  # Deck A
+        decks_container.columnconfigure(2, weight=1, uniform="decks")  # Deck B
         decks_container.rowconfigure(0, weight=1)
 
         # SCENE PANEL (left column)
@@ -5237,6 +5237,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             yscrollcommand=scene_scrollbar.set,
             selectmode="browse",
             font=("Helvetica", 11),
+            width=14,
             bg="#2b2b2b",
             fg="#ffffff",
             selectbackground="#4a90e2",
@@ -5357,7 +5358,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.var_play_a = tk.StringVar(value="Indítás")
         self.btn_play_a = self._make_transport_button(now_a_ctrl, self.var_play_a, self._play_deck_a)
         self.btn_play_a.grid(row=0, column=0, sticky="ew", padx=2)
-        self.btn_stop_a = self._make_transport_button(now_a_ctrl, "⏹ STOP", self._stop_deck_a)
+        self.btn_stop_a = self._make_transport_button(now_a_ctrl, "Leállítás", self._stop_deck_a)
         self.btn_stop_a.grid(row=0, column=1, sticky="ew", padx=2)
         self.var_loop_a = tk.StringVar(value="Ismétlés: KI")
         self.btn_loop_a = self._make_transport_button(now_a_ctrl, self.var_loop_a, lambda: self._toggle_loop("A"))
@@ -5504,7 +5505,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.var_play_b = tk.StringVar(value="Kivetítés")
         self.btn_play_b = self._make_transport_button(visuals_ctrl, self.var_play_b, self._play_deck_b)
         self.btn_play_b.grid(row=0, column=0, sticky="ew", padx=2)
-        self.btn_stop_b = self._make_transport_button(visuals_ctrl, "⏹ CLEAR", self._stop_deck_b)
+        self.btn_stop_b = self._make_transport_button(visuals_ctrl, "Kép levétele", self._stop_deck_b)
         self.btn_stop_b.grid(row=0, column=1, sticky="ew", padx=2)
         self.var_loop_b = tk.StringVar(value="Ismétlés: KI")
         self.btn_loop_b = self._make_transport_button(visuals_ctrl, self.var_loop_b, lambda: self._toggle_loop("B"))
@@ -5528,7 +5529,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.tree_b.column("kind", width=55, minwidth=55, stretch=False)
         self.tree_b.column("name", width=380, minwidth=120, stretch=True)
         self.tree_b.column("duration", width=86, minwidth=78, stretch=False, anchor="e")
-        self.tree_b.configure(height=4)
+        self.tree_b.configure(height=2)
         self.tree_b.pack(fill="both", expand=True)
         try:
             self.tree_b.tag_configure("playing", background="#2e7d32", foreground="#ffffff")
@@ -5659,7 +5660,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.var_download_dir.trace_add("write", lambda *_: self._apply_downloads_dir_setting())
 
         dl_url_row = ttk.Frame(dl_b)
-        dl_url_row.pack(fill="x", pady=(8, 0))
+        dl_url_row.pack(fill="x", pady=(2, 0))
         ttk.Label(dl_url_row, text="Videó linkje:").pack(side="left")
         self.var_ytdlp_url = tk.StringVar(value="")
         self.entry_ytdlp_url = ttk.Entry(dl_url_row, textvariable=self.var_ytdlp_url)
@@ -5667,7 +5668,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         ttk.Button(dl_url_row, text="Törlés", command=lambda: self.var_ytdlp_url.set(""), width=7).pack(side="left")
 
         dl_mode_row = ttk.Frame(dl_b)
-        dl_mode_row.pack(fill="x", pady=(8, 0))
+        dl_mode_row.pack(fill="x", pady=(2, 0))
         self.var_ytdlp_mode = tk.StringVar(value="av")
         ttk.Label(dl_mode_row, text="Tartalom:").pack(side="left")
         ttk.Radiobutton(dl_mode_row, text="Hang", value="audio", variable=self.var_ytdlp_mode).pack(side="left", padx=(8, 0))
@@ -5675,7 +5676,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         ttk.Radiobutton(dl_mode_row, text="Hang és videó", value="av", variable=self.var_ytdlp_mode).pack(side="left", padx=(8, 0))
 
         dl_btn_row = ttk.Frame(dl_b)
-        dl_btn_row.pack(fill="x", pady=(8, 0))
+        dl_btn_row.pack(fill="x", pady=(2, 0))
         self.btn_ytdlp_download = ttk.Button(dl_btn_row, text="Letöltés", command=self._start_ytdlp_download)
         self.btn_ytdlp_download.pack(side="left")
         self.btn_ytdlp_cancel = ttk.Button(dl_btn_row, text="Megszakítás", command=self._cancel_ytdlp_download, state="disabled")
@@ -5687,7 +5688,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
 
         self.var_ytdlp_status = tk.StringVar(value="")
-        ttk.Label(dl_b, textvariable=self.var_ytdlp_status, wraplength=310, padding=(0, 8, 0, 0)).pack(anchor="w")
+        ttk.Label(dl_b, textvariable=self.var_ytdlp_status, wraplength=310, padding=(0, 2, 0, 0)).pack(anchor="w")
 
         # Default states for per-cue setup controls (no selection yet).
         self._sync_target_setting_controls("A", None)
@@ -9665,7 +9666,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 sel = self._selected_cue_for_deck(deck)
 
                 if deck == "B":
-                    play_text = "Vetítés folyamatban" if playing else "Kivetítés"
+                    play_text = "Kivetítve" if playing else "Kivetítés"
                 else:
                     if playing:
                         play_text = "Szünet"

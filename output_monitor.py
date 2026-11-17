@@ -91,7 +91,7 @@ class OutputMonitor(ttk.Frame):
             self.columnconfigure(column, weight=1, uniform="monitor")
             box = ttk.LabelFrame(self, text=title, padding=2)
             box.grid(row=0, column=column, sticky="nsew", padx=(0, 3) if column == 0 else (3, 0))
-            canvas = tk.Canvas(box, width=1, height=140, bg="black", highlightthickness=0)
+            canvas = tk.Canvas(box, width=1, height=120, bg="black", highlightthickness=0)
             canvas.pack(fill="x")
             self.canvases[key] = canvas
             self.captions[key] = tk.StringVar()
