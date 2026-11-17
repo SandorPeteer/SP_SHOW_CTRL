@@ -55,12 +55,13 @@ def exercise_downloader(app, folder, tools):
     with patch.object(player, "_resource_path", resource), patch.object(player, "_download_url_to_file", download):
         app._update_download_tools()
         wait()
-        assert app.var_ytdlp_status.get().startswith("Frissítve"), app.var_ytdlp_status.get()
+        assert app.var_ytdlp_status.get().startswith("Updated"), app.var_ytdlp_status.get()
         assert Path(player._resolve_ytdlp()).is_relative_to(player._user_data_dir())
-        app.tabs_b.select(app.tab_b_download)
+        from operator_ui import show_tools
+        show_tools(app.projection_tools, app.tabs_b, app.tab_b_download)
         app.update()
         assert app.btn_ytdlp_update.winfo_ismapped()
-        assert app.btn_ytdlp_update.winfo_rooty() + app.btn_ytdlp_update.winfo_height() <= app.winfo_rooty() + app.winfo_height()
+        assert app.btn_ytdlp_update.winfo_rooty() + app.btn_ytdlp_update.winfo_height() <= app.projection_tools.winfo_rooty() + app.projection_tools.winfo_height()
         from PIL import ImageGrab
         ImageGrab.grab().save(tools.parents[2] / "windows-downloader-preview.png")
 

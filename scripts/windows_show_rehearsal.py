@@ -74,6 +74,7 @@ def rehearse(folder):
         "sha256": hashlib.sha256(loop_ppt.read_bytes()).hexdigest(),
         "slides": ["png"] * 4, "seconds": [0.4, 0.5, 0.4, 0.5]}))
     app = App()
+    long_scene = "Grade 13D · Welcome, class photos and the full awards ceremony"
     try:
         app.update()
         from tkinter import ttk
@@ -95,7 +96,7 @@ def rehearse(folder):
                        {"id": "B2", "kind": "video", "path": "./" + clip.name},
                        {"id": "B3", "kind": "ppt", "path": "./" + ppt.name},
                        {"id": "B4", "kind": "ppt", "path": "./" + loop_ppt.name}],
-            "scenes": [{"id": "school", "name": "School", "cue_ids_a": ["A1"], "cue_ids_b": ["B1", "B2", "B3", "B4"]}]}),
+            "scenes": [{"id": "school", "name": long_scene, "cue_ids_a": ["A1"], "cue_ids_b": ["B1", "B2", "B3", "B4"]}]}),
             encoding="utf-8")
         app._load_show_from_path(showfile, set_show_path=True)
         def waveform_ready():
@@ -105,7 +106,6 @@ def rehearse(folder):
         print("PASS: real Windows waveform generation and Tk drawing")
         assert Path(app._cues_a[0].path) == music
         assert Path(app._cues_b[1].path) == clip
-        assert app._cue_for_show(app._cues_a[0], folder)["path"] == "./" + music.name
         before_import = controller_dpi(app)
         with patch("player.filedialog.askopenfilenames", return_value=(str(ppt),)):
             app._add_media_b()
@@ -140,10 +140,14 @@ def rehearse(folder):
             assert windows
             return windows[0]
 
-        app._ppt_fullscreen_2nd_screen()
         hwnd = output_hwnd()
+        for full in (True, False, True):
+            app.btn_output_fullscreen.invoke()
+            assert visual.get_property("fullscreen") is full and output_hwnd() == hwnd
+            assert app.var_presentation_btn.get() == ("Windowed" if full else "Fullscreen")
+        print("PASS: one projector button toggles fullscreen on the same output window")
         app._selected_b = 2
-        app._play_selected_ppt_b()
+        app.btn_play_b.invoke()
         def current_slide():
             app._drain_ui_tasks()
             return visual.get_property("path")
@@ -167,40 +171,46 @@ def rehearse(folder):
         from PIL import ImageGrab
         app.update_idletasks()
         # Save the GUI for layout review before the source app closes.
-        app._exit_presentation_mode()
+        app.btn_output_fullscreen.invoke()
         visual.set_property("window-minimized", True)
         app._bring_to_front()
-        app.tabs_a.select(app.tab_a_inout)
-        app.tabs_b.select(app.tab_b_ppt)
-        app.update()
-        for panel in (app.tab_a_inout, app.tab_b_ppt):
-            assert panel.winfo_rooty() + panel.winfo_height() <= app.winfo_rooty() + app.winfo_height()
-        assert app.output_monitor.winfo_rooty() < app.tree_b.winfo_rooty()
-        def descendants(widget):
-            for child in widget.winfo_children():
-                yield child
-                yield from descendants(child)
-        assert not any(str(widget.cget("text")) == "Teljes képernyő"
-                       for widget in descendants(app.tab_b_ppt) if "text" in widget.keys())
-        # Slide navigation must remain available independently of tools tabs.
-        navigation = next(widget for widget in descendants(app)
-                          if "text" in widget.keys() and str(widget.cget("text")) == "Következő dia")
-        app.tabs_b.select(app.tab_b_setup)
-        app.update()
-        assert navigation.winfo_viewable()
-        assert navigation.winfo_rooty() + navigation.winfo_height() <= app.winfo_rooty() + app.winfo_height()
-        app.tabs_b.select(app.tab_b_ppt)
-        app.update()
-        print("PASS: normal/selected/hover/disabled tabs meet 4.5:1 contrast; PPT controls fit the laptop window")
+        app.maxsize(1600, 900)
+        measured = []
+        for width, height in ((980, 620), (1440, 820), (980, 620)):
+            app.geometry(f"{width}x{height}+20+40")
+            app.update()
+            assert app.winfo_width() == width and app.winfo_height() == height
+            widgets = (app.btn_output_fullscreen, app.btn_save_show, app.scene_listbox,
+                       app.btn_play_a, app.btn_play_b, app.btn_next_slide, app.tree_b)
+            for widget in widgets:
+                assert widget.winfo_viewable() and widget.winfo_width() > 20
+                assert widget.winfo_rootx() + widget.winfo_width() <= app.winfo_rootx() + width
+                assert widget.winfo_rooty() + widget.winfo_height() <= app.winfo_rooty() + height
+            assert long_scene in app.scene_listbox.get("1.0", "2.0")
+            assert app.scene_listbox.count("1.0", "2.0", "displaylines")[0] > 1
+            assert app.output_monitor.winfo_rooty() < app.tree_b.winfo_rooty()
+            measured.append((app.scene_listbox.winfo_width(), app.output_monitor.canvases["live"].winfo_height()))
+        assert measured[1][0] > measured[0][0] and measured[1][1] > measured[0][1], measured
+        assert measured[2] == measured[0], measured
+        print("PASS: 980x620 and 1440x820 workspace reflows and wraps full scene names")
         ImageGrab.grab().save(root / "dist/windows-rehearsal-preview.png")
         visual.set_property("window-minimized", False)
-        app._ppt_fullscreen_2nd_screen()
+        app.btn_output_fullscreen.invoke()
         app._ppt_next_ui()
         assert_slide("0002.mp4")
+        aspect = lambda: visual.get_property("video-aspect-override")
+        source_aspect = aspect()
+        for label, expected in (("4:3", 4 / 3), ("16:9", 16 / 9), ("Source", source_aspect)):
+            app.var_output_aspect.set(label)
+            app._apply_output_aspect()
+            actual = aspect()
+            assert actual == expected or abs(actual - expected) < 0.001, (label, actual)
+            assert output_hwnd() == hwnd
+        print("PASS: 4:3, 16:9 and source aspect settings apply to the same live output")
         app._poll_output_monitor()
         wait_for(monitors_ready, lambda _: app.output_monitor.frames["live"] is not None)
         assert app.output_monitor.frames["next"] is None
-        assert app.output_monitor.captions["next"].get() == "Utolsó dia"
+        assert app.output_monitor.captions["next"].get() == "Last slide"
         print("PASS: output monitor and upcoming slide rendered without advancing or replacing projector media")
         app.var_ppt_sound.set(True)
         app._ppt_apply_sound()
@@ -210,7 +220,7 @@ def rehearse(folder):
         app._ppt_end()
         wait_for(current_slide, lambda v: v and Path(v) == image)
         assert visual.get_property("fullscreen") is True and output_hwnd() == hwnd
-        app._play_selected_ppt_b()
+        app.btn_play_b.invoke()
         app._transport_stop("B")
         wait_for(lambda: (app._drain_ui_tasks(), app._ppt_preparer.pending)[1], lambda v: not v)
         assert not app._ppt_running
@@ -220,7 +230,7 @@ def rehearse(folder):
         assert app.audio_runner.is_playing()
         print("PASS: Deck A music advanced throughout Deck B image/video/image/stop, visuals muted")
         app._selected_b = 3
-        app._play_selected_ppt_b()
+        app.btn_play_b.invoke()
         wait_for(lambda: (app.update(), app._ppt_running)[1], bool)
         hold = time.monotonic() + 0.6
         while time.monotonic() < hold:
@@ -255,6 +265,25 @@ def rehearse(folder):
         exercise_downloader(app, folder, tools)
         assert audio.get_property("time-pos") > before
         assert app.audio_runner.is_playing()
+        app.projection_tools.withdraw()
+        # Save repeated cue positions independently while collecting one source file.
+        from player import Cue, Scene
+        duplicate = Cue(id="A2", kind="audio", path=str(music), start_sec=3.0)
+        app._all_cues_a.append(duplicate)
+        app._scenes[0].cue_ids_a.append(duplicate.id)
+        app._scenes.append(Scene(id="second", name="Grade 13C", cue_ids_a=[duplicate.id], cue_ids_b=["B1"]))
+        app.btn_save_show.invoke()
+        wait_for(lambda: (app.update(), app._saving_show)[1], lambda busy: not busy)
+        assert app._auto_open_last_show()
+        assert app._show_path == showfile and len(app._scenes) == 2
+        assert app._scenes[0].cue_ids_a == ["A1", "A2"] and app._scenes[1].cue_ids_a == ["A2"]
+        first, second = app._cues_a
+        assert first.id != second.id and second.start_sec == 3.0 and first.path == second.path
+        assert Path(first.path).is_relative_to(showfile.with_suffix(".media"))
+        saved_ppt = Path(app._cues_b[2].path)
+        assert saved_ppt.with_name(saved_ppt.name + ".mpv").joinpath("0001.png").is_file()
+        assert music.is_file() and ppt.is_file()
+        print("PASS: quick save and reopen preserve repeated cues, shared media and portable prepared slides")
     except Exception:
         print("PPT status:", ascii(app.var_ppt_status.get()), flush=True)
         print("Recent events:", ascii(app._log_buffer[-10:]) if isinstance(app._log_buffer, list)

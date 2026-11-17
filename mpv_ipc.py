@@ -55,6 +55,7 @@ class MpvIpcSession:
         self.fullscreen = bool(fullscreen)
         self.native_fullscreen = False
         self.hwdec = "auto-safe"
+        self.output_aspect = "no"
         self.log_file = ""
         self.ipc_verbose = bool(ipc_verbose)
 
@@ -147,6 +148,7 @@ class MpvIpcSession:
             "--player-operation-mode=pseudo-gui",
             "--no-terminal",
             f"--hwdec={self.hwdec}",
+            f"--video-aspect-override={self.output_aspect}",
             "--idle=yes",
             "--force-window=immediate",
             "--keep-open=yes",

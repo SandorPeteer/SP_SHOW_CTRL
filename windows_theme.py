@@ -3,27 +3,35 @@ from tkinter import ttk
 
 
 def apply_windows_theme(app):
-    background = "#2b2b2b"
-    field = "#1d1f22"
-    foreground = "#f1f1f1"
+    background = "#202a3a"
+    field = "#171f2c"
+    foreground = "#edf3fc"
     disabled = "#b8b8b8"
-    raised = "#3b3e43"
-    selected = "#21659c"
-    border = "#545860"
+    raised = "#2b3a51"
+    selected = "#2c5393"
+    border = "#38465b"
     style = ttk.Style(app)
     style.theme_use("clam")
-    app.configure(background=background)
+    app.configure(background="#111825")
     for option, color in (("*Background", background), ("*Foreground", foreground),
                           ("*insertBackground", foreground), ("*selectBackground", selected),
                           ("*selectForeground", foreground), ("*disabledForeground", disabled)):
         app.option_add(option, color)
     style.configure(".", background=background, foreground=foreground,
                     bordercolor=border, lightcolor=background, darkcolor=background,
-                    troughcolor=field, font=("Segoe UI", 9))
+                    troughcolor=field, font=("Segoe UI", 10))
+    style.configure("Shell.TFrame", background="#111825")
+    style.configure("ShowTitle.TLabel", background="#111825", font=("Segoe UI", 12, "bold"))
+    style.configure("CardTitle.TLabel", font=("Segoe UI", 13, "bold"))
+    style.configure("Tooltip.TLabel", background="#304158", foreground=foreground)
+    style.configure("Status.TLabel", foreground="#bdcbe0")
     style.map(".", foreground=[("disabled", disabled)])
     style.configure("TButton", background=raised, padding=(8, 4), relief="flat")
-    style.map("TButton", background=[("disabled", background), ("pressed", selected), ("active", "#4a4e55")],
+    style.map("TButton", background=[("disabled", background), ("pressed", selected), ("active", "#3b4d68")],
               foreground=[("disabled", disabled), ("!disabled", foreground)])
+    style.configure("Icon.TButton", padding=(5, 4))
+    style.configure("Accent.TButton", background="#285da8", padding=(9, 5), font=("Segoe UI", 10, "bold"))
+    style.map("Accent.TButton", background=[("pressed", "#214b86"), ("active", "#366cbb")])
     for widget in ("TCheckbutton", "TRadiobutton"):
         style.map(widget, background=[("active", background)],
                   indicatorbackground=[("selected", selected), ("!selected", field)],
@@ -37,7 +45,7 @@ def apply_windows_theme(app):
                   selectbackground=[("!disabled", selected)], selectforeground=[("!disabled", foreground)])
     app.option_add("*TCombobox*Listbox.background", field)
     app.option_add("*TCombobox*Listbox.foreground", foreground)
-    style.configure("Treeview", background=field, fieldbackground=field, foreground=foreground, rowheight=24)
+    style.configure("Treeview", background=field, fieldbackground=field, foreground=foreground, rowheight=27)
     style.map("Treeview", background=[("selected", selected)], foreground=[("selected", foreground)])
     style.configure("Treeview.Heading", background=raised, foreground=foreground, relief="flat", padding=(4, 5))
     style.map("Treeview.Heading", background=[("active", "#4a4e55")], foreground=[("active", foreground)])

@@ -124,7 +124,7 @@ def smoke():
         finally:
             subprocess.run(["taskkill", "/PID", str(app.pid), "/T", "/F"], capture_output=True)
             app.wait(timeout=10)
-        for test_script in ("test_ppt_media.py", "test_media_previews.py", "test_download_tools.py"):
+        for test_script in ("test_ppt_media.py", "test_media_previews.py", "test_download_tools.py", "test_show_storage.py"):
             subprocess.run([sys.executable, Path(__file__).with_name(test_script)], env=env, check=True)
         subprocess.run([sys.executable, Path(__file__).with_name("windows_show_rehearsal.py"), test],
                        env=env, cwd=test, check=True, timeout=120)

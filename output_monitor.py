@@ -87,16 +87,23 @@ class OutputMonitor(ttk.Frame):
         self.errors = {}
         self.canvases = {}
         self.captions = {}
-        for column, (key, title) in enumerate((("live", "MOST A KIVETÍTŐN"), ("next", "KÖVETKEZŐ DIA"))):
+        for column, (key, title) in enumerate((("live", "On screen"), ("next", "Next slide"))):
             self.columnconfigure(column, weight=1, uniform="monitor")
-            box = ttk.LabelFrame(self, text=title, padding=2)
+            box = ttk.Frame(self)
             box.grid(row=0, column=column, sticky="nsew", padx=(0, 3) if column == 0 else (3, 0))
-            canvas = tk.Canvas(box, width=1, height=120, bg="black", highlightthickness=0)
+            ttk.Label(box, text=title).pack(anchor="w", pady=(0, 4))
+            canvas = tk.Canvas(box, width=1, height=120, bg="#0b1018", highlightthickness=0)
             canvas.pack(fill="x")
             self.canvases[key] = canvas
             self.captions[key] = tk.StringVar()
             ttk.Label(box, textvariable=self.captions[key], width=1, anchor="w").pack(fill="x")
             canvas.bind("<Configure>", lambda event, item=key: self._draw(item))
+
+    def fit(self, width, panel_height):
+        height = max(64, min(round((width - 6) * 9 / 32), round(panel_height * 0.42)))
+        for canvas in self.canvases.values():
+            if int(canvas.cget("height")) != height:
+                canvas.configure(height=height)
 
     def _draw(self, key, status=""):
         if self.closed:
@@ -127,7 +134,7 @@ class OutputMonitor(ttk.Frame):
             self.targets["next"] = next_path
             self.frames["next"] = None
             self.errors.pop("next", None)
-            self._draw("next", "Előnézet készül…" if next_path else "")
+            self._draw("next", "Loading preview…" if next_path else "")
         self._request("live", lambda: capture_output(session))
         if next_path and self.frames["next"] is None and not self.errors.get("next"):
             self._request("next", lambda: load_preview(next_path, self.ffmpeg(), self.subprocess_kwargs(), self.cancelled))
@@ -148,9 +155,9 @@ class OutputMonitor(ttk.Frame):
                 if self.closed or self.targets[key] != target:
                     return
                 self.frames[key] = frame
-                self._draw(key, "Előnézet nem érhető el" if error else "")
+                self._draw(key, "Preview unavailable" if error else "")
                 if error and self.errors.get(key) != error:
-                    self.log(f"Előnézet ({key}): {error}")
+                    self.log(f"Preview ({key}): {error}")
                 self.errors[key] = error
             self.ui_queue.put(apply)
 
