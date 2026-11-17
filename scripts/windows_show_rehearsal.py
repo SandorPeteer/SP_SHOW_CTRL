@@ -151,6 +151,22 @@ def rehearse(folder):
         app.update()
         for panel in (app.tab_a_inout, app.tab_b_ppt):
             assert panel.winfo_rooty() + panel.winfo_height() <= app.winfo_rooty() + app.winfo_height()
+        assert app.output_monitor.winfo_rooty() < app.tree_b.winfo_rooty()
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+        assert not any(str(widget.cget("text")) == "Teljes képernyő"
+                       for widget in descendants(app.tab_b_ppt) if "text" in widget.keys())
+        # Slide navigation must remain available independently of tools tabs.
+        navigation = next(widget for widget in descendants(app)
+                          if "text" in widget.keys() and str(widget.cget("text")) == "Következő dia")
+        app.tabs_b.select(app.tab_b_setup)
+        app.update()
+        assert navigation.winfo_viewable()
+        assert navigation.winfo_rooty() + navigation.winfo_height() <= app.winfo_rooty() + app.winfo_height()
+        app.tabs_b.select(app.tab_b_ppt)
+        app.update()
         print("PASS: normal/selected/hover/disabled tabs meet 4.5:1 contrast; PPT controls fit the laptop window")
         ImageGrab.grab().save(root / "dist/windows-rehearsal-preview.png")
         visual.set_property("window-minimized", False)

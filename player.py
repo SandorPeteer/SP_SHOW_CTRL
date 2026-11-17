@@ -5195,33 +5195,34 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         filebar = ttk.Frame(root)
         filebar.pack(fill="x", pady=(0, 6))
 
-        ttk.Button(filebar, text="New", command=self._new_show).pack(side="left")
-        ttk.Button(filebar, text="Open…", command=self._open_show).pack(side="left", padx=(6, 0))
-        ttk.Button(filebar, text="Save", command=self._save_show).pack(side="left", padx=(12, 0))
-        ttk.Button(filebar, text="Save As…", command=self._save_show_as).pack(side="left", padx=(6, 0))
-
-        ttk.Separator(filebar, orient="vertical").pack(side="left", fill="y", padx=12)
-        ttk.Button(filebar, text="Save preset", command=self._save_preset).pack(side="left")
-        ttk.Button(filebar, text="Load preset", command=self._load_preset).pack(side="left", padx=(6, 0))
-
         self.var_showfile = tk.StringVar(value="")
         self.var_presentation_btn = tk.StringVar(value="PRESENTATION")
-        ttk.Button(filebar, text="⚙", width=3, command=self._open_global_setup).pack(side="right", padx=(6, 0))
-        ttk.Button(filebar, text="⛶ mpv native fs", command=self._force_mpv_fullscreen).pack(side="right", padx=(6, 0))
-        ttk.Button(filebar, textvariable=self.var_presentation_btn, command=self._toggle_presentation).pack(side="right")
-        self.lbl_showfile = ttk.Label(filebar, textvariable=self.var_showfile, anchor="e", width=28)
-        self.lbl_showfile.pack(side="right")
+        file_menu = tk.Menu(filebar, tearoff=False)
+        for label, command in (("Új műsor", self._new_show), ("Megnyitás…", self._open_show),
+                               ("Mentés", self._save_show), ("Mentés másként…", self._save_show_as),
+                               ("Beállítások mentése…", self._save_preset), ("Beállítások betöltése…", self._load_preset)):
+            file_menu.add_command(label=label, command=command)
+        ttk.Menubutton(filebar, text="Műsor", menu=file_menu).pack(side="left")
+        ttk.Button(filebar, text="Mentés", command=self._save_show).pack(side="left", padx=4)
+        self.lbl_showfile = ttk.Label(filebar, textvariable=self.var_showfile, anchor="w")
+        self.lbl_showfile.pack(side="left", fill="x", expand=True, padx=10)
+        output_menu = tk.Menu(filebar, tearoff=False)
+        output_menu.add_command(label="Kivetítő teljes képernyőre", command=self._force_mpv_fullscreen)
+        output_menu.add_command(label="Vetítési mód váltása", command=self._toggle_presentation)
+        output_menu.add_command(label="PowerPoint-ablak helyreállítása", command=self._ppt_fullscreen_2nd_screen)
+        ttk.Button(filebar, text="Beállítások", command=self._open_global_setup).pack(side="right")
+        ttk.Menubutton(filebar, text="Kimenet", menu=output_menu).pack(side="right", padx=6)
 
         # MAIN LAYOUT: 3 columns - Scenes | Deck A | Deck B
         decks_container = ttk.Frame(root)
         decks_container.pack(fill="both", expand=True, pady=(0, 6))
-        decks_container.columnconfigure(0, weight=0, minsize=220)  # Scenes column (fixed width)
-        decks_container.columnconfigure(1, weight=1, uniform="decks")  # Deck A
-        decks_container.columnconfigure(2, weight=1, uniform="decks")  # Deck B
+        decks_container.columnconfigure(0, weight=0, minsize=145)  # Scenes column (fixed width)
+        decks_container.columnconfigure(1, weight=1)  # Deck A
+        decks_container.columnconfigure(2, weight=2)  # Deck B
         decks_container.rowconfigure(0, weight=1)
 
         # SCENE PANEL (left column)
-        scene_panel = ttk.LabelFrame(decks_container, text="SCENES", padding=4)
+        scene_panel = ttk.LabelFrame(decks_container, text="MŰSORREND", padding=4)
         scene_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 3))
 
         # Scene listbox
@@ -5251,23 +5252,21 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.scene_listbox.bind("<<ListboxSelect>>", lambda _e: self._on_scene_select())
         self.scene_listbox.bind("<Double-1>", lambda _e: self._activate_scene())
 
-        # Scene control buttons
-        scene_btn = ttk.Frame(scene_panel, padding=(0, 4, 0, 0))
+        scene_btn = ttk.Frame(scene_panel, padding=(0, 6, 0, 0))
         scene_btn.pack(fill="x")
-        ttk.Button(scene_btn, text="+ Scene", command=self._add_scene).pack(fill="x", pady=1)
-        ttk.Button(scene_btn, text="Edit", command=self._edit_scene).pack(fill="x", pady=1)
-        ttk.Button(scene_btn, text="Remove", command=self._remove_scene).pack(fill="x", pady=1)
-        ttk.Button(scene_btn, text="▲", command=lambda: self._move_scene(-1)).pack(fill="x", pady=1)
-        ttk.Button(scene_btn, text="▼", command=lambda: self._move_scene(1)).pack(fill="x", pady=1)
-
-        # Scene navigation buttons (big ones)
-        scene_nav = ttk.Frame(scene_panel, padding=(0, 6, 0, 0))
+        ttk.Button(scene_btn, text="+ Műsorrész", command=self._add_scene).pack(fill="x")
+        scene_menu = tk.Menu(scene_btn, tearoff=False)
+        for label, command in (("Átnevezés / szerkesztés", self._edit_scene), ("Eltávolítás", self._remove_scene),
+                               ("Feljebb", lambda: self._move_scene(-1)), ("Lejjebb", lambda: self._move_scene(1))):
+            scene_menu.add_command(label=label, command=command)
+        ttk.Menubutton(scene_btn, text="Szerkesztés", menu=scene_menu).pack(fill="x", pady=4)
+        scene_nav = ttk.Frame(scene_panel)
         scene_nav.pack(fill="x")
-        ttk.Button(scene_nav, text="◀ PREV", command=self._prev_scene).pack(fill="x", pady=2)
-        ttk.Button(scene_nav, text="▶ NEXT", command=self._next_scene).pack(fill="x", pady=2)
+        ttk.Button(scene_nav, text="Előző", command=self._prev_scene).pack(fill="x", pady=2)
+        ttk.Button(scene_nav, text="Következő", command=self._next_scene).pack(fill="x", pady=2)
 
         # MEDIA (middle column): audio/video
-        deck_a = ttk.LabelFrame(decks_container, text="MEDIA", padding=4)
+        deck_a = ttk.LabelFrame(decks_container, text="HANG / MÉDIA", padding=4)
         deck_a.grid(row=0, column=1, sticky="nsew", padx=(0, 3))
 
         self.tree_a = ttk.Treeview(
@@ -5279,9 +5278,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.tree_a.heading("checkbox", text="☐")
         self.tree_a.heading("auto", text="▶")
         self.tree_a.heading("idx", text="#")
-        self.tree_a.heading("kind", text="Type")
-        self.tree_a.heading("name", text="File")
-        self.tree_a.heading("duration", text="Duration")
+        self.tree_a.heading("kind", text="Típus")
+        self.tree_a.heading("name", text="Fájl")
+        self.tree_a.heading("duration", text="Hossz")
         self.tree_a.column("checkbox", width=0, minwidth=0, stretch=False, anchor="center")  # Hidden by default
         self.tree_a.column("auto", width=30, minwidth=30, stretch=False, anchor="center")
         self.tree_a.column("idx", width=30, minwidth=30, stretch=False, anchor="e")
@@ -5313,8 +5312,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             btn_a.columnconfigure(i, weight=1, uniform="cuebtn_a_main")
         btn_a.columnconfigure(2, weight=0, minsize=36)
         btn_a.columnconfigure(3, weight=0, minsize=36)
-        ttk.Button(btn_a, text="+ ADD MEDIA", command=self._add_media_a).grid(row=0, column=0, sticky="ew", padx=2)
-        ttk.Button(btn_a, text="Remove", command=self._remove_a).grid(row=0, column=1, sticky="ew", padx=2)
+        ttk.Button(btn_a, text="+ Fájlok", command=self._add_media_a).grid(row=0, column=0, sticky="ew", padx=2)
+        ttk.Button(btn_a, text="Kivesz", command=self._remove_a).grid(row=0, column=1, sticky="ew", padx=2)
         ttk.Button(btn_a, text="▲", width=2, command=lambda: self._move_a(-1)).grid(row=0, column=2, sticky="ew", padx=2)
         ttk.Button(btn_a, text="▼", width=2, command=lambda: self._move_a(1)).grid(row=0, column=3, sticky="ew", padx=2)
 
@@ -5355,12 +5354,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         now_a_ctrl.columnconfigure(0, weight=1, uniform="playrow_a")
         now_a_ctrl.columnconfigure(1, weight=1, uniform="playrow_a")
         now_a_ctrl.columnconfigure(2, weight=1, uniform="playrow_a")
-        self.var_play_a = tk.StringVar(value="▶ PLAY")
+        self.var_play_a = tk.StringVar(value="Indítás")
         self.btn_play_a = self._make_transport_button(now_a_ctrl, self.var_play_a, self._play_deck_a)
         self.btn_play_a.grid(row=0, column=0, sticky="ew", padx=2)
         self.btn_stop_a = self._make_transport_button(now_a_ctrl, "⏹ STOP", self._stop_deck_a)
         self.btn_stop_a.grid(row=0, column=1, sticky="ew", padx=2)
-        self.var_loop_a = tk.StringVar(value="⟲ LOOP OFF")
+        self.var_loop_a = tk.StringVar(value="Ismétlés: KI")
         self.btn_loop_a = self._make_transport_button(now_a_ctrl, self.var_loop_a, lambda: self._toggle_loop("A"))
         self.btn_loop_a.grid(row=0, column=2, sticky="ew", padx=2)
 
@@ -5384,16 +5383,16 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.tab_a_setup = tk.Frame(self.tabs_a, bg="#2b2b2b")
         self.tab_a_inout = tk.Frame(self.tabs_a, bg="#2b2b2b")
         self.tab_a_more = tk.Frame(self.tabs_a, bg="#2b2b2b")
-        self.tabs_a.add(self.tab_a_setup, text="Setup")
+        self.tabs_a.add(self.tab_a_setup, text="Beállítás")
         self.tabs_a.add(self.tab_a_inout, text="IN/OUT")
-        self.tabs_a.add(self.tab_a_more, text="More")
+        self.tabs_a.add(self.tab_a_more, text="Továbbiak")
 
         # Setup tab (Deck A) - per-cue target
         setup_a = ttk.Frame(self.tab_a_setup, padding=6)
         setup_a.pack(fill="x")
         setup_a_vol_row = ttk.Frame(setup_a)
         setup_a_vol_row.pack(fill="x")
-        ttk.Label(setup_a_vol_row, text="Start volume:").pack(side="left")
+        ttk.Label(setup_a_vol_row, text="Induló hangerő:").pack(side="left")
         self.var_cue_vol_a = tk.IntVar(value=int(self.settings.startup_volume))
         self.var_cue_vol_a_label = tk.StringVar(value=str(int(self.settings.startup_volume)))
         self.scale_cue_vol_a = ttk.Scale(
@@ -5410,7 +5409,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
         setup_a_mode_row = ttk.Frame(setup_a)
         setup_a_mode_row.pack(fill="x", pady=(6, 0))
-        ttk.Label(setup_a_mode_row, text="Video mode:").pack(side="left")
+        ttk.Label(setup_a_mode_row, text="Videó kimenete:").pack(side="left")
         self.var_video_mode_a = tk.StringVar(value=_video_mode_to_label("output"))
         self.cb_video_mode_a = ttk.Combobox(
             setup_a_mode_row,
@@ -5479,14 +5478,37 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.var_autoplay_a = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             self.tab_a_more,
-            text="Auto-play this cue when selected as next",
+            text="Automatikus indítás a sorban",
             variable=self.var_autoplay_a,
             command=lambda: self._on_cue_autoplay_changed("A")
         ).pack(anchor="w", padx=10, pady=10)
 
         # VISUALS (right column): images/PPT
-        deck_b = ttk.LabelFrame(decks_container, text="VISUALS", padding=4)
+        deck_b = ttk.LabelFrame(decks_container, text="VETÍTÉS", padding=4)
         deck_b.grid(row=0, column=2, sticky="nsew", padx=(3, 0))
+
+        from output_monitor import OutputMonitor
+        self.output_monitor = OutputMonitor(
+            deck_b, self._ui_tasks, lambda: _resolve_fftool("ffmpeg"),
+            _no_console_subprocess_kwargs, self._log,
+        )
+        self.output_monitor.pack(fill="x", pady=(4, 0))
+        self._monitor_after_id = self.after(500, self._poll_output_monitor)
+
+        # VISUALS controls: no waveform + no IN/OUT editor on this side.
+        visuals_ctrl = ttk.Frame(deck_b, padding=(0, 4, 0, 0))
+        visuals_ctrl.pack(fill="x", pady=(4, 0))
+        visuals_ctrl.columnconfigure(0, weight=1, uniform="visuals_ctrl")
+        visuals_ctrl.columnconfigure(1, weight=1, uniform="visuals_ctrl")
+        visuals_ctrl.columnconfigure(2, weight=1, uniform="visuals_ctrl")
+        self.var_play_b = tk.StringVar(value="Kivetítés")
+        self.btn_play_b = self._make_transport_button(visuals_ctrl, self.var_play_b, self._play_deck_b)
+        self.btn_play_b.grid(row=0, column=0, sticky="ew", padx=2)
+        self.btn_stop_b = self._make_transport_button(visuals_ctrl, "⏹ CLEAR", self._stop_deck_b)
+        self.btn_stop_b.grid(row=0, column=1, sticky="ew", padx=2)
+        self.var_loop_b = tk.StringVar(value="Ismétlés: KI")
+        self.btn_loop_b = self._make_transport_button(visuals_ctrl, self.var_loop_b, lambda: self._toggle_loop("B"))
+        self.btn_loop_b.grid(row=0, column=2, sticky="ew", padx=2)
 
         self.tree_b = ttk.Treeview(
             deck_b,
@@ -5497,9 +5519,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.tree_b.heading("checkbox", text="☐")
         self.tree_b.heading("auto", text="▶")
         self.tree_b.heading("idx", text="#")
-        self.tree_b.heading("kind", text="Type")
-        self.tree_b.heading("name", text="File")
-        self.tree_b.heading("duration", text="Duration")
+        self.tree_b.heading("kind", text="Típus")
+        self.tree_b.heading("name", text="Fájl")
+        self.tree_b.heading("duration", text="Hossz")
         self.tree_b.column("checkbox", width=0, minwidth=0, stretch=False, anchor="center")  # Hidden by default
         self.tree_b.column("auto", width=30, minwidth=30, stretch=False, anchor="center")
         self.tree_b.column("idx", width=30, minwidth=30, stretch=False, anchor="e")
@@ -5531,33 +5553,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             btn_b.columnconfigure(i, weight=1, uniform="cuebtn_b_main")
         btn_b.columnconfigure(2, weight=0, minsize=36)
         btn_b.columnconfigure(3, weight=0, minsize=36)
-        ttk.Button(btn_b, text="+ ADD MEDIA", command=self._add_media_b).grid(row=0, column=0, sticky="ew", padx=2)
-        ttk.Button(btn_b, text="Remove", command=self._remove_b).grid(row=0, column=1, sticky="ew", padx=2)
+        ttk.Button(btn_b, text="+ Fájlok", command=self._add_media_b).grid(row=0, column=0, sticky="ew", padx=2)
+        ttk.Button(btn_b, text="Kivesz", command=self._remove_b).grid(row=0, column=1, sticky="ew", padx=2)
         ttk.Button(btn_b, text="▲", width=2, command=lambda: self._move_b(-1)).grid(row=0, column=2, sticky="ew", padx=2)
         ttk.Button(btn_b, text="▼", width=2, command=lambda: self._move_b(1)).grid(row=0, column=3, sticky="ew", padx=2)
-
-        from output_monitor import OutputMonitor
-        self.output_monitor = OutputMonitor(
-            deck_b, self._ui_tasks, lambda: _resolve_fftool("ffmpeg"),
-            _no_console_subprocess_kwargs, self._log,
-        )
-        self.output_monitor.pack(fill="x", pady=(4, 0))
-        self._monitor_after_id = self.after(500, self._poll_output_monitor)
-
-        # VISUALS controls: no waveform + no IN/OUT editor on this side.
-        visuals_ctrl = ttk.Frame(deck_b, padding=(0, 4, 0, 0))
-        visuals_ctrl.pack(fill="x", pady=(4, 0))
-        visuals_ctrl.columnconfigure(0, weight=1, uniform="visuals_ctrl")
-        visuals_ctrl.columnconfigure(1, weight=1, uniform="visuals_ctrl")
-        visuals_ctrl.columnconfigure(2, weight=1, uniform="visuals_ctrl")
-        self.var_play_b = tk.StringVar(value="▶ SHOW")
-        self.btn_play_b = self._make_transport_button(visuals_ctrl, self.var_play_b, self._play_deck_b)
-        self.btn_play_b.grid(row=0, column=0, sticky="ew", padx=2)
-        self.btn_stop_b = self._make_transport_button(visuals_ctrl, "⏹ CLEAR", self._stop_deck_b)
-        self.btn_stop_b.grid(row=0, column=1, sticky="ew", padx=2)
-        self.var_loop_b = tk.StringVar(value="⟲ LOOP OFF")
-        self.btn_loop_b = self._make_transport_button(visuals_ctrl, self.var_loop_b, lambda: self._toggle_loop("B"))
-        self.btn_loop_b.grid(row=0, column=2, sticky="ew", padx=2)
 
         # Tabs under VISUALS controls (Deck B)
         tabs_b_panel = tk.Frame(
@@ -5581,10 +5580,11 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.tab_b_playlist = tk.Frame(self.tabs_b, bg="#2b2b2b")
         self.tab_b_ppt = tk.Frame(self.tabs_b, bg="#2b2b2b")
         self.tab_b_download = tk.Frame(self.tabs_b, bg="#2b2b2b")
-        self.tabs_b.add(self.tab_b_setup, text="Setup")
-        self.tabs_b.add(self.tab_b_playlist, text="Playlist")
-        self.tabs_b.add(self.tab_b_ppt, text="PPT")
-        self.tabs_b.add(self.tab_b_download, text="Download")
+        self.tabs_b.add(self.tab_b_setup, text="Beállítás")
+        self.tabs_b.add(self.tab_b_playlist, text="Lejátszási sor")
+        self.tabs_b.add(self.tab_b_ppt, text="Diasor")
+        self.tabs_b.add(self.tab_b_download, text="Letöltés")
+        self.tabs_b.select(self.tab_b_ppt)
 
         # Setup tab (Deck B) - per-cue options
         setup_b = ttk.Frame(self.tab_b_setup, padding=6)
@@ -5592,13 +5592,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.var_autoplay_b = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             setup_b,
-            text="Include this cue in auto-play playlist",
+            text="Szerepeljen az automatikus lejátszási sorban",
             variable=self.var_autoplay_b,
             command=lambda: self._on_cue_autoplay_changed("B"),
         ).pack(anchor="w")
         ttk.Label(
             setup_b,
-            text="Visual videos are muted by default, so they can play over Deck A music.",
+            text="A vetített videó alapból néma; a zene külön vezérelhető.",
             padding=(0, 6, 0, 0),
         ).pack(anchor="w")
 
@@ -5609,11 +5609,11 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         ttk.Label(playlist_b, textvariable=self.var_visuals_playlist_info).pack(anchor="w")
         playlist_btns = ttk.Frame(playlist_b)
         playlist_btns.pack(fill="x", pady=(6, 0))
-        ttk.Button(playlist_btns, text="▶ Start playlist", command=self._play_visuals_autoplay).pack(side="left")
-        ttk.Button(playlist_btns, text="Clear auto-play flags", command=self._visuals_clear_autoplay_flags).pack(side="left", padx=(8, 0))
+        ttk.Button(playlist_btns, text="Sor indítása", command=self._play_visuals_autoplay).pack(side="left")
+        ttk.Button(playlist_btns, text="Sor kiürítése", command=self._visuals_clear_autoplay_flags).pack(side="left", padx=(8, 0))
         ttk.Label(
             playlist_b,
-            text="When LOOP is ON, the playlist wraps back to the first auto-play video.",
+            text="Bekapcsolt ismétlésnél a sor az elejéről folytatódik.",
             padding=(0, 8, 0, 0),
         ).pack(anchor="w")
 
@@ -5622,11 +5622,11 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         ppt_tab.pack(fill="x")
         if sys.platform == "win32":
             ttk.Label(ppt_tab, textvariable=self.var_ppt_status, wraplength=310).pack(fill="x", pady=(0, 4))
-        ppt_nav_b = ttk.Frame(ppt_tab)
-        ppt_nav_b.pack(fill="x")
+        ppt_nav_b = ttk.Frame(deck_b)
+        ppt_nav_b.pack(fill="x", pady=(6, 2), before=tabs_b_panel)
         for column, (text, command) in enumerate((
-                ("Start", self._play_selected_ppt_b), ("◀", self._ppt_prev_ui),
-                ("▶", self._ppt_next_ui), ("End", self._ppt_end))):
+                ("Diavetítés", self._play_selected_ppt_b), ("Előző dia", self._ppt_prev_ui),
+                ("Következő dia", self._ppt_next_ui), ("Befejezés", self._ppt_end))):
             ppt_nav_b.columnconfigure(column, weight=1, uniform="ppt-nav")
             ttk.Button(ppt_nav_b, text=text, command=command, width=5).grid(
                 row=0, column=column, sticky="ew", padx=1)
@@ -5637,8 +5637,6 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 self._selected_cue_for_deck("B"))).pack(side="left", fill="x", expand=True, padx=1)
             ttk.Button(ppt_tools, text="Export mappa", command=self._open_ppt_export).pack(
                 side="left", fill="x", expand=True, padx=1)
-        ttk.Button(ppt_tools, text="Teljes képernyő", command=self._ppt_fullscreen_2nd_screen).pack(
-            side="left", fill="x", expand=True, padx=1)
         if sys.platform == "win32":
             ppt_options = ttk.Frame(ppt_tab)
             ppt_options.pack(fill="x", pady=(4, 0))
@@ -5655,32 +5653,32 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.var_download_dir = tk.StringVar(value=str(getattr(self.settings, "downloads_dir", "") or ""))
         dl_path_row = ttk.Frame(dl_b)
         dl_path_row.pack(fill="x")
-        ttk.Label(dl_path_row, text="Save to:").pack(side="left")
+        ttk.Label(dl_path_row, text="Mappa:").pack(side="left")
         ttk.Entry(dl_path_row, textvariable=self.var_download_dir).pack(side="left", fill="x", expand=True, padx=(8, 6))
-        ttk.Button(dl_path_row, text="Browse…", command=self._browse_download_dir).pack(side="left")
+        ttk.Button(dl_path_row, text="Tallózás…", command=self._browse_download_dir).pack(side="left")
         self.var_download_dir.trace_add("write", lambda *_: self._apply_downloads_dir_setting())
 
         dl_url_row = ttk.Frame(dl_b)
         dl_url_row.pack(fill="x", pady=(8, 0))
-        ttk.Label(dl_url_row, text="YouTube URL:").pack(side="left")
+        ttk.Label(dl_url_row, text="Videó linkje:").pack(side="left")
         self.var_ytdlp_url = tk.StringVar(value="")
         self.entry_ytdlp_url = ttk.Entry(dl_url_row, textvariable=self.var_ytdlp_url)
         self.entry_ytdlp_url.pack(side="left", fill="x", expand=True, padx=(8, 6))
-        ttk.Button(dl_url_row, text="Clear", command=lambda: self.var_ytdlp_url.set(""), width=7).pack(side="left")
+        ttk.Button(dl_url_row, text="Törlés", command=lambda: self.var_ytdlp_url.set(""), width=7).pack(side="left")
 
         dl_mode_row = ttk.Frame(dl_b)
         dl_mode_row.pack(fill="x", pady=(8, 0))
         self.var_ytdlp_mode = tk.StringVar(value="av")
-        ttk.Label(dl_mode_row, text="Mode:").pack(side="left")
-        ttk.Radiobutton(dl_mode_row, text="Best audio", value="audio", variable=self.var_ytdlp_mode).pack(side="left", padx=(8, 0))
-        ttk.Radiobutton(dl_mode_row, text="Best video", value="video", variable=self.var_ytdlp_mode).pack(side="left", padx=(8, 0))
-        ttk.Radiobutton(dl_mode_row, text="Best A/V", value="av", variable=self.var_ytdlp_mode).pack(side="left", padx=(8, 0))
+        ttk.Label(dl_mode_row, text="Tartalom:").pack(side="left")
+        ttk.Radiobutton(dl_mode_row, text="Hang", value="audio", variable=self.var_ytdlp_mode).pack(side="left", padx=(8, 0))
+        ttk.Radiobutton(dl_mode_row, text="Videó", value="video", variable=self.var_ytdlp_mode).pack(side="left", padx=(8, 0))
+        ttk.Radiobutton(dl_mode_row, text="Hang és videó", value="av", variable=self.var_ytdlp_mode).pack(side="left", padx=(8, 0))
 
         dl_btn_row = ttk.Frame(dl_b)
         dl_btn_row.pack(fill="x", pady=(8, 0))
-        self.btn_ytdlp_download = ttk.Button(dl_btn_row, text="Download", command=self._start_ytdlp_download)
+        self.btn_ytdlp_download = ttk.Button(dl_btn_row, text="Letöltés", command=self._start_ytdlp_download)
         self.btn_ytdlp_download.pack(side="left")
-        self.btn_ytdlp_cancel = ttk.Button(dl_btn_row, text="Cancel", command=self._cancel_ytdlp_download, state="disabled")
+        self.btn_ytdlp_cancel = ttk.Button(dl_btn_row, text="Megszakítás", command=self._cancel_ytdlp_download, state="disabled")
         self.btn_ytdlp_cancel.pack(side="left", padx=(8, 0))
         if sys.platform == "win32":
             self.btn_ytdlp_update = ttk.Button(dl_btn_row, text="Letöltő frissítése",
@@ -7771,7 +7769,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if deck == "A":
             self._loop_a_enabled = not self._loop_a_enabled
             try:
-                self.var_loop_a.set("⟲ LOOP ON" if self._loop_a_enabled else "⟲ LOOP OFF")
+                self.var_loop_a.set("Ismétlés: BE" if self._loop_a_enabled else "Ismétlés: KI")
             except Exception:
                 pass
             try:
@@ -7783,7 +7781,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._loop_b_enabled = not self._loop_b_enabled
         self._ppt_slide_started = time.monotonic()
         try:
-            self.var_loop_b.set("⟲ LOOP ON" if self._loop_b_enabled else "⟲ LOOP OFF")
+            self.var_loop_b.set("Ismétlés: BE" if self._loop_b_enabled else "Ismétlés: KI")
         except Exception:
             pass
         # If a VISUALS video is currently playing, apply loop immediately via mpv property.
@@ -9667,14 +9665,14 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 sel = self._selected_cue_for_deck(deck)
 
                 if deck == "B":
-                    play_text = "🖼 SHOWING" if playing else "▶ SHOW"
+                    play_text = "Vetítés folyamatban" if playing else "Kivetítés"
                 else:
                     if playing:
-                        play_text = "⏸ PAUSE"
+                        play_text = "Szünet"
                     elif paused is not None and sel is not None and paused[0] == sel.id:
-                        play_text = "▶ RESUME"
+                        play_text = "Folytatás"
                     else:
-                        play_text = "▶ PLAY"
+                        play_text = "Indítás"
 
                 play_bg = self._btn_play_on_bg if playing else self._btn_off_bg
                 stop_bg = self._btn_stop_on_bg if playing else self._btn_off_bg
