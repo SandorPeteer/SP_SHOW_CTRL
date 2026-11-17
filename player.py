@@ -3130,11 +3130,14 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._ppt_cue = None
         self._ppt_slides = []
         self._ppt_index = 0
+        self._ppt_seconds = []
+        self._ppt_slide_started = 0.0
         if sys.platform == "win32":
             from ppt_media import SlidePreparer
             self._ppt_preparer = SlidePreparer(_user_data_dir() / "ppt-media-v1", self._ui_tasks)
             self.var_ppt_status = tk.StringVar(value="")
             self.var_ppt_sound = tk.BooleanVar(value=False)
+            self.var_ppt_interval = tk.StringVar(value="5")
         self._disp_apply_after_id: str | None = None
         self._wave_req_seq: dict[str, int] = {"A": 0, "B": 0}
         self._wave_req_cue_id: dict[str, str | None] = {"A": None, "B": None}
@@ -3622,6 +3625,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._ppt_pending = None
         if error:
             return
+        from ppt_media import read_timing
+        self._ppt_seconds = read_timing(path, files)
         self._show_mpv_slide(pending, files, 0)
 
     def _show_mpv_slide(self, cue, files, index):
@@ -3643,6 +3648,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             sess.set_property("pause", False)
             self._ppt_cue, self._ppt_slides, self._ppt_index = cue, files, index
             self._ppt_running = True
+            self._ppt_slide_started = time.monotonic()
             self._active_runner = self.video_runner
             self._last_output_owner, self._last_output_cue_id = "B", cue.id
             self._ppt_apply_sound()
@@ -3650,6 +3656,33 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception as exc:
             self.var_ppt_status.set(f"Vetítési hiba: {exc}")
             self._log(self.var_ppt_status.get())
+
+    def _advance_ppt_loop(self):
+        if not (sys.platform == "win32" and self._ppt_running and self._loop_b_enabled):
+            return
+        if not self._ppt_slides or self.video_runner.owner_deck != "B":
+            return
+        slide = self._ppt_slides[self._ppt_index]
+        elapsed = time.monotonic() - self._ppt_slide_started
+        if slide.suffix == ".mp4":
+            sess = self.video_runner._sess
+            # A replaced file can briefly retain the old file's EOF state.
+            if elapsed < 0.25 or Path(sess.get_property("path") or "") != slide:
+                return
+            if not sess.get_property("eof-reached"):
+                return
+        else:
+            seconds = self._ppt_seconds[self._ppt_index]
+            if seconds is None:
+                try:
+                    seconds = float(self.var_ppt_interval.get().replace(",", "."))
+                    if not math.isfinite(seconds) or seconds <= 0:
+                        seconds = 5.0
+                except ValueError:
+                    seconds = 5.0
+            if elapsed < seconds:
+                return
+        self._show_mpv_slide(self._ppt_cue, self._ppt_slides, (self._ppt_index + 1) % len(self._ppt_slides))
 
     def _ppt_apply_sound(self):
         if self._ppt_running and self.video_runner.owner_deck == "B":
@@ -3755,7 +3788,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
     def _ppt_prev_ui(self) -> None:
         if sys.platform == "win32":
             if self._ppt_running:
-                self._show_mpv_slide(self._ppt_cue, self._ppt_slides, self._ppt_index - 1)
+                index = self._ppt_index + (-1)
+                if self._loop_b_enabled:
+                    index %= len(self._ppt_slides)
+                self._show_mpv_slide(self._ppt_cue, self._ppt_slides, index)
             return
         try:
             ppt_prev_slide()
@@ -3772,7 +3808,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
     def _ppt_next_ui(self) -> None:
         if sys.platform == "win32":
             if self._ppt_running:
-                self._show_mpv_slide(self._ppt_cue, self._ppt_slides, self._ppt_index + 1)
+                index = self._ppt_index + (1)
+                if self._loop_b_enabled:
+                    index %= len(self._ppt_slides)
+                self._show_mpv_slide(self._ppt_cue, self._ppt_slides, index)
             return
         try:
             ppt_next_slide()
@@ -5601,8 +5640,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         ttk.Button(ppt_tools, text="Teljes képernyő", command=self._ppt_fullscreen_2nd_screen).pack(
             side="left", fill="x", expand=True, padx=1)
         if sys.platform == "win32":
-            ttk.Checkbutton(ppt_tab, text="Dia saját hangja", variable=self.var_ppt_sound,
-                            command=self._ppt_apply_sound).pack(anchor="w", pady=(4, 0))
+            ppt_options = ttk.Frame(ppt_tab)
+            ppt_options.pack(fill="x", pady=(4, 0))
+            ttk.Checkbutton(ppt_options, text="Dia saját hangja", variable=self.var_ppt_sound,
+                            command=self._ppt_apply_sound).pack(side="left")
+            ttk.Spinbox(ppt_options, from_=0.5, to=3600, increment=0.5, width=4,
+                        textvariable=self.var_ppt_interval).pack(side="right")
+            ttk.Label(ppt_options, text="Időzítés nélkül (s)").pack(side="right", padx=(4, 4))
 
         # Download tab (Deck B) - yt-dlp integration
         dl_b = ttk.Frame(self.tab_b_download, padding=6)
@@ -5691,6 +5735,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         next_path, next_caption = None, ""
         if self._ppt_running and self._ppt_slides:
             next_index = self._ppt_index + 1
+            if self._loop_b_enabled:
+                next_index %= len(self._ppt_slides)
             if next_index < len(self._ppt_slides):
                 next_path = str(self._ppt_slides[next_index])
                 next_caption = f"{next_index + 1}/{len(self._ppt_slides)} · {self._ppt_cue.display_name()}"
@@ -7735,6 +7781,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._log(f"Deck A: Loop {'ON' if self._loop_a_enabled else 'OFF'}")
             return
         self._loop_b_enabled = not self._loop_b_enabled
+        self._ppt_slide_started = time.monotonic()
         try:
             self.var_loop_b.set("⟲ LOOP ON" if self._loop_b_enabled else "⟲ LOOP OFF")
         except Exception:
@@ -7748,7 +7795,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     if sess is not None:
                         # If multiple auto-play videos are configured, keep mpv loop off and let the app drive playlist looping.
                         playlist_mode = bool(getattr(playing, "auto_play", False) and len(self._visuals_autoplay_indices()) >= 2)
-                        loop_file = bool(self._loop_b_enabled and not playlist_mode)
+                        loop_file = bool(self._loop_b_enabled and not playlist_mode and not self._ppt_running)
                         sess.set_property("loop-file", ("inf" if loop_file else "no"))
         except Exception:
             pass
@@ -9345,6 +9392,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         delay_ms = 250
         try:
             self._drain_ui_tasks()
+            self._advance_ppt_loop()
             self._update_now_playing()
             self._update_vu_meters()
             self._update_waveform_playback_visuals()

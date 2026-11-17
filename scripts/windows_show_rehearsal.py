@@ -48,6 +48,16 @@ def rehearse(folder):
     shutil.copyfile(clip, sidecar / "0002.mp4")
     (sidecar / "slides.json").write_text(json.dumps({"version": 1,
         "sha256": hashlib.sha256(ppt.read_bytes()).hexdigest(), "slides": ["png", "mp4"]}))
+    from PIL import Image
+    loop_ppt = folder / "four slides.pptx"
+    loop_ppt.write_bytes(b"Four-slide prepared presentation")
+    loop_dir = loop_ppt.with_name(loop_ppt.name + ".mpv")
+    loop_dir.mkdir()
+    for i, color in enumerate(("red", "green", "blue", "yellow"), 1):
+        Image.new("RGB", (160, 90), color).save(loop_dir / f"{i:04d}.png")
+    (loop_dir / "slides.json").write_text(json.dumps({"version": 1,
+        "sha256": hashlib.sha256(loop_ppt.read_bytes()).hexdigest(),
+        "slides": ["png"] * 4, "seconds": [0.4, 0.5, 0.4, 0.5]}))
     app = App()
     try:
         app.update()
@@ -68,8 +78,9 @@ def rehearse(folder):
             "cues_a": [{"id": "A1", "kind": "audio", "path": "./" + music.name}],
             "cues_b": [{"id": "B1", "kind": "image", "path": str(image)},
                        {"id": "B2", "kind": "video", "path": "./" + clip.name},
-                       {"id": "B3", "kind": "ppt", "path": "./" + ppt.name}],
-            "scenes": [{"id": "school", "name": "School", "cue_ids_a": ["A1"], "cue_ids_b": ["B1", "B2", "B3"]}]}),
+                       {"id": "B3", "kind": "ppt", "path": "./" + ppt.name},
+                       {"id": "B4", "kind": "ppt", "path": "./" + loop_ppt.name}],
+            "scenes": [{"id": "school", "name": "School", "cue_ids_a": ["A1"], "cue_ids_b": ["B1", "B2", "B3", "B4"]}]}),
             encoding="utf-8")
         app._load_show_from_path(showfile, set_show_path=True)
         def waveform_ready():
@@ -168,6 +179,36 @@ def rehearse(folder):
         wait_for(lambda: audio.get_property("time-pos"), lambda v: v and v > before)
         assert app.audio_runner.is_playing()
         print("PASS: Deck A music advanced throughout Deck B image/video/image/stop, visuals muted")
+        app._selected_b = 3
+        app._play_selected_ppt_b()
+        wait_for(lambda: (app.update(), app._ppt_running)[1], bool)
+        hold = time.monotonic() + 0.6
+        while time.monotonic() < hold:
+            app.update()
+            time.sleep(0.02)
+        assert app._ppt_index == 0, "Loop OFF must retain manual slide control"
+        app._toggle_loop("B")
+        order = [app._ppt_index]
+        deadline = time.monotonic() + 10
+        while len(order) < 9 and time.monotonic() < deadline:
+            app.update()
+            if app._ppt_index != order[-1]:
+                order.append(app._ppt_index)
+            if app._ppt_index == 3:
+                app._poll_output_monitor()
+                assert Path(app.output_monitor.targets["next"]).name == "0001.png"
+            time.sleep(0.03)
+        assert order == [0, 1, 2, 3, 0, 1, 2, 3, 0], order
+        assert visual.get_property("fullscreen") is True and output_hwnd() == hwnd
+        app._toggle_loop("B")
+        paused_index = app._ppt_index
+        hold = time.monotonic() + 0.6
+        while time.monotonic() < hold:
+            app.update()
+            time.sleep(0.02)
+        assert app._ppt_index == paused_index
+        app._ppt_end()
+        print("PASS: four slides repeated twice in order; loop OFF retained manual control; lookahead wrapped to the first slide")
         from windows_downloader_rehearsal import exercise_downloader
         before = audio.get_property("time-pos")
         exercise_downloader(app, folder, tools)

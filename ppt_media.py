@@ -28,26 +28,32 @@ def _read_deck(directory, digest):
     return None
 
 
+def _slide_documents(package):
+    ns = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    presentation = ElementTree.fromstring(package.read("ppt/presentation.xml"))
+    rels = {r.get("Id"): r.get("Target") for r in ElementTree.fromstring(package.read("ppt/_rels/presentation.xml.rels"))}
+    for i, node in enumerate(presentation.findall("{*}sldIdLst/{*}sldId"), 1):
+        target = rels[node.get(ns + "id")]
+        name = posixpath.normpath(posixpath.join("ppt", target)).lstrip("/")
+        yield i, name, ElementTree.fromstring(package.read(name))
+
+
 def _moving_slides(source):
     """Read slide order, timing trees, transitions and media references from OOXML."""
     if not zipfile.is_zipfile(source):
-        return None  # Binary .ppt: conservatively use the video renderer.
-    with zipfile.ZipFile(source) as z:
-        ns = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
-        pres = ElementTree.fromstring(z.read("ppt/presentation.xml"))
-        rels = {r.get("Id"): r.get("Target") for r in ElementTree.fromstring(z.read("ppt/_rels/presentation.xml.rels"))}
+        return None
+    with zipfile.ZipFile(source) as package:
         numbers = set()
-        for i, node in enumerate(pres.findall("{*}sldIdLst/{*}sldId"), 1):
-            target = rels[node.get(ns + "id")]
-            name = posixpath.normpath(posixpath.join("ppt", target)).lstrip("/")
-            slide = ElementTree.fromstring(z.read(name))
+        for i, name, slide in _slide_documents(package):
             tags = {el.tag.rsplit("}", 1)[-1] for el in slide.iter()}
-            if tags.intersection({"timing", "transition", "videoFile", "audioFile", "media", "oleObj"}):
+            transition = slide.find("{*}transition")
+            visual_transition = transition is not None and len(transition) > 0
+            if visual_transition or tags.intersection({"timing", "videoFile", "audioFile", "media", "oleObj"}):
                 numbers.add(i)
                 continue
             directory, filename = posixpath.split(name)
             try:
-                raw = z.read(f"{directory}/_rels/{filename}.rels")
+                raw = package.read(f"{directory}/_rels/{filename}.rels")
             except KeyError:
                 continue
             if any((r.get("Target") or "").lower().endswith((".gif", ".apng", ".webp"))
@@ -55,6 +61,28 @@ def _moving_slides(source):
                    for r in ElementTree.fromstring(raw)):
                 numbers.add(i)
         return numbers
+
+
+def read_timing(source, files):
+    """Read new export metadata, or recover timing from an older PPTX without re-rendering."""
+    try:
+        manifest = json.loads((files[0].parent / "slides.json").read_text(encoding="utf-8"))
+        seconds = manifest.get("seconds")
+        if seconds is None and zipfile.is_zipfile(source):
+            seconds = []
+            with zipfile.ZipFile(source) as package:
+                for _, _, slide in _slide_documents(package):
+                    if slide.get("show") in ("0", "false"):
+                        continue
+                    transition = slide.find("{*}transition")
+                    value = transition.get("advTm") if transition is not None else None
+                    seconds.append(float(value) / 1000 if value is not None else None)
+        if isinstance(seconds, list) and len(seconds) == len(files):
+            return [float(value) if isinstance(value, (int, float)) and math.isfinite(value) and value > 0 else None
+                    for value in seconds]
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile, ElementTree.ParseError):
+        pass
+    return [None] * len(files)
 
 
 def _media_length(shapes):
@@ -94,6 +122,7 @@ def _render(source, stage, progress):
         try:
             moving_slides = _moving_slides(source)
             kinds = []
+            seconds = []
             width = max(1, round(1080 * doc.PageSetup.SlideWidth / doc.PageSetup.SlideHeight))
             for i in range(1, doc.Slides.Count + 1):
                 slide = doc.Slides.Item(i)
@@ -113,9 +142,10 @@ def _render(source, stage, progress):
                 if not out.is_file() or out.stat().st_size == 0:
                     raise RuntimeError(f"A PowerPoint nem készítette el a(z) {i}. diát.")
                 kinds.append(kind)
+                seconds.append(float(transition.AdvanceTime) if transition.AdvanceOnTime else None)
             if not kinds:
                 raise ValueError("Nincs vetíthető dia a bemutatóban.")
-            return kinds
+            return {"slides": kinds, "seconds": seconds}
         finally:
             doc.Saved = -1  # This is an untitled working copy only.
             doc.Close()
@@ -164,8 +194,10 @@ def prepare(source, cache, progress, render=_render):
     with tempfile.TemporaryDirectory(dir=cache) as tmp:
         stage = Path(tmp) / "deck"
         stage.mkdir()
-        kinds = render(source, stage, progress)
-        (stage / "slides.json").write_text(json.dumps({"version": 1, "sha256": digest, "slides": kinds}), encoding="utf-8")
+        rendered = render(source, stage, progress)
+        metadata = rendered if isinstance(rendered, dict) else {"slides": rendered}
+        metadata.update(version=1, sha256=digest)
+        (stage / "slides.json").write_text(json.dumps(metadata), encoding="utf-8")
         if initial != _stamp(source):
             raise ValueError("A bemutató előkészítés közben megváltozott. Indítsd újra az előkészítést.")
         if not _read_deck(stage, digest):

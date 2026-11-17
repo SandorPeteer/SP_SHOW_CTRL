@@ -1,5 +1,6 @@
 """Regression tests for PowerPoint preparation without requiring an Office installation."""
 import hashlib
+import json
 import queue
 import tempfile
 from pathlib import Path
@@ -8,7 +9,7 @@ import unittest
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ppt_media import SlidePreparer, _moving_slides, _open_copy, _stamp, prepare
+from ppt_media import SlidePreparer, _moving_slides, _open_copy, _stamp, prepare, read_timing
 
 
 class ConversionTests(unittest.TestCase):
@@ -19,10 +20,13 @@ class ConversionTests(unittest.TestCase):
                 deck.writestr("ppt/presentation.xml", '<p xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sldIdLst><sldId r:id="b"/><sldId r:id="a"/><sldId r:id="c"/></sldIdLst></p>')
                 deck.writestr("ppt/_rels/presentation.xml.rels", '<R><r Id="a" Target="slides/slide1.xml"/><r Id="b" Target="/ppt/slides/slide2.xml"/><r Id="c" Target="slides/slide3.xml"/></R>')
                 deck.writestr("ppt/slides/slide1.xml", "<slide><timing/></slide>")
-                deck.writestr("ppt/slides/slide2.xml", "<slide><text/></slide>")
+                deck.writestr("ppt/slides/slide2.xml", '<slide><text/><transition advTm="3500"/></slide>')
                 deck.writestr("ppt/slides/slide3.xml", "<slide/>")
                 deck.writestr("ppt/slides/_rels/slide3.xml.rels", '<R><r Target="../media/moving.gif"/></R>')
             self.assertEqual(_moving_slides(ppt), {2, 3})
+            (Path(tmp) / "slides.json").write_text(json.dumps({"version": 1, "slides": ["png"] * 3}))
+            files = [Path(tmp) / f"{i:04d}.png" for i in range(1, 4)]
+            self.assertEqual(read_timing(ppt, files), [3.5, None, None])
 
     def test_cache_content_identity_and_incomplete_conversion(self):
         def render(source, stage, progress):
