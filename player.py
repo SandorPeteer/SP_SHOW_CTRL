@@ -5245,7 +5245,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         file_menu = tk.Menu(filebar, tearoff=False)
         file_menu.add_command(label="New show", command=self._new_show)
         file_menu.add_command(label="Save show as…", command=self._save_show_as)
-        ttk.Menubutton(filebar, text="File", menu=file_menu).pack(side="left", padx=(0, 6))
+        ttk.Menubutton(filebar, text="File", menu=file_menu, width=5).pack(side="left", padx=(0, 6))
         icons.button(filebar, "open", "Open show", self._open_show).pack(side="left", padx=(0, 4))
         self.btn_save_show = icons.button(filebar, "save", "Save show", self._save_show)
         self.btn_save_show.pack(side="left")
@@ -5264,15 +5264,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
         decks_container = ttk.Frame(root, style="Shell.TFrame")
         decks_container.pack(fill="both", expand=True)
-        decks_container.columnconfigure(1, weight=4, uniform="decks")
-        decks_container.columnconfigure(2, weight=5, uniform="decks")
-        decks_container.rowconfigure(0, weight=1)
-        decks_container.bind("<Configure>", lambda e: decks_container.columnconfigure(
-            0, minsize=max(190, min(355, round(e.width * 0.225)))))
 
-        scene_panel = ttk.Frame(decks_container, padding=10, width=1)
-        scene_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        scene_panel.pack_propagate(False)
+        scene_panel = ttk.Frame(decks_container, padding=10)
         scene_head = ttk.Frame(scene_panel)
         scene_head.pack(fill="x", pady=(0, 8))
         ttk.Label(scene_head, text="Rundown", style="CardTitle.TLabel").pack(side="left")
@@ -5297,9 +5290,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             icons.button(scene_btn, icon, label, command).pack(side="left", fill="x", expand=True)
 
         # MEDIA (middle column): audio/video
-        deck_a = ttk.Frame(decks_container, padding=10, width=1)
-        deck_a.grid(row=0, column=1, sticky="nsew", padx=(0, 8))
-        deck_a.pack_propagate(False)
+        deck_a = ttk.Frame(decks_container, padding=10)
         audio_head = ttk.Frame(deck_a)
         audio_head.pack(fill="x", pady=(0, 8))
         ttk.Label(audio_head, text="Audio", style="CardTitle.TLabel").pack(side="left")
@@ -5502,9 +5493,21 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         ).pack(anchor="w", padx=10, pady=10)
 
         # VISUALS (right column): images/PPT
-        deck_b = ttk.Frame(decks_container, padding=10, width=1)
-        deck_b.grid(row=0, column=2, sticky="nsew")
-        deck_b.pack_propagate(False)
+        deck_b = ttk.Frame(decks_container, padding=10)
+
+        def layout_workspace(event):
+            if event.width < 220:
+                return
+            gap = 8
+            scene_width = max(190, min(355, round(event.width * 0.225)))
+            deck_width = event.width - scene_width - 2 * gap
+            audio_width = round(deck_width * 4 / 9)
+            scene_panel.place(x=0, y=0, width=scene_width, relheight=1)
+            deck_a.place(x=scene_width + gap, y=0, width=audio_width, relheight=1)
+            deck_b.place(x=scene_width + audio_width + 2 * gap, y=0,
+                         width=deck_width - audio_width, relheight=1)
+
+        decks_container.bind("<Configure>", layout_workspace)
         projection_head = ttk.Frame(deck_b)
         projection_head.pack(fill="x", pady=(0, 8))
         ttk.Label(projection_head, text="Projection", style="CardTitle.TLabel").pack(side="left")
