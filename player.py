@@ -596,6 +596,9 @@ def _resolve_mpv() -> str | None:
 
 
 def _resolve_ytdlp() -> str | None:
+    if sys.platform == "win32":
+        from download_tools import resolve
+        return resolve("yt-dlp", _user_data_dir() / "tools", _resource_path("tools"))
     tool = _tool_exe_name("yt-dlp")
     sysname = platform.system()
 
@@ -1190,6 +1193,27 @@ def _install_ytdlp_binary(
                 errors.append(str(e))
                 continue
         raise RuntimeError("\n".join(errors[-3:]) if errors else "yt-dlp install failed")
+
+
+def _ensure_download_runtime(on_status, cancel_event, *, force=False):
+    from download_tools import install, resolve, version
+    tools_root = _user_data_dir() / "tools"
+    paths, versions = {}, []
+    def download(url, destination):
+        _download_url_to_file(url, destination, cancel_event=cancel_event)
+    for tool, subdir in (("deno", "deno"), ("yt-dlp", "ytdlp")):
+        if cancel_event.is_set():
+            raise RuntimeError("A frissítés megszakítva.")
+        executable = resolve(tool, tools_root, _resource_path("tools"))
+        if force or not executable:
+            on_status(f"{tool} letöltése és ellenőrzése…")
+            executable, installed = install(tool, tools_root / subdir / "bin", download,
+                                             _no_console_subprocess_kwargs())
+        else:
+            installed = version(executable, _no_console_subprocess_kwargs())
+        paths[tool] = str(executable)
+        versions.append(installed if tool == "deno" else f"yt-dlp {installed}")
+    return paths["yt-dlp"], paths["deno"], " · ".join(versions)
 
 
 def _parse_timecode(value: str) -> float | None:
@@ -4127,6 +4151,39 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception as e:
             _swallow_exc(e, note="cancel_ytdlp_download terminate")
 
+    def _download_status(self, running, status):
+        def apply():
+            self.btn_ytdlp_download.configure(state="disabled" if running else "normal")
+            self.btn_ytdlp_cancel.configure(state="normal" if running else "disabled")
+            if hasattr(self, "btn_ytdlp_update"):
+                self.btn_ytdlp_update.configure(state="disabled" if running else "normal")
+            self._ytdlp_status_base = status
+            if running:
+                self._start_ytdlp_spinner()
+            else:
+                self._stop_ytdlp_spinner()
+                self.var_ytdlp_status.set(status)
+        self._ui_tasks.put(apply)
+
+    def _update_download_tools(self):
+        if self._ytdlp_thread is not None and self._ytdlp_thread.is_alive():
+            return
+        self._ytdlp_cancel_event = threading.Event()
+        self._download_status(True, "Letöltő frissítése…")
+        def work():
+            try:
+                _, _, versions = _ensure_download_runtime(
+                    lambda text: self._download_status(True, text),
+                    self._ytdlp_cancel_event, force=True)
+                self._download_status(False, f"Frissítve · {versions}")
+            except Exception as exc:
+                self._log(f"Letöltő frissítési hiba: {exc}")
+                self._download_status(False, f"Frissítési hiba · {str(exc)[:200]}")
+            finally:
+                self._ytdlp_cancel_event = None
+        self._ytdlp_thread = threading.Thread(target=work, daemon=True)
+        self._ytdlp_thread.start()
+
     def _start_ytdlp_download(self) -> None:
         if self._ytdlp_thread is not None and self._ytdlp_thread.is_alive():
             return
@@ -4174,46 +4231,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 _swallow_exc(e2, note="start_ytdlp_download mkdir messagebox")
             return
 
-        def _ui(
-            running: bool,
-            status: str,
-        ) -> None:
-            def _apply() -> None:
-                try:
-                    if hasattr(self, "btn_ytdlp_download"):
-                        self.btn_ytdlp_download.configure(state=("disabled" if running else "normal"))
-                    if hasattr(self, "btn_ytdlp_cancel"):
-                        self.btn_ytdlp_cancel.configure(state=("normal" if running else "disabled"))
-                    try:
-                        self._ytdlp_status_base = str(status or "")
-                    except Exception as e:
-                        _swallow_exc_debug(e, note="ytdlp ui set status_base")
-                    if running:
-                        try:
-                            self._start_ytdlp_spinner()
-                        except Exception as e:
-                            _swallow_exc_debug(e, note="ytdlp ui start spinner")
-                    else:
-                        try:
-                            self._stop_ytdlp_spinner()
-                        except Exception as e:
-                            _swallow_exc_debug(e, note="ytdlp ui stop spinner")
-                        try:
-                            self._ytdlp_status_base = ""
-                        except Exception as e:
-                            _swallow_exc_debug(e, note="ytdlp ui clear status_base")
-                        try:
-                            if hasattr(self, "var_ytdlp_status"):
-                                self.var_ytdlp_status.set(str(status or ""))
-                        except Exception as e:
-                            _swallow_exc_debug(e, note="ytdlp ui set status label")
-                except Exception as e:
-                    _swallow_exc_debug(e, note="ytdlp ui apply")
-
-            try:
-                self._ui_tasks.put(_apply)
-            except Exception as e:
-                _swallow_exc(e, note="ytdlp ui enqueue")
+        _ui = self._download_status
 
         self._ytdlp_cancel_event = threading.Event()
         _ui(True, "Downloading...")
@@ -4221,14 +4239,17 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         def _worker() -> None:
             final_path: str | None = None
             try:
-                ytdlp = _resolve_ytdlp()
-                if not ytdlp:
-                    # Install yt-dlp on demand.
-                    def _p(done: int, total: int) -> None:
-                        _ui(True, "Downloading...")
-
-                    _install_ytdlp_binary(on_status=lambda _s: _ui(True, "Downloading..."), on_progress=_p, cancel_event=self._ytdlp_cancel_event)
+                deno = None
+                if sys.platform == "win32":
+                    ytdlp, deno, versions = _ensure_download_runtime(
+                        lambda text: _ui(True, text), self._ytdlp_cancel_event)
+                    self._log(f"Letöltő · {versions}")
+                else:
                     ytdlp = _resolve_ytdlp()
+                    if not ytdlp:
+                        _install_ytdlp_binary(on_status=lambda text: _ui(True, text),
+                                             cancel_event=self._ytdlp_cancel_event)
+                        ytdlp = _resolve_ytdlp()
                 if not ytdlp:
                     raise RuntimeError("yt-dlp not available")
 
@@ -4246,6 +4267,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     "--print",
                     "after_move:filepath",
                 ]
+                if deno:
+                    args += ["--ignore-config", "--js-runtimes", f"deno:{deno}"]
                 if mode == "audio":
                     args += ["-f", "ba/best"]
                 elif mode == "video":
@@ -4323,6 +4346,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     raise RuntimeError(f"yt-dlp failed (exit={rc})" + (f"\n\nLast output:\n{msg_tail}" if msg_tail else ""))
                 _ui(False, "DONE")
             except Exception as e:
+                self._log(f"Letöltési hiba: {e}")
                 err = str(e or "").strip()
                 if err:
                     err = err.splitlines()[0].strip()
@@ -5614,9 +5638,14 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.btn_ytdlp_download.pack(side="left")
         self.btn_ytdlp_cancel = ttk.Button(dl_btn_row, text="Cancel", command=self._cancel_ytdlp_download, state="disabled")
         self.btn_ytdlp_cancel.pack(side="left", padx=(8, 0))
+        if sys.platform == "win32":
+            self.btn_ytdlp_update = ttk.Button(dl_btn_row, text="Letöltő frissítése",
+                                              command=self._update_download_tools)
+            self.btn_ytdlp_update.pack(side="right")
+
 
         self.var_ytdlp_status = tk.StringVar(value="")
-        ttk.Label(dl_b, textvariable=self.var_ytdlp_status, padding=(0, 8, 0, 0)).pack(anchor="w")
+        ttk.Label(dl_b, textvariable=self.var_ytdlp_status, wraplength=310, padding=(0, 8, 0, 0)).pack(anchor="w")
 
         # Default states for per-cue setup controls (no selection yet).
         self._sync_target_setting_controls("A", None)

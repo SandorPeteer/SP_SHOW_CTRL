@@ -38,6 +38,8 @@ A Windows-felület egységes sötét témát használ. A kijelölt fül kék, a 
 
 A B decken a **Kivetítő** előnézet a futó mpv-kimenetből fél másodpercenként kér képet. A **Következő dia** panel az aktív bemutató következő diáját mutatja. Indítás előtt a kiválasztott kép, videó vagy előkészített PPT első diája látszik benne. A régebben előkészített videódiákhoz az app a videó első képkockáját használja, az új előkészítések külön statikus diaképet is tartalmaznak. A mintavételezett kimeneti kép a lejátszó képét követi, a fizikai projektor és HDMI-kapcsolat állapotáról nem ad visszajelzést.
 
+A Windows-csomag a yt-dlp-t és a YouTube JavaScript-feladataihoz szükséges Denót is tartalmazza. A **Download → Letöltő frissítése** gomb mindkettő aktuális hivatalos kiadását letölti az alkalmazás saját felhasználói mappájába. A letöltés SHA-256 ellenőrzés és sikeres próbaindítás után váltja a korábbi programot. A státuszban megjelennek a verziók. Hiányzó letöltőeszközt az első Download automatikusan pótol. Frissítéshez és online letöltéshez internetkapcsolat kell. A PPT-k első előkészítéséhez a gépre telepített asztali PowerPoint szükséges.
+
 A hullámforma a csomagban lévő FFmpeg-et és Pillow-t használja. A háttérben egyszerre egy elemzési feladat fut, új kijelöléskor a korábbi hullámformakérés megszakad. A várakozást és a hibát a hullámforma helyén mutatja az app.
 
 A build ellenőrzi a letöltött médiacsomagok SHA-256 értékét. A Windows-próba a frissen elkészült EXE-t külön profilból nyitja meg, és egy generált videóval ellenőrzi az mpv-kimenetet:

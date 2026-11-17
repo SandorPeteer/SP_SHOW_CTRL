@@ -38,7 +38,7 @@ def rehearse(folder):
     clip = folder / "árvíz teszt.mp4"
     image = root / "assets/logo.png"
     subprocess.run([tools / "ffmpeg/ffmpeg.exe", "-v", "error", "-f", "lavfi", "-i",
-                    "sine=frequency=220:duration=45", music], check=True)
+                    "sine=frequency=220:duration=180", music], check=True)
     # A bound rehearsal export exercises the real presentation transport on CI without Office.
     ppt = folder / "próba.pptx"
     ppt.write_bytes(b"CI source for prepared slide media")
@@ -168,6 +168,11 @@ def rehearse(folder):
         wait_for(lambda: audio.get_property("time-pos"), lambda v: v and v > before)
         assert app.audio_runner.is_playing()
         print("PASS: Deck A music advanced throughout Deck B image/video/image/stop, visuals muted")
+        from windows_downloader_rehearsal import exercise_downloader
+        before = audio.get_property("time-pos")
+        exercise_downloader(app, folder, tools)
+        assert audio.get_property("time-pos") > before
+        assert app.audio_runner.is_playing()
     except Exception:
         print("PPT status:", ascii(app.var_ppt_status.get()), flush=True)
         print("Recent events:", ascii(app._log_buffer[-10:]) if isinstance(app._log_buffer, list)
@@ -179,7 +184,7 @@ def rehearse(folder):
 
 
 if __name__ == "__main__":
-    faulthandler.dump_traceback_later(30)
+    faulthandler.dump_traceback_later(100)
     try:
         rehearse(Path(sys.argv[1]))
     except Exception:
