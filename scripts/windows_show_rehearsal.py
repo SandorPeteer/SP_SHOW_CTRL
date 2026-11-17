@@ -98,14 +98,6 @@ def rehearse(folder):
             "scenes": [{"id": "school", "name": "School", "cue_ids_a": ["A1"], "cue_ids_b": ["B1", "B2", "B3", "B4"]}]}),
             encoding="utf-8")
         app._load_show_from_path(showfile, set_show_path=True)
-        before_import = controller_dpi(app)
-        with patch("player.filedialog.askopenfilenames", return_value=(str(ppt),)):
-            app._add_media_b()
-        assert Path(app._cues_b[-1].path) == ppt
-        monitors = get_monitors()
-        assert monitors and app._controller_monitor(monitors) in monitors
-        assert controller_dpi(app) == before_import, "PPT import changed the controller DPI or size"
-        print(f"PASS: monitor query and PPT import kept controller DPI and size {before_import}")
         def waveform_ready():
             app.update()
             return app.canvas_a.find_withtag("waveform")
@@ -114,6 +106,14 @@ def rehearse(folder):
         assert Path(app._cues_a[0].path) == music
         assert Path(app._cues_b[1].path) == clip
         assert app._cue_for_show(app._cues_a[0], folder)["path"] == "./" + music.name
+        before_import = controller_dpi(app)
+        with patch("player.filedialog.askopenfilenames", return_value=(str(ppt),)):
+            app._add_media_b()
+        assert Path(app._cues_b[-1].path) == ppt
+        monitors = get_monitors()
+        assert monitors and app._controller_monitor(monitors) in monitors
+        assert controller_dpi(app) == before_import, "PPT import changed the controller DPI or size"
+        print(f"PASS: monitor query and PPT import kept controller DPI and size {before_import}")
         app._selected_a = 0
         app._transport_play_pause("A")
         audio._connect_ipc()
