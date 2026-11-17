@@ -76,6 +76,23 @@ class MediaTests(unittest.TestCase):
         finally:
             worker.close()
 
+    def test_quiet_mp4_fills_the_display_but_keeps_a_raw_level_map(self):
+        quiet = self.folder / "quiet.mp4"
+        subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=160x90:r=10:d=1",
+                        "-i", str(self.audio), "-af", "volume=0.18", "-c:v", "mpeg4", "-c:a", "aac",
+                        str(quiet)], check=True, **subprocess_options)
+
+        def height(fit):
+            png = render_waveform(ffmpeg, quiet, 320, 60, cancel=threading.Event(),
+                                  subprocess_kwargs=subprocess_options, fit_display=fit)
+            with Image.open(BytesIO(png)) as image:
+                self.assertEqual(image.size, (320, 60))
+                bounds = image.getbbox()
+                return bounds[3] - bounds[1]
+
+        self.assertLess(height(False), 10)
+        self.assertGreaterEqual(height(True), 45)
+
     def test_video_poster_and_legacy_video_preview(self):
         video = self.folder / "következő.mp4"
         subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i",

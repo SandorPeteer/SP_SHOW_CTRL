@@ -6054,7 +6054,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._waveform_worker.request(
             deck, _resolve_fftool("ffmpeg"), cue.path, width, height,
             lambda png, error: self._apply_waveform_result(deck, cue.id, token, png, error),
-            _no_console_subprocess_kwargs(),
+            _no_console_subprocess_kwargs(), fit_display=True,
         )
 
     def _compute_vu_levels_from_image(self, img) -> list[float]:
