@@ -5231,7 +5231,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
     # ── UI ──────────────────────────────────────────────────────────────
     def _build_ui(self) -> None:
-        from operator_ui import ActivityIndicator, CueList, OperatorIcons, SceneList, ScrollIndicator, show_tools, tool_window
+        from operator_ui import ActivityIndicator, CueList, OperatorIcons, SceneList, ScrollIndicator, WorkspacePanel, show_tools, tool_window
 
         # Styles: flatter notebook (less padding/border) to save vertical space.
         try:
@@ -5343,7 +5343,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         workspace = ttk.Frame(root, style="Shell.TFrame")
         workspace.pack(fill="both", expand=True)
         signal_row = ttk.Frame(workspace, style="Shell.TFrame")
-        self.wave_a_frame = ttk.Frame(signal_row, padding=6, style="WorkspaceCard.TFrame")
+        self.wave_a_frame = WorkspacePanel(signal_row, padding=6)
         from output_monitor import OutputMonitor
         self.output_monitor = OutputMonitor(
             signal_row, icons, self._ui_tasks, lambda: _resolve_fftool("ffmpeg"),
@@ -5364,7 +5364,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             host.pack(fill="both", expand=True)
             return host
 
-        scene_panel = ttk.Frame(decks_container, padding=8, style="WorkspaceCard.TFrame")
+        scene_panel = WorkspacePanel(decks_container, padding=8)
         scene_head = ttk.Frame(scene_panel)
         scene_head.pack(fill="x", pady=(0, 8))
         ttk.Label(scene_head, text="Rundown", style="CardTitle.TLabel").pack(side="left")
@@ -5386,7 +5386,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         icons.button(scene_btn, "edit", "Edit scene", self._edit_scene).pack(side="right")
 
         # MEDIA (middle column): audio/video
-        deck_a = ttk.Frame(decks_container, padding=8, style="WorkspaceCard.TFrame")
+        deck_a = WorkspacePanel(decks_container, padding=8)
         audio_head = ttk.Frame(deck_a)
         audio_head.pack(fill="x", pady=(0, 8))
         ttk.Label(audio_head, text="Audio / Video", style="CardTitle.TLabel").pack(side="left")
@@ -5575,7 +5575,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         ).pack(anchor="w", padx=10, pady=10)
 
         # VISUALS (right column): images/PPT
-        deck_b = ttk.Frame(decks_container, padding=8, style="WorkspaceCard.TFrame")
+        deck_b = WorkspacePanel(decks_container, padding=8)
 
         # Let Tk's native geometry manager place the panels during a resize.
         # The offsets leave an eight-pixel gutter; only the available area is divided.

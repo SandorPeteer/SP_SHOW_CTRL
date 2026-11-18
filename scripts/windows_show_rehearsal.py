@@ -355,7 +355,10 @@ def rehearse(folder):
         if errors:
             value, tb = errors.pop(0)
             raise value.with_traceback(tb)
-        assert len(timings) == 75, f"Completed {len(timings)} resizing passes, last request {last_resize}"
+        assert len(timings) == 75, (
+            f"Completed {len(timings)} resizing passes, last request {last_resize}, "
+            f"first timings {[round(value, 1) for value in timings[:20]]}"
+        )
         assert tuple(app.canvas_a.find_withtag("waveform")) == bars
         assert audio.get_property("time-pos") > audio_before_resize
         ordered = sorted(timings)

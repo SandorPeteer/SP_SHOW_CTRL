@@ -128,6 +128,18 @@ def add_tooltip(widget, label):
         widget.bind(event, hide, add="+")
 
 
+class WorkspacePanel(ttk.Frame):
+    """Paint the panel as a flat surface and only composite the corner pixels."""
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, style="WorkspaceCard.TFrame", **kwargs)
+        corners = self.winfo_toplevel()._card_corners
+        for picture, (x, y, anchor) in zip(corners, ((0, 0, "nw"), (1, 0, "ne"),
+                                                     (0, 1, "sw"), (1, 1, "se"))):
+            tk.Label(self, image=picture, bd=0, highlightthickness=0, padx=0, pady=0).place(
+                relx=x, rely=y, anchor=anchor, bordermode="ignore"
+            )
+
+
 class ActivityIndicator(tk.Canvas):
     """Small motion indicator for work without a measurable completion percentage."""
     def __init__(self, parent, background):

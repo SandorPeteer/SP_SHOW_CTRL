@@ -10,6 +10,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from PIL import Image, ImageOps, ImageTk
+from operator_ui import WorkspacePanel
 from windows_theme import MINT, VIOLET
 
 
@@ -144,7 +145,7 @@ class OutputMonitor(ttk.Frame):
         for column, (key, title, icon, accent) in enumerate((
                 ("live", "On screen", "screen", MINT), ("next", "Preview", "slides", VIOLET))):
             self.columnconfigure(column, weight=1, uniform="monitor")
-            box = ttk.Frame(self, padding=6, style="WorkspaceCard.TFrame")
+            box = WorkspacePanel(self, padding=6)
             box.grid(row=0, column=column, sticky="nsew", padx=(0, 4) if column == 0 else (4, 0))
             heading = ttk.Frame(box)
             heading.pack(fill="x", pady=(0, 5))

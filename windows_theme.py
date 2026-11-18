@@ -133,13 +133,21 @@ def _apply_workspace_surfaces(app, style):
             pictures[key] = ImageTk.PhotoImage(image.resize((size, size), Image.Resampling.LANCZOS), master=app)
         return pictures[key]
 
+    app._card_corners = ()
     if rounded:
-        for name, fill, edge, radius in (
-                ("WorkspaceCard", PANEL, EDGE, 6),
-                ("Activity", "#122331", "#26435a", 5)):
-            element = name + ".surface"
-            style.element_create(element, "image", surface(fill, edge, radius, SHELL), border=pixels(app, 7), sticky="nsew")
-            style.layout(name + ".TFrame", [(element, {"sticky": "nswe"})])
+        size = pixels(app, 18)
+        cap = pixels(app, 7)
+        picture = Image.new("RGB", (size * 3, size * 3), SHELL)
+        ImageDraw.Draw(picture).rounded_rectangle((0, 0, picture.width - 1, picture.height - 1),
+                                                   radius=pixels(app, 6) * 3, fill=PANEL, outline=EDGE, width=3)
+        picture = picture.resize((size, size), Image.Resampling.LANCZOS)
+        app._card_corners = tuple(ImageTk.PhotoImage(picture.crop(box), master=app) for box in (
+            (0, 0, cap, cap), (size - cap, 0, size, cap),
+            (0, size - cap, cap, size), (size - cap, size - cap, size, size)
+        ))
+        style.element_create("Activity.surface", "image", surface("#122331", "#26435a", 5, SHELL),
+                             border=pixels(app, 7), sticky="nsew")
+        style.layout("Activity.TFrame", [("Activity.surface", {"sticky": "nswe"})])
 
     for name, fill, edge, fg, padding in (
             ("Icon", BUTTON, EDGE, TEXT, (6, 5)),
