@@ -55,3 +55,19 @@ A `f28d6fe` alkalmazáskód [Windows-próbája](https://github.com/SandorPeteer/
 A külön Qt- és mpv-próba igazolta a megjelenő hullámformát és VU-t, a szünet/folytatást, a kézi hangváltást, a két valós lejátszóórával futó Mixet, a diahang-beállítás visszaállítását, a képarányokat és a lapozóbillentyűket. A képernyőképek vizuális ellenőrzése megtörtént. A virtuális gép hangkártya nélkül, explicit null hangkimenettel tesztel; ez nem fizikai hangpróba.
 
 A végső aláírásjegyzék 264 binárist tartalmaz: 227 érvényesen aláírt, 37 aláíratlan. A csomag nem teljesen kiadói aláírású; a Smart App Control megfelelőség nincs megoldva. Windows-biztonsági beállítást nem módosítottunk.
+
+## Újabb ellenőrzés — Projection és PPT-időköz
+
+A `f7a2794` alkalmazáskód [44257225524 számú buildje](https://github.com/SandorPeteer/SP_SHOW_CTRL/actions/runs/44257225524) macOS-en és Windowson is sikeres. A Windows-kapukban 173 célzott teszt és 36 csomagolt EXE-s, natív felületellenőrzés futott le. A külön Qt- és mpv-próbák a közvetlen videó Sound/Mix működését, a valódi tekerést, az állapotfüggő Play/Show színeket, a Still visszatérését és megőrzését, a médiamappa megjegyzését és a PPT-nként mentett időközt is ellenőrizték.
+
+A valódi Qt-menüből beírt 7,5 másodperc megjelent a PPT sorában, miközben a másik videó és a készre választott sor változatlan maradt. A 0,75 másodperces PPT-próbán nyolc váltás történt 0,750–0,813 másodperces időközökkel, két teljes körben; az eredeti exportált időzítések megmaradtak. A videótekerés ténylegesen 3,2-ről 1,3 másodpercre vitte a dekódert, 0,25 másodperces megfigyelt válaszidővel, a hangerő, némítás, Mix és A lejátszása változatlanul maradt. Ezek virtuális Windows-mérések, nem hardveres késleltetési garanciák.
+
+A Repeat OFF Still a valódi EOF-t és a végkockát tartotta, A végig szünetelt. A teszt külön kezeli az utolsó képkocka idejének 3,9 → 4,0 másodperces beállását, de visszaugrást vagy újraindulást nem enged. A Windows-képernyőképeket vizuálisan ellenőriztük; a szűk fejléc szükség esetén két sorba rendezi a kezelőgombokat. Az Audio only továbbra is közvetlenül az Audio / Video fejlécében jelenik meg kijelölt videónál.
+
+## Hordozható operátori tesztcsomag
+
+A `scripts/build_operator_test_media.py` nyolc szintetikus médiafájlt állít elő: ismert szintű L/R PCM-minta, dinamikus hullámforma, 1080p/25 fps időkód és villanás–csippanás, egy másodperces fekete nyitás, monoszkóp videó és PNG, Still-logó, valamint hat másodperces végpróba. Két teljes generálás byte-azonos eredményt adott. A PCM csúcsok −18,00052 és −6,00048 dBFS körüliek; a dekódolt AAC-csippanások korrelációs időeltérése 0 minta a forráshoz képest, a 1024 mintás AAC-előfutás skip metadata alapján kompenzált. Ez fájlszintű ellenőrzés, nem fizikai kimeneti késésmérés vagy színkalibráció.
+
+A `scripts/build_operator_test_show.py` hét jelenetet és 135 egyedi cue-t hoz létre, két 60 soros listával, külön IN/OUT- és fade-próbával, 2/5 másodperces PPT-cue-kkal. A valódi PPTX beágyazott MP4-e és az Office nélkül használható előkészített másolat byte-azonos. A tényleges show-betöltő és PPT-cache ellenőrzése sikeres, lejátszás/GUI helyett teszt-helyettesítőkkel; a kész ZIP-ből másik könyvtárba kibontva is sikeres volt. A Microsoft Office tényleges exportja külön operátori próba marad.
+
+A magyar indítóleírás és a két A4-es oldalra ellenőrzött HTML-tesztlap forrása `packaging/operator-test-pack/`. A `scripts/package_operator_test_pack.py` az ellenőrzött `f7a2794` Windows-buildhez csatolja a 19 tesztfájlt. Csomagolás után a ZIP CRC-je, minden tesztfájl SHA-256-ja és mind a 264 alkalmazásbináris CI-jegyzékkel való egyezése ellenőrzött. Az alkalmazás kódja e csomagolási lépéssel nem változik.

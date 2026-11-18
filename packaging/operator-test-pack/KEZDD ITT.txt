@@ -1,0 +1,74 @@
+SHOW CONTROL – KEZDD ITT
+
+Ez egy végigjárható élő próba, nem hibamentességi garancia. A saját Windows
+gépeddel, kijelződdel/projektoroddal és hangkimeneteddel ellenőrizd.
+
+INDÍTÁS
+1. A teljes ZIP-et csomagold ki egy helyi mappába. Ne a ZIP-ből indítsd.
+   A ZIP gyökerében lévő SP Show Control.exe mellett maradjon az _internal
+   és a Show Control Test Pack mappa is.
+2. Windowsban válaszd a Kiterjesztés (Extend) kijelzőmódot. A vezérlő maradjon
+   az első kijelzőn; az output ablakot vidd a projektorra, majd Fullscreen.
+3. A keverőn/erősítőn indulj halkról. A szintminta később -6 dBFS csúcsú is!
+   A névleges fájlszintek csak 100% cue-hangerő és kikapcsolt normalizálás
+   mellett hasonlíthatók közvetlenül a program csúcsjelzőjéhez.
+4. File → Open: ebben a mappában a Test Show.json. Kezdetben Sound off,
+   Repeat off és Mix off a próbaállapot. A scene kiválasztása önmagában nem
+   indítja el a kijelölt cue-t: az A listán Play, a B listán Show indít.
+5. Nyisd meg az ELLENORZO LAP.html fájlt böngészőben. Nyomtatás: A4, álló,
+   100%, a böngésző saját fejléc/lábléc kikapcsolva. A lap két oldal.
+
+JAVASOLT SORREND – A TEST SHOW JELENETEI
+01 · Projektor és képarány
+02 · Sztereó hang és hullámforma
+03 · Videóhang, Mix és keresés
+04 · PPT időköz: 2 s / 5 s
+05 · Still és média vége
+06 · Hosszú lista · 60 + 60 elem
+07 · Mentés és visszatöltés
+
+A FÁJLOK MIT TARTALMAZNAK?
+01_STEREO_LR_LEVELS.wav – 24 s. 0–2: csend; 2–6: csak bal, -18 dBFS;
+  6–10: csak jobb, -18; 10–14: mindkettő -18; 14–18: mindkettő -6;
+  18–22: bal -6 / jobb -18; 22–24: csend. Ezek névleges csúcsszintek,
+  nem RMS értékek. A VU kitöltése RMS, a vékony fehér jel mintacsúcs.
+02_WAVEFORM_DYNAMICS.wav – 24 s; elején és végén 2 s csend, majd mély,
+  közép, magas, végül erősödő frekvenciasöprés és eltérő L/R szint.
+  A külön Fade cue 8 s-tól 2 s alatt 100%-ról 30%-ra halkít.
+03_AV_SYNC_TIMECODE.mp4 – 1080p, 25 kép/s, 20 s. Egész másodpercenként
+  1 képkockás villanás + 40 ms csippanás; kiírt időkód. Ez összehasonlító
+  minta, nem a teljes fizikai hang/kép lánc kalibrált késésmérése.
+  A külön IN/OUT cue csak a forrás 3–11 s részét játssza (8 s).
+  Ennél a seek 0% = 3 s, 100% = 11 s forrásidő.
+04_BLACK_OPENING_TIMECODE.mp4 – az első 1 másodperc szándékosan fekete;
+  utána látszik az időkód. A kezdő csippanás fekete kép alatt is hallható.
+  A Next előnézet már kijelöléskor látható tartalmat mutasson, ne csak feketét.
+05_PROJECTOR_MONOSCOPE_1080P.mp4 / .png – képarány, sarkak, színek és
+  szürkelépcső ellenőrzésére.
+06_STILL_LOGO.png – alap Still-logó. 07_END_OF_CUE.mp4 – 6 s végpróba.
+08_PPT_LOOP_TEST.pptx – háromdia-próba; a mellékelt, előkészített lejátszási
+  sor kép → 6 s videó → kép. A két PPT cue saját beállított időköze 2 s és 5 s.
+  Az előkészített sorhoz nem kell Office. Ez NEM igazolja az adott gépen
+  végzett PowerPoint-import/exportot vagy a beágyazott videó automatikáját.
+  Ezekhez külön, opcionálisan a saját Office-oddal és saját PPT-vel próbálj.
+
+AMIRE FIGYELJ
+• Mix off: ha a B hangot kap, az A szünetel; az A nem folytatódik magától.
+  Új A Play esetén a B elnémulhat, miközben a képe megmarad. Mix on mellett
+  a két forrás külön indítható és együtt szólhat; a Mix gomb nem indít semmit.
+  Mix kikapcsolásakor az utoljára kifejezetten kért hangforrás maradjon aktív.
+• A fejléc Audio only kapcsolója a kiválasztott A-videóhoz tartozik.
+  A B fejléc Sound on/off kapcsolója a prezentáció és a közvetlen videó hangja.
+• PPT-jobbklikk → Slide interval…: saját időköz; a sorban „2 s” / „5 s”.
+  „Slide timing” az eredeti diánkénti időzítés; ↻ jelzi az aktív automatikát.
+• Projection-jobbklikk → Use as Still / Clear Still. A menü nem indít lejátszást.
+• Mentéshez először Save show as… és új név: az eredeti Test Show maradjon meg.
+  Hordozhatósághoz a mentett JSON-t ÉS a hozzá gyűjtött médiát együtt másold.
+
+HA HIBÁT TALÁLSZ
+Írd fel a buildet, jelenetet/cue-t, kapcsolók állását, a pontos kattintásokat
+és a fájl időkódját. Készíts képet vagy rövid felvételt; írd mellé, hogy
+megismételhető-e. Egy sikeres próba csak a ténylegesen végigjárt részt igazolja.
+Ha Smart App Control vagy más Windows-védelem blokkolja az indítást, ne
+kapcsold ki a védelmet. Jegyezd fel a pontos üzenetet; ez indítási akadály,
+nem elvégzett lejátszási próba.

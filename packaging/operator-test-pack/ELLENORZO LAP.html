@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Show Control – élő ellenőrzőlap</title>
+<style>
+  :root { color-scheme: light; font-family: Arial, Helvetica, sans-serif; color: #18232f; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #e8edf2; font-size: 9.5pt; line-height: 1.22; }
+  .sheet { width: 210mm; height: 297mm; padding: 11mm; margin: 8mm auto; background: white; display: flex; flex-direction: column; gap: 1.7mm; box-shadow: 0 2px 16px #23384b22; }
+  .sheet > * { flex-shrink: 0; }
+  header { display: flex; align-items: baseline; justify-content: space-between; border-bottom: 2px solid #237592; padding-bottom: 2mm; }
+  h1 { margin: 0; font-size: 17pt; letter-spacing: -.3pt; }
+  .page { color: #526778; font-size: 9pt; white-space: nowrap; margin-left: 5mm; }
+  .intro { margin: 0; color: #526778; font-size: 9pt; }
+  .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 2mm 6mm; font-size: 9pt; }
+  .field { border-bottom: 1px solid #9ba8b4; padding-bottom: 2mm; }
+  section { break-inside: avoid; }
+  h2 { margin: 0 0 1.4mm; font-size: 11pt; color: #175b76; }
+  h2 span { float: right; font-weight: normal; font-size: 8.5pt; color: #526778; }
+  table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+  th { font-size: 8pt; text-transform: uppercase; letter-spacing: .35pt; text-align: left; background: #edf3f6; padding: 1.2mm 1.6mm; color: #526778; }
+  td { vertical-align: top; padding: .6mm 1.6mm; border-bottom: 1px solid #dce3e9; }
+  th:first-child, td:first-child { width: 40%; }
+  .box { display: inline-block; width: 2.7mm; height: 2.7mm; border: 1px solid #526778; margin-right: 1.2mm; vertical-align: -.3mm; }
+  .note { margin-top: 1.3mm; font-size: 8pt; color: #526778; border-bottom: 1px dotted #9ba8b4; padding-bottom: 1.2mm; }
+  .small { font-size: 8.5pt; }
+  .file { font-family: Consolas, monospace; font-size: 8pt; overflow-wrap: anywhere; }
+  .callout { padding: 2mm 2.5mm; border-left: 2px solid #237592; background: #f1f6f8; font-size: 8.5pt; }
+  footer { margin-top: auto; display: flex; justify-content: space-between; border-top: 1px solid #9ba8b4; padding-top: 2mm; font-size: 8pt; color: #526778; }
+  @page { size: A4 portrait; margin: 11mm; }
+  @media print {
+    body { background: white; }
+    .sheet { margin: 0; padding: 0; width: auto; height: 274mm; box-shadow: none; break-after: page; }
+    .sheet:last-child { break-after: auto; }
+    th, .callout { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+<main>
+<article class="sheet">
+  <header><h1>Show Control · élő próba</h1><div class="page">1 / 2 · Kép és hang</div></header>
+  <p class="intro">Haladj a Test Show jeleneteinek sorrendjében. Pipát csak tényleges próba után tegyél. A kimaradt lépés nem ellenőrzött.</p>
+  <div class="fields">
+    <div class="field">Dátum / tesztelő:</div><div class="field">Build / Windows-verzió:</div>
+    <div class="field">Projektor / kijelző / kapcsolat:</div><div class="field">Hangkártya / keverő / kimenet:</div>
+  </div>
+  <section>
+    <h2>00 · Indítás és kezelőfelület <span>□ rendben &nbsp; □ hiba</span></h2>
+    <table><thead><tr><th>Próba</th><th>Elvárt eredmény</th></tr></thead><tbody>
+      <tr><td><i class="box"></i>Teljes ZIP kibontva; Extend; halk indulás.</td><td>Az EXE az <b>_internal</b> mellett fut. A vezérlő az első kijelzőn, az output a projektoron; ott Fullscreen.</td></tr>
+      <tr><td><i class="box"></i>Test Show megnyitása; jelenetváltás.</td><td>A jelenetválasztás nem indítja el a kijelölt cue-t. Kezdő állapot: Sound / Repeat / Mix off.</td></tr>
+      <tr><td><i class="box"></i>Setup, Media tools, Projection tools, scene editor; Escape; Open → Cancel; New → Keep show.</td><td>Ablakok a vezérlő előtt, nem a projektoron. Bezárás után a vezérlő kezelhető; Keep/Cancel nem töröl adatot. Ctrl+O, Ctrl+Shift+S; PPT-n PgUp/PgDown működik.</td></tr>
+    </tbody></table>
+    <div class="note">Hiba / időpont / ismétlés: ______________________________________________________________________________</div>
+  </section>
+  <section>
+    <h2>01 · Projektor és képarány <span>□ rendben &nbsp; □ hiba</span></h2>
+    <table><tbody>
+      <tr><td><i class="box"></i>05 monoscope PNG és MP4, Source képarány.</td><td>Minden sarok látható, a kör kerek, nincs nyújtás vagy levágott szél. Az On screen és Next képe arányos.</td></tr>
+      <tr><td><i class="box"></i>RGB / CMY, szürkelépcső, fekete–fehér végpontok.</td><td>A színsávok különülnek; nincs felcserélt csatorna. A közeli sötét/világos lépcsők megkülönböztethetők; a klippelést jegyezd fel.</td></tr>
+      <tr><td><i class="box"></i>03 időkód + villanás/csipp; 04 fekete indulás.</td><td>03: 20 s, 25 fps; flash + csipp, nincs növekvő csúszás. 04: Next már kijelöléskor látható tartalmat ad; lejátszáskor az első <b>1 s szándékosan fekete</b>, utána időkód. Eltérés: ______.</td></tr>
+    </tbody></table>
+    <div class="note">Hiba / időkód / kimeneti beállítás: ________________________________________________________________________</div>
+  </section>
+  <section>
+    <h2>02 · Sztereó hang és hullámforma <span>□ rendben &nbsp; □ hiba</span></h2>
+    <table><tbody>
+      <tr><td><i class="box"></i>01 szintminta: L / R / azonos két csatorna.</td><td>0–2 s csend; 2–6 csak L; 6–10 csak R; 10–14 mindkettő azonos. A hang és a VU csatornái ezt követik, nincs felcserélés.</td></tr>
+      <tr><td><i class="box"></i>01 szintlépcső, pause / stop.</td><td>10–14 s −18, 14–18 s −6 dBFS névleges csúcs; 18–22 L −6 / R −18; 22–24 csend. A VU kitöltése RMS, a fehér jel csúcs. Pause/stop után nincs álmozgás.</td></tr>
+      <tr><td><i class="box"></i>02 dinamika és hullámforma.</td><td>24 s; elején/végén 2 s csend. A mély/közép/magas, az erősödő söprés és a dinamika látszik; a játszott rész folyamatosan sötétedik, a kurzor követi a hangot.</td></tr>
+      <tr><td><i class="box"></i>Külön Fade cue: 8 s → 10 s.</td><td>A cue hangereje 100%-ról 2 s alatt 30%-ra csökken; hallható és a mérőn követhető. A többi cue beállítása nem változik.</td></tr>
+    </tbody></table>
+    <div class="note">Szintpróba: 100% cue-hangerő, normalizálás nélkül; a fizikai kimenetet halkítsd. Hiba: ______________________________</div>
+  </section>
+  <section>
+    <h2>03 · Videóhang, Mix és keresés <span>□ rendben &nbsp; □ hiba</span></h2>
+    <table><tbody>
+      <tr><td><i class="box"></i>A-videó → Audio only; B-videó → Sound off/on.</td><td>Audio only: hallható A-hang, a kimeneti kép nem vált erre a videóra. B Sound off néma, on engedi a hangját. A kapcsolók visszajelzett állapotot mutatnak.</td></tr>
+      <tr><td><i class="box"></i>Mix off: A megy → hangos B indul → új A Play.</td><td>B hangátvételnél A szünetel; <b>nincs automatikus A-folytatás</b>. Új A Play B-t némítja, a B-kép maradhat. A VU az aktuális hangforrásé.</td></tr>
+      <tr><td><i class="box"></i>Mix on → off; B seek kattintás és húzás.</td><td>Mix on nem indít; A+B külön indítható, külön mérővel. Mix off: az utoljára kért hangforrás marad. B ideje valós; seeknél kép/hang együtt ugrik. Szünetből seek nem indít újra.</td></tr>
+      <tr><td><i class="box"></i>Külön IN/OUT cue: 3–11 s.</td><td>A forrás 3 s-nál indul és 11 s-nál ér véget: 8 s részlet. A seek tartománya is ez: 0% = 3 s, 100% = 11 s forrásidő.</td></tr>
+      <tr><td><i class="box"></i>Play / Show kiemelés.</td><td>A pause/stop és a nem futó B semleges. A megjelenített Still mellett Show aktív lehet. Puszta kijelölés nem kapcsolja be a kiemelést, nincs fókuszlopás.</td></tr>
+    </tbody></table>
+    <div class="note">Hiba / cue / kapcsolóállások: _____________________________________________________________________________</div>
+  </section>
+  <footer><span>Nem kalibrált AV-késésmérés; a saját teljes kimeneti láncot figyeld.</span><span>Folytatás a 2. oldalon →</span></footer>
+</article>
+
+<article class="sheet">
+  <header><h1>Show Control · élő próba</h1><div class="page">2 / 2 · Műsor és megőrzés</div></header>
+  <p class="intro">Ugyanaz a build és környezet, mint az 1. oldalon. A pontos hiba mellé cue-nevet/időkódot és ismételhető lépéseket írj.</p>
+  <section>
+    <h2>04 · PPT időköz: 2 s / 5 s <span>□ rendben &nbsp; □ hiba</span></h2>
+    <table><thead><tr><th>Próba</th><th>Elvárt eredmény</th></tr></thead><tbody>
+      <tr><td><i class="box"></i>Mindkét PPT cue; Repeat off, kézi lapozás.</td><td>A kijelölt sor saját 2 s / 5 s értéket mutat. Repeat off mellett nincs automatikus állóképváltás; PgUp/PgDown kezelhető.</td></tr>
+      <tr><td><i class="box"></i>Repeat on: 2 s, majd 5 s cue.</td><td>Állódiák a saját időközzel váltanak; aktív cue-n lila ↻. A köztes <b>6 s videó a saját végéig fut</b>, nem vágódik le 2/5 s-nál.</td></tr>
+      <tr><td><i class="box"></i>Jobbklikk → Slide interval…; 7.5 → Cancel, majd Save.</td><td>Cancel megtartja a régit; Save csak ezt a PPT-t módosítja, nem indít lejátszást és nem vált kijelölést. Saját idő: „7.5 s”; eredeti diaidőzítés: „Slide timing”.</td></tr>
+    </tbody></table>
+    <div class="note">Hiba / dia / mért váltási idő: _____________________________________________________________________________</div>
+  </section>
+  <section>
+    <h2>05 · Still és média vége <span>□ rendben &nbsp; □ hiba</span></h2>
+    <table><tbody>
+      <tr><td><i class="box"></i>06 logó: Use as Still / Clear Still, majd ismét kijelölés Stillnek.</td><td>STILL jelzés a megjelölt soron. A jobbklikk és a jelölés nem vált aktív kijelölést, nem indít cue-t.</td></tr>
+      <tr><td><i class="box"></i>07 végpróba; Show újra; másik kijelölt sor Show; Stop.</td><td>Auto/Repeat off: 6 s után Still. Ugyanaz a futó, kijelölt B cue új Show-ja → Still; másik kijelölt sor Show-ja azt indítja. Stop → Still; már aktív Stillnél nincs újraindítás/fekete villanás.</td></tr>
+      <tr><td><i class="box"></i>Videó legyen Still; aktuális Repeat és Sound próbája.</td><td>Repeat off: a saját utolsó képet tartja; on: ismétel. Az aktuális Sound állapot érvényes. Hangos Still Mix off esetén A-t szüneteltetheti; Mix on enged párhuzamot.</td></tr>
+      <tr><td><i class="box"></i>PPT legyen Still; Repeat off/on; végül vissza a 06 logóra.</td><td>Off: első/kézi dia; on: saját diakör. A videódia saját végéig fut. A Still szerep nem írja át más cue időközét vagy kapcsolóit.</td></tr>
+    </tbody></table>
+    <div class="note">Hiba / Still típusa / Repeat–Sound–Mix: ____________________________________________________________________</div>
+  </section>
+  <section>
+    <h2>06 · Hosszú lista · 60 + 60 elem <span>□ rendben &nbsp; □ hiba</span></h2>
+    <table><tbody>
+      <tr><td><i class="box"></i>Lejátszás közben görgess le mindkét listában, jelölj távoli sort.</td><td>A lista nem ugrik vissza a futó sorhoz. A kijelölés nem indít; a kézzel választott következő cue megmarad, nem kényszerül a futó +1 sorra.</td></tr>
+      <tr><td><i class="box"></i>Jelenetváltás; nevektől független sor/gombkezelés.</td><td>Nincs véletlen indítás vagy régi jelenetből átvitt törlőkijelölés. A hosszú jelenetnév olvashatóan törik; gombok és fejléc nem fedik egymást.</td></tr>
+    </tbody></table>
+    <div class="note">Hiba / lista / sor száma / lépések: ________________________________________________________________________</div>
+  </section>
+  <section>
+    <h2>07 · Mentés és visszatöltés <span>□ rendben &nbsp; □ hiba</span></h2>
+    <table><tbody>
+      <tr><td><i class="box"></i>A Add media másik mappából → B Add visuals → Cancel.</td><td>B ugyanazt az utolsó médiamappát nyitja; Cancel nem írja át. Újraindítás után is megmarad. Open show / Save as nem keveri a médiamappa-előzményt.</td></tr>
+      <tr><td><i class="box"></i>Save show as… új néven; teljes mentés másolása másik helyre.</td><td>A mentés befejeződik. JSON és összegyűjtött média együtt hordozható; a másolat a régi forráshely nélkül is lejátszható. Ellenőrizd a két listát és mind a 7 jelenetet.</td></tr>
+      <tr><td><i class="box"></i>Close → újraindítás → mentett show; Add mappa; Still/PPT érték.</td><td>Az utolsó show és mentett adatai visszatérnek: sorrend, Still-jelölés, egyedi PPT-időköz, elérhető média. A megnyitás nem indít váratlan cue-t.</td></tr>
+    </tbody></table>
+    <div class="note">Mentés helye / visszatöltési hiba: __________________________________________________________________________</div>
+  </section>
+  <div class="callout"><b>Külön, opcionális Office-próba:</b> a csomag előkészített kép → videó → kép PPT-lejátszási sort ad, Office nélkül is. Saját PPT valódi importját/exportját, beágyazott videóját és Office-időzítését külön ellenőrizd; a prepared próba ezeket nem igazolja. <b>Smart App Control:</b> blokkolásnál rögzítsd az üzenetet; a Windows-védelmet ne kapcsold ki.</div>
+  <div class="fields">
+    <div class="field">Összesítés: □ végigpróbált &nbsp; □ részleges &nbsp; □ blokkolt</div><div class="field">Hibajegy / kép / videó elérési útja:</div>
+  </div>
+  <footer><span>A jelölt lépések erre a buildre és erre a környezetre vonatkoznak.</span><span>Vége · 2 / 2</span></footer>
+</article>
+</main>
+</body>
+</html>
