@@ -321,11 +321,11 @@ ApplicationWindow {
                                     width: parent.width
                                     height: Math.min(6, (channelArea.height - channelStrip.spacing * (channelStrip.channelCount - 1)) / channelStrip.channelCount)
                                     Rectangle {
+                                        objectName: "vuFill"
                                         anchors.left: parent.left
                                         height: parent.height
                                         width: parent.width * Math.max(0, Math.min(1, channelMeter.modelData.level || 0))
                                         color: channelMeter.modelData.level >= 0.96 ? screen.coral : channelMeter.modelData.level >= 0.80 ? screen.amber : screen.mint
-                                        Behavior on width { NumberAnimation { duration: 80 } }
                                     }
                                     Rectangle {
                                         objectName: "vuPeak"

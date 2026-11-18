@@ -250,6 +250,45 @@ class OperatorQmlTests(unittest.TestCase):
         finally:
             delete(engine)
 
+    def test_meter_fill_keeps_measured_level_during_frequent_state_updates(self):
+        from shiboken6 import delete
+        bridge = Bridge()
+        engine = QQmlApplicationEngine()
+        engine.addImageProvider("icon", EmptyImages())
+        engine.rootContext().setContextProperty("operatorBridge", bridge)
+        engine.load(QUrl.fromLocalFile(str(Path(__file__).resolve().parents[1] / "operator.qml")))
+        try:
+            window = engine.rootObjects()[0]
+            window.resize(900, 550)
+            for mixed in (False, True):
+                for channels in (1, 2):
+                    with self.subTest(mixed=mixed, channels=channels):
+                        measured_widths = []
+                        for tick in range(10):
+                            # RMS remains constant while the real sample peak
+                            # updates in successive 33 ms engine snapshots.
+                            meter = dict(source="audio", label="Audio", active=True, available=True,
+                                         channels=[dict(level=0.6, peak=0.79 + 0.01 * (tick % 2)) for _ in range(channels)])
+                            bridge.current = {"position": tick / 100, "audioMix": mixed,
+                                "vu": dict(mixed=True, decks=[dict(meter, name=name) for name in ("A", "B")]) if mixed else meter}
+                            bridge.stateChanged.emit()
+                            QTest.qWait(33)
+                            pending = list(window.contentItem().childItems())
+                            fills = []
+                            while pending:
+                                item = pending.pop()
+                                if item.objectName() == "vuFill":
+                                    fills.append(item)
+                                pending.extend(item.childItems())
+                            self.assertEqual(len(fills), channels * (2 if mixed else 1))
+                            for fill in fills:
+                                self.assertGreater(fill.parentItem().width(), 0)
+                            measured_widths.append(min(fill.width() / fill.parentItem().width() for fill in fills))
+                        self.assertAlmostEqual(min(measured_widths[2:]), 0.6, delta=0.01,
+                                               msg=f"RMS fill collapsed during updates: {measured_widths}")
+        finally:
+            delete(engine)
+
     def test_mix_button_waits_for_backend_and_fits_the_small_header(self):
         from PySide6.QtCore import QMetaObject
         from shiboken6 import delete
