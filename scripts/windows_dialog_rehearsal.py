@@ -24,6 +24,14 @@ def exercise_dialogs(process, controller, folder, environment):
                                 "Normal Close exits without a confirmation, matching existing behavior."]}
     report = root / "dist/windows-dialog-verification.json"
     app_path = root / "dist/SP Show Control/SP Show Control.exe"
+    profile = Path(environment["APPDATA"]) / "SP_Show_Control"
+    remembered = profile / "last-show.json"
+
+    def remembered_path():
+        try:
+            return Path(json.loads(remembered.read_text(encoding="utf-8"))["path"])
+        except (FileNotFoundError, ValueError, KeyError):
+            return None
 
     def wait(read, accepts=bool, timeout=12):
         deadline = time.monotonic() + timeout
@@ -118,15 +126,24 @@ def exercise_dialogs(process, controller, folder, environment):
     def tool_window(code, title, *, shift=False):
         activate()
         key(code, win32con.VK_CONTROL, *([win32con.VK_SHIFT] if shift else []))
+        candidates = []
         def find():
             found = []
+            candidates.clear()
             def visit(hwnd, _):
-                if (win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd) == title
-                        and win32gui.GetAncestor(hwnd, win32con.GA_ROOTOWNER) == controller):
-                    found.append(hwnd)
+                if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd) == title:
+                    owner = win32gui.GetAncestor(hwnd, win32con.GA_ROOTOWNER)
+                    candidates.append(dict(hwnd=hwnd, root_owner=owner,
+                                           direct_owner=win32gui.GetWindow(hwnd, win32con.GW_OWNER),
+                                           pid=win32process.GetWindowThreadProcessId(hwnd)[1]))
+                    if owner == controller:
+                        found.append(hwnd)
             win32gui.EnumWindows(visit, None)
             return found[0] if found else None
-        tool = wait(find)
+        try:
+            tool = wait(find)
+        except AssertionError as exc:
+            raise AssertionError(f"{title} did not belong to operator {controller}: {candidates}") from exc
         wait(win32gui.GetForegroundWindow, lambda hwnd: hwnd == tool)
         assert win32api.MonitorFromWindow(tool, 2) == win32api.MonitorFromWindow(controller, 2)
         work = win32api.GetMonitorInfo(win32api.MonitorFromWindow(controller, 2))["Work"]
@@ -161,6 +178,9 @@ def exercise_dialogs(process, controller, folder, environment):
     def save_to(path):
         choose_file(ord("S"), "Save show as", path, shift=True)
         wait(path.is_file, timeout=25)
+        # The JSON is written by the worker before the UI completion callback.
+        # Its last-show pointer is only updated once that callback cleared busy.
+        wait(remembered_path, lambda value: value == path, timeout=25)
         return json.loads(path.read_text(encoding="utf-8"))
 
     def new_dialog(name):
@@ -255,10 +275,12 @@ def exercise_dialogs(process, controller, folder, environment):
         assert hashlib.sha256(kept.read_bytes()).hexdigest() == kept_digest
         check("Confirmed New show cleared the active show and preserved the saved original")
         choose_file(ord("O"), "Open show", kept)
+        wait(remembered_path, lambda value: value == kept, timeout=25)
         opened = save_to(folder / "opened-show.json")
         assert len(opened["cues_a"]) == len(opened["cues_b"]) == 1
+        saved_pointer_time = remembered.stat().st_mtime_ns
         key(ord("S"), win32con.VK_CONTROL)
-        time.sleep(0.4)
+        wait(lambda: remembered.stat().st_mtime_ns, lambda value: value != saved_pointer_time, timeout=25)
         check("Actual Open and Save restored both lists")
         capture("completed")
         key(win32con.VK_F4, win32con.VK_MENU)
@@ -267,13 +289,18 @@ def exercise_dialogs(process, controller, folder, environment):
         observer.shutdown()
         observer = None
 
+        app_log = profile / "logs/app.log"
+        log_offset = app_log.stat().st_size
         restarted = subprocess.Popen([app_path], env=environment, cwd=folder)
         process = restarted
         def restored_window():
             hwnd = win32gui.FindWindow(None, "S.P. Show Control")
             return hwnd if hwnd and win32process.GetWindowThreadProcessId(hwnd)[1] == process.pid else None
         controller = wait(restored_window, timeout=35)
-        time.sleep(3)
+        # The loaded-show log is emitted at the end of the startup callback;
+        # the next operator command can only run after that callback returns.
+        wait(lambda: app_log.read_bytes()[log_offset:],
+             lambda value: b"Loaded 1 cues to Deck A, 1 cues to Deck B" in value, timeout=35)
         restored = save_to(folder / "restored-show.json")
         assert len(restored["cues_a"]) == len(restored["cues_b"]) == 1
         assert restored["scenes"][0]["name"] == data["scenes"][0]["name"]

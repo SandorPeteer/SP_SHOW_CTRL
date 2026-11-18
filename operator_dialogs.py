@@ -15,6 +15,7 @@ class OperatorDialogs:
         self.app = app
         self.pending = []
         self.sequence = 0
+        self._tool_owner_pending = set()
 
     @property
     def state(self):
@@ -92,13 +93,34 @@ class OperatorDialogs:
             return
         if window.overrideredirect() or window is getattr(self.app, "_background_window", None):
             return
+        if window in self._tool_owner_pending:
+            return
+        self._tool_owner_pending.add(window)
+
+        def mapped():
+            self._tool_owner_pending.discard(window)
+            if window.winfo_exists() and window.winfo_viewable():
+                self._attach_tool_owner(window)
+
+        # Tk can finish/recreate its Windows wrapper after the Map notification.
+        # Resolve and own that final frame after mapping, on every reopen too.
+        self.app.after_idle(mapped)
+
+    def _attach_tool_owner(self, window):
         # Real owner semantics keep tool/editor windows with the Qt operator,
         # without the global TOPMOST flag that could cover the projector.
         import win32con
         import win32gui
         from windows_theme import prepare_tool_window, style_native_tool_window
+        owner = getattr(self.app, "_operator_hwnd", None)
+        if not owner or not win32gui.IsWindow(owner):
+            return
         prepare_tool_window(window)
-        handle = win32gui.GetParent(window.winfo_id()) or window.winfo_id()
+        window.lift()
+        window.focus_set()
+        # wm frame is Tk's native decorated top-level HWND. GetParent is
+        # ambiguous: on an already-top-level HWND it returns the OWNER instead.
+        handle = int(str(window.wm_frame()), 0)
         win32gui.SetWindowLong(handle, win32con.GWL_HWNDPARENT, owner)
         style_native_tool_window(handle)
         left, top, right, bottom = win32gui.GetWindowRect(owner)
@@ -107,5 +129,8 @@ class OperatorDialogs:
         win32gui.SetWindowPos(handle, win32con.HWND_TOP,
                               left + max(0, (right - left - width) // 2),
                               top + max(0, (bottom - top - height) // 2), width, height, 0)
-        window.lift()
-        window.focus_set()
+        direct_owner = win32gui.GetWindow(handle, win32con.GW_OWNER)
+        root_owner = win32gui.GetAncestor(handle, win32con.GA_ROOTOWNER)
+        if direct_owner != owner or root_owner != owner:
+            raise RuntimeError(f"Tool window ownership failed: window={handle}, owner={direct_owner}, "
+                               f"root={root_owner}, expected={owner}")

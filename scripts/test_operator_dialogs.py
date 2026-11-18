@@ -22,6 +22,62 @@ def model_method(name):
 
 
 class DialogTests(unittest.TestCase):
+    def native_owner_fixture(self):
+        window = Mock(spec=tk.Toplevel)
+        window.overrideredirect.return_value = False
+        window.winfo_exists.return_value = window.winfo_viewable.return_value = True
+        frame = [0x200]
+        window.wm_frame.side_effect = lambda: hex(frame[0])
+        window.winfo_id.return_value = 0x100
+        app = Mock(_operator_hwnd=0x300, _background_window=None)
+        callbacks = []
+        app.after_idle.side_effect = callbacks.append
+        owners = {}
+        window.lift.side_effect = lambda: owners.update({frame[0]: 0x400})
+        native = SimpleNamespace(
+            IsWindow=Mock(return_value=True),
+            GetParent=Mock(return_value=0x400),
+            SetWindowLong=Mock(side_effect=lambda handle, _index, owner: owners.update({handle: owner})),
+            GetWindowRect=Mock(side_effect=lambda handle: (0, 0, 1000, 800) if handle == 0x300 else (0, 0, 600, 400)),
+            SetWindowPos=Mock(),
+            GetWindow=Mock(side_effect=lambda handle, _flag: owners.get(handle, 0x400)),
+            GetAncestor=Mock(side_effect=lambda handle, _flag: owners.get(handle, 0x400)),
+        )
+        constants = SimpleNamespace(GWL_HWNDPARENT=-8, GW_OWNER=4, GA_ROOTOWNER=3, HWND_TOP=0)
+        return window, frame, OperatorDialogs(app), callbacks, native, constants
+
+    def test_tool_owner_waits_for_final_tk_frame_and_reapplies_after_reopen(self):
+        window, frame, relay, callbacks, native, constants = self.native_owner_fixture()
+        with patch.dict(sys.modules, win32gui=native, win32con=constants), \
+                patch("windows_theme.prepare_tool_window"), patch("windows_theme.style_native_tool_window"):
+            relay._own_tool_window(SimpleNamespace(widget=window))
+            relay._own_tool_window(SimpleNamespace(widget=window))
+            native.SetWindowLong.assert_not_called()
+            self.assertEqual(len(callbacks), 1)
+            # Tk completes/recreates its wrapper after the Map notification.
+            frame[0] = 0x201
+            callbacks.pop(0)()
+            native.SetWindowLong.assert_called_once_with(0x201, -8, 0x300)
+            native.GetParent.assert_not_called()
+            self.assertEqual(native.GetAncestor(0x201, 3), 0x300)
+            frame[0] = 0x202
+            relay._own_tool_window(SimpleNamespace(widget=window))
+            callbacks.pop(0)()
+            native.SetWindowLong.assert_called_with(0x202, -8, 0x300)
+            self.assertEqual(native.GetAncestor(0x202, 3), 0x300)
+
+    def test_tool_owner_failure_is_verified_after_tk_lift(self):
+        window, _frame, relay, callbacks, native, constants = self.native_owner_fixture()
+        native.SetWindowLong.side_effect = None
+        with patch.dict(sys.modules, win32gui=native, win32con=constants), \
+                patch("windows_theme.prepare_tool_window"), patch("windows_theme.style_native_tool_window"):
+            relay._own_tool_window(SimpleNamespace(widget=window))
+            self.assertTrue(callbacks)
+            with self.assertRaisesRegex(RuntimeError, "Tool window ownership failed"):
+                callbacks.pop(0)()
+            window.lift.assert_called_once()
+            window.focus_set.assert_called_once()
+
     def test_projector_and_borderless_windows_are_never_reparented(self):
         window = Mock(spec=tk.Toplevel)
         window.overrideredirect.return_value = True
