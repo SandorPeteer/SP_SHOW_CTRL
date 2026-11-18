@@ -250,12 +250,13 @@ def rehearse(folder):
             app._drain_ui_tasks()
             return visual.get_property("path")
 
-        def assert_slide(name):
+        def assert_slide(name, *, muted=True):
             wait_for(current_slide, lambda v: v and Path(v).samefile(sidecar / name))
             wait_for(lambda: visual.get_property("video-params"), bool)
             assert visual.get_property("fullscreen") is True
             assert output_hwnd() == hwnd
-            assert visual.get_property("mute") is True
+            actual_mute = visual.get_property("mute")
+            assert actual_mute is muted, (name, "expected mute", muted, "actual", actual_mute)
 
         assert_slide("0001.png")
         assert controller_dpi(app) == before_import, "PPT playback changed the controller DPI or size"
@@ -432,7 +433,7 @@ def rehearse(folder):
         app.btn_play_b.invoke()
         assert_slide("0001.png")
         app._ppt_next_ui()
-        assert_slide("0002.mp4")
+        assert_slide("0002.mp4", muted=False)
         # A new explicit Show restores the operator's saved Slide audio choice.
         # Hand it back to A before testing that Mix itself starts nothing.
         wait_for(lambda: pump(lambda: app._paused_state_for_deck("A")), bool)

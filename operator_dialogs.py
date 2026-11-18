@@ -30,6 +30,7 @@ class OperatorDialogs:
         answer = [spec.get("cancel", "")]
         item = (spec, ready, answer)
         self.pending.append(item)
+        self.app._log(f"Operator dialog request: id={spec['id']} kind={spec.get('kind')} title={spec.get('title')}")
         try:
             self.app.wait_variable(ready)
         except tk.TclError:
@@ -37,6 +38,7 @@ class OperatorDialogs:
             pass
         finally:
             self.pending.remove(item)
+            self.app._log(f"Operator dialog finished: id={spec['id']}")
         return answer[0]
 
     def respond(self, value):

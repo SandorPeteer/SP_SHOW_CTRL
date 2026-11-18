@@ -1,6 +1,8 @@
 """Headless regression tests for modal answers and scene/show preservation."""
 import ast
+from collections import deque
 from pathlib import Path
+import queue
 import sys
 from types import SimpleNamespace
 import unittest
@@ -22,6 +24,41 @@ def model_method(name):
 
 
 class DialogTests(unittest.TestCase):
+    def test_queued_cancel_unwinds_before_next_save_as_command(self):
+        # Run the real worker dispatch/tick and real nested Tk wait_variable.
+        # Both commands are already in the pipe before the answer is handled.
+        app = tk.Tk()
+        app.withdraw()
+        self.addCleanup(app.destroy)
+        app._closing = False
+        app._log = Mock()
+        relay = OperatorDialogs(app)
+        commands = deque([("dialog_result", {"id": 1, "value": ""}), ("save_as", None)])
+        connection = SimpleNamespace(poll=lambda: bool(commands), recv=commands.popleft)
+        finished = tk.BooleanVar(app, False)
+        calls = []
+        def save_as():
+            calls.append(relay.state)
+            finished.set(True)
+        source = Path(__file__).resolve().parents[1] / "quick_controller.py"
+        worker = next(node for node in ast.parse(source.read_text(encoding="utf-8")).body
+                      if isinstance(node, ast.FunctionDef) and node.name == "controller_worker")
+        methods = [node for node in worker.body if isinstance(node, ast.FunctionDef)
+                   and node.name in ("run_action", "tick")]
+        namespace = dict(app=app, dialogs=relay, connection=connection, actions={"save_as": save_as},
+                         queue=queue, outgoing=queue.Queue(1), snapshot=lambda: ({}, {}))
+        exec(compile(ast.Module(body=methods, type_ignores=[]), str(source), "exec"), namespace)
+        app.after(0, namespace["tick"])
+        self.assertEqual(relay.files("open"), "")
+        self.assertIsNone(relay.state)
+        timeout = app.after(1000, lambda: finished.set(True))
+        app.wait_variable(finished)
+        app.after_cancel(timeout)
+        for timer in app.tk.call("after", "info"):
+            app.after_cancel(timer)
+        self.assertEqual(calls, [None])
+        self.assertFalse(commands)
+
     def native_owner_fixture(self):
         window = Mock(spec=tk.Toplevel)
         window.overrideredirect.return_value = False

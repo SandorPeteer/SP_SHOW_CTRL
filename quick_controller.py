@@ -83,6 +83,14 @@ def controller_worker(connection):
                 last_sent = time.monotonic()
 
     def run_action(name, value):
+        if name == "dialog_trace":
+            app._log(f"Operator dialog UI: {value}")
+            return
+        if name in ("open", "save", "save_as", "a_add", "b_add", "dialog_result"):
+            spec = dialogs.state or {}
+            app._log(f"Operator command: {name}; pending dialog={spec.get('id')} {spec.get('kind', '')}; "
+                     f"saving={getattr(app, '_saving_show', False)} opening={getattr(app, '_opening_show', False)} "
+                     f"startup={getattr(app, '_starting_up', False)}")
         if name == "dialog_result":
             dialogs.respond(value)
             return

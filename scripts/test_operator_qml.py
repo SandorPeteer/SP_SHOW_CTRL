@@ -27,6 +27,7 @@ if QGuiApplication is not None:
             super().__init__()
             self.current = {}
             self.commands = []
+            self.dialog_events = []
             self.models = {}
             self.preview_urls = {}
 
@@ -50,6 +51,9 @@ if QGuiApplication is not None:
         def press(self, name, value):
             if isinstance(value, QJSValue):
                 value = value.toVariant()
+            if name == "dialog_trace":
+                self.dialog_events.append(value)
+                return
             self.commands.append((name, value))
 
     class EmptyImages(QQuickImageProvider):
@@ -97,6 +101,47 @@ class OperatorQmlTests(unittest.TestCase):
             QTest.keyClick(window, Qt.Key.Key_PageDown)
             QTest.keyClick(window, Qt.Key.Key_PageUp)
             self.assertEqual(len(bridge.commands), 2)
+        finally:
+            delete(engine)
+
+    def test_open_cancel_then_save_uses_separate_native_dialog_lifetimes(self):
+        from PySide6.QtCore import QMetaObject
+        from shiboken6 import delete
+        bridge = Bridge()
+        engine = QQmlApplicationEngine()
+        engine.addImageProvider("icon", EmptyImages())
+        engine.rootContext().setContextProperty("operatorBridge", bridge)
+        engine.load(QUrl.fromLocalFile(str(Path(__file__).resolve().parents[1] / "operator.qml")))
+        window = engine.rootObjects()[0]
+        try:
+            open_dialog = window.findChild(QObject, "operatorOpenFileDialog")
+            save_dialog = window.findChild(QObject, "operatorSaveFileDialog")
+            self.assertIsNotNone(open_dialog)
+            self.assertIsNotNone(save_dialog)
+            self.assertIsNot(open_dialog, save_dialog)
+            folder = QUrl.fromLocalFile(str(Path.home())).toString()
+            for request_id, (kind, dialog) in enumerate((("open", open_dialog), ("save", save_dialog),
+                                                        ("open", open_dialog), ("save", save_dialog)), start=1):
+                bridge.current = {"dialog": dict(id=request_id, kind=kind, title=f"{kind.title()} show",
+                    multiple=False, folder=folder, initial=folder + "/Show.json", filters=["Show (*.json)"], suffix="json")}
+                bridge.stateChanged.emit()
+                QTest.qWait(50)
+                self.assertTrue(dialog.property("visible"), (kind, bridge.dialog_events))
+                self.assertEqual(dialog.property("requestId"), request_id)
+                other = save_dialog if kind == "open" else open_dialog
+                self.assertFalse(other.property("visible"))
+                # Rejection exercises the real Quick dialog signals. Native
+                # HWND/input/owner behavior remains covered by the Windows gate.
+                self.assertTrue(QMetaObject.invokeMethod(dialog, "reject"))
+                QTest.qWait(20)
+                self.assertFalse(dialog.property("visible"))
+                self.assertEqual(bridge.commands[-1], ("dialog_result", {"id": request_id, "value": ""}))
+                window.requestActivate()
+                self.assertTrue(QTest.qWaitForWindowActive(window, 1000))
+                QTest.keyClick(window, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+                self.assertEqual(bridge.commands[-1], ("save_as", None))
+            shown_modes = {event["mode"] for event in bridge.dialog_events if event["stage"] == "visible" and event["visible"]}
+            self.assertEqual(shown_modes, {0, 2})
         finally:
             delete(engine)
 

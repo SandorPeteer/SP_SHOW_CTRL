@@ -56,14 +56,19 @@ ApplicationWindow {
             operatorFolderDialog.currentFolder = spec.folder
             operatorFolderDialog.open()
         } else {
-            operatorFileDialog.title = spec.title
-            operatorFileDialog.fileMode = spec.kind === "save" ? NativeDialogs.FileDialog.SaveFile :
-                spec.multiple ? NativeDialogs.FileDialog.OpenFiles : NativeDialogs.FileDialog.OpenFile
-            operatorFileDialog.nameFilters = spec.filters
-            operatorFileDialog.currentFolder = spec.folder
-            operatorFileDialog.defaultSuffix = spec.suffix
-            if (spec.kind === "save") operatorFileDialog.selectedFile = spec.initial
-            operatorFileDialog.open()
+            // Windows Open and Save are different native COM dialog classes.
+            // Keep their helpers separate throughout each dialog's lifetime.
+            const fileDialog = spec.kind === "save" ? operatorSaveFileDialog : operatorOpenFileDialog
+            fileDialog.requestId = spec.id
+            fileDialog.title = spec.title
+            if (spec.kind !== "save")
+                fileDialog.fileMode = spec.multiple ? NativeDialogs.FileDialog.OpenFiles : NativeDialogs.FileDialog.OpenFile
+            fileDialog.nameFilters = spec.filters
+            fileDialog.currentFolder = spec.folder
+            fileDialog.defaultSuffix = spec.suffix
+            if (spec.kind === "save") fileDialog.selectedFile = spec.initial
+            operatorBridge.press("dialog_trace", {stage: "present", id: spec.id, kind: spec.kind})
+            fileDialog.open()
         }
     }
     Connections { target: operatorBridge; function onStateChanged() { screen.presentDialog() } }
@@ -107,14 +112,16 @@ ApplicationWindow {
         onRejected: screen.answerDialog(spec.cancel || "")
         onClosed: screen.requestActivate()
     }
-    NativeDialogs.FileDialog {
-        id: operatorFileDialog
-        objectName: "operatorFileDialog"
+    component ShowFileDialog: NativeDialogs.FileDialog {
+        property int requestId: 0
         parentWindow: screen
         modality: Qt.WindowModal
-        onAccepted: { operatorBridge.answerFiles(screen.shownDialog, selectedFiles); screen.requestActivate() }
-        onRejected: { screen.answerDialog(""); screen.requestActivate() }
+        onVisibleChanged: operatorBridge.press("dialog_trace", {stage: "visible", id: requestId, mode: fileMode, visible: visible})
+        onAccepted: { operatorBridge.answerFiles(requestId, selectedFiles); screen.requestActivate() }
+        onRejected: { operatorBridge.press("dialog_result", {id: requestId, value: ""}); screen.requestActivate() }
     }
+    ShowFileDialog { id: operatorOpenFileDialog; objectName: "operatorOpenFileDialog"; fileMode: NativeDialogs.FileDialog.OpenFile }
+    ShowFileDialog { id: operatorSaveFileDialog; objectName: "operatorSaveFileDialog"; fileMode: NativeDialogs.FileDialog.SaveFile }
     NativeDialogs.FolderDialog {
         id: operatorFolderDialog
         objectName: "operatorFolderDialog"
