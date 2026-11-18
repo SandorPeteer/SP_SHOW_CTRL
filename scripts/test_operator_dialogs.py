@@ -41,7 +41,9 @@ class DialogTests(unittest.TestCase):
             GetWindowRect=Mock(side_effect=lambda handle: (0, 0, 1000, 800) if handle == 0x300 else (0, 0, 600, 400)),
             SetWindowPos=Mock(),
             GetWindow=Mock(side_effect=lambda handle, _flag: owners.get(handle, 0x400)),
-            GetAncestor=Mock(side_effect=lambda handle, _flag: owners.get(handle, 0x400)),
+            # Tk tools are overlapped windows: GA_ROOTOWNER can be the tool
+            # itself even when GW_OWNER correctly names the Qt controller.
+            GetAncestor=Mock(side_effect=lambda handle, _flag: handle),
         )
         constants = SimpleNamespace(GWL_HWNDPARENT=-8, GW_OWNER=4, GA_ROOTOWNER=3, HWND_TOP=0)
         return window, frame, OperatorDialogs(app), callbacks, native, constants
@@ -59,12 +61,14 @@ class DialogTests(unittest.TestCase):
             callbacks.pop(0)()
             native.SetWindowLong.assert_called_once_with(0x201, -8, 0x300)
             native.GetParent.assert_not_called()
-            self.assertEqual(native.GetAncestor(0x201, 3), 0x300)
+            self.assertEqual(native.GetWindow(0x201, 4), 0x300)
+            self.assertEqual(native.GetAncestor(0x201, 3), 0x201)
             frame[0] = 0x202
             relay._own_tool_window(SimpleNamespace(widget=window))
             callbacks.pop(0)()
             native.SetWindowLong.assert_called_with(0x202, -8, 0x300)
-            self.assertEqual(native.GetAncestor(0x202, 3), 0x300)
+            self.assertEqual(native.GetWindow(0x202, 4), 0x300)
+            self.assertEqual(native.GetAncestor(0x202, 3), 0x202)
 
     def test_tool_owner_failure_is_verified_after_tk_lift(self):
         window, _frame, relay, callbacks, native, constants = self.native_owner_fixture()

@@ -119,7 +119,7 @@ class OperatorDialogs:
         window.lift()
         window.focus_set()
         # wm frame is Tk's native decorated top-level HWND. GetParent is
-        # ambiguous: on an already-top-level HWND it returns the OWNER instead.
+        # ambiguous: on a top-level WS_POPUP it returns the owner instead.
         handle = int(str(window.wm_frame()), 0)
         win32gui.SetWindowLong(handle, win32con.GWL_HWNDPARENT, owner)
         style_native_tool_window(handle)
@@ -130,7 +130,8 @@ class OperatorDialogs:
                               left + max(0, (right - left - width) // 2),
                               top + max(0, (bottom - top - height) // 2), width, height, 0)
         direct_owner = win32gui.GetWindow(handle, win32con.GW_OWNER)
-        root_owner = win32gui.GetAncestor(handle, win32con.GA_ROOTOWNER)
-        if direct_owner != owner or root_owner != owner:
+        # GA_ROOTOWNER walks GetParent, which follows top-level owners only
+        # for WS_POPUP. Tk's overlapped tools require the GW_OWNER contract.
+        if direct_owner != owner:
             raise RuntimeError(f"Tool window ownership failed: window={handle}, owner={direct_owner}, "
-                               f"root={root_owner}, expected={owner}")
+                               f"expected={owner}")

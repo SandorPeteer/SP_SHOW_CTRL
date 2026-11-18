@@ -84,7 +84,7 @@ def exercise_dialogs(process, controller, folder, environment):
             return found[0] if found else None
         dialog = wait(find)
         wait(win32gui.GetForegroundWindow, lambda hwnd: hwnd == dialog)
-        assert win32gui.GetAncestor(dialog, win32con.GA_ROOTOWNER) == controller
+        assert win32gui.GetWindow(dialog, win32con.GW_OWNER) == controller
         dialog_monitor = win32api.MonitorFromWindow(dialog, 2)
         controller_monitor = win32api.MonitorFromWindow(controller, 2)
         assert dialog_monitor == controller_monitor
@@ -132,9 +132,13 @@ def exercise_dialogs(process, controller, folder, environment):
             candidates.clear()
             def visit(hwnd, _):
                 if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd) == title:
-                    owner = win32gui.GetAncestor(hwnd, win32con.GA_ROOTOWNER)
-                    candidates.append(dict(hwnd=hwnd, root_owner=owner,
-                                           direct_owner=win32gui.GetWindow(hwnd, win32con.GW_OWNER),
+                    owner = win32gui.GetWindow(hwnd, win32con.GW_OWNER)
+                    # GA_ROOTOWNER follows GetParent, which omits an overlapped
+                    # top-level's owner. GW_OWNER is the documented owner API.
+                    # https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getparent
+                    candidates.append(dict(hwnd=hwnd,
+                                           root_owner=win32gui.GetAncestor(hwnd, win32con.GA_ROOTOWNER),
+                                           direct_owner=owner,
                                            pid=win32process.GetWindowThreadProcessId(hwnd)[1]))
                     if owner == controller:
                         found.append(hwnd)

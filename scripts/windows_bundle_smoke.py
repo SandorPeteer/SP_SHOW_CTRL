@@ -6,8 +6,22 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 
 APP = Path(__file__).resolve().parents[1] / "dist" / "SP Show Control"
+
+
+def run_stage(failures, name, action, *args, **kwargs):
+    """Keep independent diagnostics running; every failure still rejects the build."""
+    print(f"START Windows gate: {name}", flush=True)
+    try:
+        action(*args, **kwargs)
+    except Exception as exc:
+        failures.append(f"{name}: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        return False
+    print(f"PASS Windows gate: {name}", flush=True)
+    return True
 
 
 def check_output():
@@ -45,6 +59,7 @@ def smoke():
     import win32gui
     import win32process
 
+    failures = []
     exe = APP / "SP Show Control.exe"
     dnd = APP / "_internal/tkinterdnd2/tkdnd"
     assert sorted(path.name for path in dnd.iterdir()) == ["win-x64"]
@@ -84,6 +99,15 @@ def smoke():
                         "cue_ids_a": ["waveform"], "cue_ids_b": ["still"]}],
         }), encoding="utf-8")
         app = subprocess.Popen([exe], env=env, cwd=test)
+
+        def report_application():
+            def report_window(hwnd, _):
+                if win32process.GetWindowThreadProcessId(hwnd)[1] == app.pid:
+                    print("Application window:", ascii(win32gui.GetWindowText(hwnd)), flush=True)
+            win32gui.EnumWindows(report_window, None)
+            for log in (Path(test) / "SP_Show_Control" / "logs").glob("*.log"):
+                print(log.name, ascii(log.read_text(encoding="utf-8", errors="replace")[-3000:]), flush=True)
+
         try:
             deadline = time.monotonic() + 45
             while time.monotonic() < deadline:
@@ -151,38 +175,45 @@ def smoke():
             frame.save(APP.parent / "windows-controller-preview.png")
             if output_hwnd:
                 win32gui.ShowWindow(output_hwnd, 9)
-            subprocess.run([sys.executable, str(Path(__file__).resolve()), "output", str(clip)],
-                           env=env, cwd=test, check=True, timeout=40)
-            from windows_dialog_rehearsal import exercise_dialogs
-            exercise_dialogs(app, hwnd, Path(test), env)
+            run_stage(failures, "isolated player IPC", subprocess.run,
+                      [sys.executable, str(Path(__file__).resolve()), "output", str(clip)],
+                      env=env, cwd=test, check=True, timeout=40)
+            def rehearse_dialogs():
+                from windows_dialog_rehearsal import exercise_dialogs
+                exercise_dialogs(app, hwnd, Path(test), env)
+
+            if not run_stage(failures, "frozen dialogs and show lifecycle", rehearse_dialogs):
+                report_application()
         except Exception:
-            def report_window(hwnd, _):
-                if win32process.GetWindowThreadProcessId(hwnd)[1] == app.pid:
-                    print("Application window:", ascii(win32gui.GetWindowText(hwnd)), flush=True)
-            win32gui.EnumWindows(report_window, None)
-            for log in (Path(test) / "SP_Show_Control" / "logs").glob("*.log"):
-                print(log.name, ascii(log.read_text(encoding="utf-8", errors="replace")[-3000:]), flush=True)
+            report_application()
             raise
         finally:
             subprocess.run(["taskkill", "/PID", str(app.pid), "/T", "/F"], capture_output=True)
             app.wait(timeout=10)
-        subprocess.run([sys.executable, Path(__file__).with_name("test_spectral_waveform.py"), media / "ffmpeg.exe"],
-                       env=env, cwd=test, check=True, timeout=20)
+        run_stage(failures, "spectral waveform", subprocess.run,
+                  [sys.executable, Path(__file__).with_name("test_spectral_waveform.py"), media / "ffmpeg.exe"],
+                  env=env, cwd=test, check=True, timeout=20)
         # The frozen Save/Open/relaunch test intentionally remembers a show.
         # Source rehearsals own different fixtures and must not inherit it.
         env = dict(env, APPDATA=str(Path(test) / "source-rehearsal-profile"))
-        subprocess.run([sys.executable, Path(__file__).with_name("windows_quick_rehearsal.py"), test],
-                       env=env, cwd=test, check=True, timeout=100)
+        run_stage(failures, "Qt playback and responsiveness", subprocess.run,
+                  [sys.executable, Path(__file__).with_name("windows_quick_rehearsal.py"), test],
+                  env=env, cwd=test, check=True, timeout=100)
         for test_script in ("test_ppt_media.py", "test_media_previews.py", "test_download_tools.py",
                             "test_show_storage.py", "test_mpv_ipc.py", "test_playback_state.py",
                             "test_operator_transport.py", "test_operator_dialogs.py", "test_operator_qml.py",
                             "test_operator_models.py", "test_tool_layout.py", "test_next_selection.py",
                             "test_audio_routing.py"):
-            subprocess.run([sys.executable, Path(__file__).with_name(test_script)], env=env, check=True, timeout=30)
-        subprocess.run([sys.executable, Path(__file__).with_name("test_audio_meter.py")],
-                       env=env, check=True, timeout=90)
-        subprocess.run([sys.executable, Path(__file__).with_name("windows_show_rehearsal.py"), test],
-                       env=env, cwd=test, check=True, timeout=120)
+            run_stage(failures, test_script, subprocess.run,
+                      [sys.executable, Path(__file__).with_name(test_script)], env=env, check=True, timeout=30)
+        run_stage(failures, "real PCM audio meter", subprocess.run,
+                  [sys.executable, Path(__file__).with_name("test_audio_meter.py")],
+                  env=env, check=True, timeout=90)
+        run_stage(failures, "Tk media and routing rehearsal", subprocess.run,
+                  [sys.executable, Path(__file__).with_name("windows_show_rehearsal.py"), test],
+                  env=env, cwd=test, check=True, timeout=120)
+    if failures:
+        raise AssertionError("Windows gates failed:\n" + "\n".join(failures))
     print("PASS: portable GUI, FFmpeg/ffprobe/ffplay, Show Control IPC play/pause/resume and decoded mpv video")
 
 
