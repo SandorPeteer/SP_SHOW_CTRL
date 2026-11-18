@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from PIL import Image, ImageDraw, ImageTk
+from windows_theme import SELECTED, TEXT
 
 
 _ICON_PATHS = {
@@ -37,17 +38,18 @@ class OperatorIcons:
         self.root = root
         self.images = {}
 
-    def image(self, name):
-        if name not in self.images:
+    def image(self, name, color=TEXT, size=19):
+        key = (name, color, size)
+        if key not in self.images:
             source = Image.new("RGBA", (60, 60))
             draw = ImageDraw.Draw(source)
             for path in _ICON_PATHS[name]:
-                draw.line([(x * 3, y * 3) for x, y in path], fill="#edf3fc", width=5, joint="curve")
-            self.images[name] = ImageTk.PhotoImage(source.resize((19, 19), Image.Resampling.LANCZOS), master=self.root)
-        return self.images[name]
+                draw.line([(x * 3, y * 3) for x, y in path], fill=color, width=5, joint="curve")
+            self.images[key] = ImageTk.PhotoImage(source.resize((size, size), Image.Resampling.LANCZOS), master=self.root)
+        return self.images[key]
 
-    def button(self, parent, icon, label, command, *, visible_label=False, style="Icon.TButton"):
-        button = ttk.Button(parent, text=label, image=self.image(icon), command=command,
+    def button(self, parent, icon, label, command, *, visible_label=False, style="Icon.TButton", color=TEXT, size=19):
+        button = ttk.Button(parent, text=label, image=self.image(icon, color, size), command=command,
                             compound="left" if visible_label else "none", style=style)
         add_tooltip(button, label)
         return button
@@ -94,7 +96,7 @@ class SceneList(tk.Text):
         self.changed = changed
         self.row_count = 0
         self.selected = -1
-        self.tag_configure("current_scene", background="#294c82", foreground="#ffffff")
+        self.tag_configure("current_scene", background=SELECTED, foreground=TEXT)
         self.bind("<Button-1>", self._mouse_select)
         self.bind("<Double-1>", lambda _e: "break")
         for key, offset in (("Up", -1), ("Down", 1), ("Home", 0), ("End", 0)):

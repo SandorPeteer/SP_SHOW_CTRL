@@ -176,24 +176,59 @@ def rehearse(folder):
         visual.set_property("window-minimized", True)
         app._bring_to_front()
         app.maxsize(1600, 900)
+        import tkinter as tk
+        import windows_theme as palette
+
+        def main_controls(parent):
+            for child in parent.winfo_children():
+                if isinstance(child, tk.Toplevel):
+                    continue
+                if isinstance(child, (tk.Button, ttk.Button, ttk.Menubutton)):
+                    yield child
+                yield from main_controls(child)
+
+        controls = list(main_controls(app))
+        assert len(controls) == 31, len(controls)
+
+        def tool_order(last):
+            tool = next(button for button in controls if button.cget("text") == last)
+            return [button.cget("text") for button in tool.master.winfo_children()]
+
+        assert tool_order("Move scene down") == ["Add scene", "Remove scene", "Move scene up", "Move scene down"]
+        assert tool_order("Media tools") == ["Add files", "Remove files", "Move item up", "Move item down", "Media tools"]
+        assert tool_order("Projection tools") == ["Add files", "Remove files", "Move item up", "Move item down",
+                                                    "Downloads", "Projection tools"]
+        assert app.var_slide_position.get() == "01 / 02"
+        assert app.btn_play_a.cget("bg") == palette.AMBER
+        assert app.btn_play_b.cget("bg") == palette.MINT
+        assert app.btn_stop_b.cget("fg") == palette.CORAL
         measured = []
-        for width, height in ((980, 620), (1440, 820), (980, 620)):
+        for width, height in ((900, 550), (980, 620), (1440, 820), (980, 620)):
             app.geometry(f"{width}x{height}+20+40")
             app.update()
             assert app.winfo_width() == width and app.winfo_height() == height
-            widgets = (app.btn_output_fullscreen, app.btn_save_show, app.scene_listbox,
-                       app.btn_play_a, app.btn_play_b, app.btn_next_slide, app.tree_b)
+            assert all(button.winfo_viewable() for button in controls)
+            widgets = (*controls, app.scene_listbox, app.tree_a, app.tree_b, app.canvas_a,
+                       *app.output_monitor.canvases.values())
             for widget in widgets:
                 assert widget.winfo_viewable() and widget.winfo_width() > 20
                 assert widget.winfo_rootx() + widget.winfo_width() <= app.winfo_rootx() + width
                 assert widget.winfo_rooty() + widget.winfo_height() <= app.winfo_rooty() + height
             assert long_scene in app.scene_listbox.get("1.0", "2.0")
             assert app.scene_listbox.count("1.0", "2.0", "displaylines")[0] > 1
-            assert app.output_monitor.winfo_rooty() < app.tree_b.winfo_rooty()
+            monitor = app.output_monitor
+            lower = app.tree_b.master.master.master
+            assert monitor.winfo_rooty() + monitor.winfo_height() < lower.winfo_rooty()
+            assert abs(2 * monitor.winfo_height() - lower.winfo_height()) <= 2
+            left, right = monitor.canvases.values()
+            assert abs(left.winfo_width() - right.winfo_width()) <= 1
+            assert left.winfo_height() == right.winfo_height()
+            assert app.btn_play_b.winfo_rootx() < app.btn_prev_slide.winfo_rootx()
+            assert app.btn_prev_slide.winfo_rootx() < app.btn_next_slide.winfo_rootx() < app.btn_stop_b.winfo_rootx()
             measured.append((app.scene_listbox.winfo_width(), app.output_monitor.canvases["live"].winfo_height()))
-        assert measured[1][0] > measured[0][0] and measured[1][1] > measured[0][1], measured
-        assert measured[2] == measured[0], measured
-        print("PASS: 980x620 and 1440x820 workspace reflows and wraps full scene names")
+        assert measured[2][0] > measured[1][0] and measured[2][1] > measured[1][1], measured
+        assert measured[3] == measured[1], measured
+        print("PASS: two side-by-side monitors occupy 1/3; all 31 controls fit from 900x550 through 1440x820")
         ImageGrab.grab().save(root / "dist/windows-rehearsal-preview.png")
         visual.set_property("window-minimized", False)
         app.btn_output_fullscreen.invoke()

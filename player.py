@@ -33,6 +33,7 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 from mpv_ipc import MpvIpcSession
+import windows_theme as palette
 
 if sys.platform == "win32":
     from windows_powerpoint import show as windows_ppt
@@ -3126,15 +3127,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._preview_request: tuple[str, float, float, int | None] | None = None
         self._loop_a_enabled: bool = False
         self._loop_b_enabled: bool = False
-        # Transport button colors (works reliably via tk.Label-based buttons).
-        self._btn_off_bg = "#28374e"
-        self._btn_off_fg = "#ffffff"
-        self._btn_play_on_bg = "#1c654f"
-        self._btn_stop_on_bg = "#6a3843"
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         _append_app_log(f"[{ts}] App started ({APP_NAME} {APP_VERSION})\n")
-        self._btn_loop_on_bg = "#285da8"
-        self._btn_loop_on_fg = "#ffffff"
         self._playing_iid_a: str | None = None
         self._playing_iid_b: str | None = None
         self._cueid_to_iid_a: dict[str, str] = {}
@@ -3352,10 +3346,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         try:
             if bool(getattr(self.settings, "presentation_active", False)):
                 v.set("Windowed")
-                self.btn_output_fullscreen.configure(image=self._operator_icons.image("restore"))
+                self.btn_output_fullscreen.configure(image=self._operator_icons.image("restore", palette.INK))
             else:
                 v.set("Fullscreen")
-                self.btn_output_fullscreen.configure(image=self._operator_icons.image("fullscreen"))
+                self.btn_output_fullscreen.configure(image=self._operator_icons.image("fullscreen", palette.INK))
         except Exception as e:
             _swallow_exc(e, note="sync_presentation_button")
 
@@ -3634,9 +3628,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         text = {"textvariable": text_or_var} if isinstance(text_or_var, tk.StringVar) else {"text": text_or_var}
         button = tk.Button(parent, **text, image=self._operator_icons.image(icon), command=command,
                            compound="left" if visible_label else "none", font=("Segoe UI", 10, "bold"),
-                           padx=7, pady=4, bg=self._btn_off_bg, fg=self._btn_off_fg,
-                           activebackground="#34445d", activeforeground="#ffffff", relief="flat", bd=0,
-                           highlightthickness=1, highlightbackground=self._btn_off_bg, highlightcolor="#79a6fa",
+                           padx=7, pady=4, bg=palette.BUTTON, fg=palette.TEXT,
+                           activebackground=palette.SELECTED, activeforeground=palette.TEXT, relief="flat", bd=0,
+                           highlightthickness=1, highlightbackground=palette.BUTTON, highlightcolor=palette.CYAN,
                            cursor="hand2")
         add_tooltip(button, tooltip)
         return button
@@ -3693,6 +3687,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._last_output_owner, self._last_output_cue_id = "B", cue.id
             self._ppt_apply_sound()
             self.var_ppt_status.set(f"{cue.display_name()} • {index + 1}/{len(files)}")
+            self.var_slide_position.set(f"{index + 1:02d} / {len(files):02d}")
         except Exception as exc:
             self.var_ppt_status.set(f"Projection error: {exc}")
             self._log(self.var_ppt_status.get())
@@ -3739,6 +3734,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._ppt_index = 0
         self._ppt_running = False
         self.var_ppt_status.set("")
+        self.var_slide_position.set("— / —")
 
     def _open_ppt_export(self):
         cue = self._ppt_cue if self._ppt_running else self._selected_cue_for_deck("B")
@@ -5250,8 +5246,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             pass
 
         if sys.platform == "win32":
-            from windows_theme import apply_windows_theme
-            apply_windows_theme(self)
+            palette.apply_windows_theme(self)
 
         icons = self._operator_icons = OperatorIcons(self)
         root = ttk.Frame(self, padding=(12, 10), style="Shell.TFrame")
@@ -5274,39 +5269,61 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         icons.button(filebar, "settings", "App settings", self._open_global_setup).pack(side="right")
         self.btn_output_fullscreen = icons.button(filebar, "fullscreen", "Projector fullscreen / windowed",
                                                   self._toggle_output_fullscreen, visible_label=True,
-                                                  style="Accent.TButton")
+                                                  style="Accent.TButton", color=palette.INK)
         self.btn_output_fullscreen.configure(textvariable=self.var_presentation_btn)
         self.btn_output_fullscreen.pack(side="right", padx=(0, 6))
         shortcut = "Command" if sys.platform == "darwin" else "Control"
         self.bind(f"<{shortcut}-s>", lambda _e: self._save_show())
         self.bind(f"<{shortcut}-o>", lambda _e: self._open_show())
 
-        decks_container = ttk.Frame(root, style="Shell.TFrame")
-        decks_container.pack(fill="both", expand=True)
+        workspace = ttk.Frame(root, style="Shell.TFrame")
+        workspace.pack(fill="both", expand=True)
+        from output_monitor import OutputMonitor
+        self.output_monitor = OutputMonitor(
+            workspace, self._ui_tasks, lambda: _resolve_fftool("ffmpeg"),
+            _no_console_subprocess_kwargs, self._log,
+        )
+        self._monitor_after_id = self.after(500, self._poll_output_monitor)
+        decks_container = ttk.Frame(workspace, style="Shell.TFrame")
+
+        def list_tools(header, actions):
+            group = ttk.Frame(header)
+            group.pack(side="right")
+            for icon, label, command in actions:
+                icons.button(group, icon, label, command, size=16, style="HeaderIcon.TButton").pack(
+                    side="left", padx=(2, 0))
+
+        def scrollable_tree_host(panel):
+            host = ttk.Frame(panel)
+            host.pack(fill="both", expand=True)
+            scrollbar = ttk.Scrollbar(host)
+            scrollbar.pack(side="right", fill="y")
+            return host, scrollbar
 
         scene_panel = ttk.Frame(decks_container, padding=10)
         scene_head = ttk.Frame(scene_panel)
         scene_head.pack(fill="x", pady=(0, 8))
         ttk.Label(scene_head, text="Rundown", style="CardTitle.TLabel").pack(side="left")
-        icons.button(scene_head, "next", "Next scene", self._next_scene).pack(side="right")
-        icons.button(scene_head, "previous", "Previous scene", self._prev_scene).pack(side="right", padx=(0, 4))
+        list_tools(scene_head, (
+            ("add", "Add scene", self._add_scene),
+            ("remove", "Remove scene", self._remove_scene),
+            ("up", "Move scene up", lambda: self._move_scene(-1)),
+            ("down", "Move scene down", lambda: self._move_scene(1)),
+        ))
         scene_list_frame = ttk.Frame(scene_panel)
         scene_list_frame.pack(fill="both", expand=True)
         scene_scrollbar = ttk.Scrollbar(scene_list_frame)
         scene_scrollbar.pack(side="right", fill="y")
         self.scene_listbox = SceneList(scene_list_frame, self._on_scene_select,
                                        yscrollcommand=scene_scrollbar.set, font=("Segoe UI", 10),
-                                       bg="#171f2c", fg="#edf3fc", bd=0, highlightthickness=0)
+                                       bg=palette.FIELD, fg=palette.TEXT, bd=0, highlightthickness=0)
         self.scene_listbox.pack(side="left", fill="both", expand=True)
         scene_scrollbar.configure(command=self.scene_listbox.yview)
         scene_btn = ttk.Frame(scene_panel)
         scene_btn.pack(fill="x", pady=(8, 0))
-        for icon, label, command in (("add", "Add scene", self._add_scene),
-                                     ("edit", "Edit scene", self._edit_scene),
-                                     ("remove", "Remove scene", self._remove_scene),
-                                     ("up", "Move scene up", lambda: self._move_scene(-1)),
-                                     ("down", "Move scene down", lambda: self._move_scene(1))):
-            icons.button(scene_btn, icon, label, command).pack(side="left", fill="x", expand=True)
+        icons.button(scene_btn, "previous", "Previous scene", self._prev_scene).pack(side="left", padx=(0, 4))
+        icons.button(scene_btn, "next", "Next scene", self._next_scene).pack(side="left")
+        icons.button(scene_btn, "edit", "Edit scene", self._edit_scene).pack(side="right")
 
         # MEDIA (middle column): audio/video
         deck_a = ttk.Frame(decks_container, padding=10)
@@ -5314,11 +5331,17 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         audio_head.pack(fill="x", pady=(0, 8))
         ttk.Label(audio_head, text="Audio / Video", style="CardTitle.TLabel").pack(side="left")
         self.audio_tools, self.tabs_a = tool_window(self, "Media tools")
-        icons.button(audio_head, "settings", "Media tools", lambda: show_tools(
-            self.audio_tools, self.tabs_a, self.tab_a_inout)).pack(side="right")
+        list_tools(audio_head, (
+            ("add", "Add files", self._add_media_a),
+            ("remove", "Remove files", self._remove_a),
+            ("up", "Move item up", lambda: self._move_a(-1)),
+            ("down", "Move item down", lambda: self._move_a(1)),
+            ("settings", "Media tools", lambda: show_tools(self.audio_tools, self.tabs_a, self.tab_a_inout)),
+        ))
 
+        tree_host_a, scrollbar_a = scrollable_tree_host(deck_a)
         self.tree_a = ttk.Treeview(
-            deck_a,
+            tree_host_a, yscrollcommand=scrollbar_a.set,
             columns=("checkbox", "auto", "idx", "kind", "name", "duration"),
             show="headings",
             selectmode="browse",
@@ -5335,8 +5358,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.tree_a.column("kind", width=55, minwidth=55, stretch=False)
         self.tree_a.column("name", width=380, minwidth=120, stretch=True)
         self.tree_a.column("duration", width=86, minwidth=78, stretch=False, anchor="e")
-        self.tree_a.configure(height=4)
-        self.tree_a.pack(fill="both", expand=True)
+        self.tree_a.configure(height=2)
+        self.tree_a.pack(side="left", fill="both", expand=True)
+        scrollbar_a.configure(command=self.tree_a.yview)
         try:
             self.tree_a.tag_configure("playing", background="#2e7d32", foreground="#ffffff")
         except Exception:
@@ -5354,17 +5378,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.var_total_duration_a = tk.StringVar(value="Total: 00:00:00")
         ttk.Label(deck_a, textvariable=self.var_total_duration_a, font=("Courier", 10, "bold"), anchor="e").pack(fill="x", padx=2, pady=(2, 0))
 
-        btn_a = ttk.Frame(deck_a)
-        btn_a.pack(fill="x", pady=(4, 0))
-        icons.button(btn_a, "add", "Add files", self._add_media_a).pack(side="left")
-        icons.button(btn_a, "remove", "Remove files", self._remove_a).pack(side="left", padx=4)
-        icons.button(btn_a, "down", "Move item down", lambda: self._move_a(1)).pack(side="right")
-        icons.button(btn_a, "up", "Move item up", lambda: self._move_a(-1)).pack(side="right", padx=4)
-
         # Waveform placeholder (Deck A)
         self.wave_a_frame = ttk.LabelFrame(deck_a, text="Waveform", padding=2)
         self.wave_a_frame.pack(fill="x", pady=(4, 0))
-        self.canvas_a = tk.Canvas(self.wave_a_frame, height=60, bg="#2b2b2b", highlightthickness=0, cursor="crosshair")
+        self.canvas_a = tk.Canvas(self.wave_a_frame, height=66, bg=palette.FIELD, highlightthickness=0, cursor="crosshair")
         self.canvas_a.pack(fill="x")
         self.canvas_a.bind("<Button-1>", lambda e: self._waveform_click(e, "A", "IN"))
         self.canvas_a.bind("<Button-2>", lambda e: self._waveform_click(e, "A", "OUT"))
@@ -5379,9 +5396,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         now_a_top.columnconfigure(2, weight=1)
         self.vu_canvas_a = tk.Canvas(
             now_a_top,
-            width=120,
+            width=94,
             height=10,
-            bg="#2b2b2b",
+            bg=palette.FIELD,
             highlightthickness=0,
             bd=0,
         )
@@ -5515,57 +5532,38 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         deck_b = ttk.Frame(decks_container, padding=10)
 
         def layout_workspace(event):
-            if event.width < 220:
+            if event.width < 680 or event.height < 240:
                 return
             gap = 8
-            scene_width = max(190, min(355, round(event.width * 0.225)))
+            monitor_height = (event.height - gap) // 3
+            self.output_monitor.place(x=0, y=0, width=event.width, height=monitor_height)
+            decks_container.place(x=0, y=monitor_height + gap, width=event.width,
+                                  height=event.height - monitor_height - gap)
+            scene_width = max(210, min(355, round(event.width * 0.22)))
             deck_width = event.width - scene_width - 2 * gap
-            audio_width = round(deck_width * 4 / 9)
+            audio_width = round(deck_width * 36 / 78)
             scene_panel.place(x=0, y=0, width=scene_width, relheight=1)
             deck_a.place(x=scene_width + gap, y=0, width=audio_width, relheight=1)
             deck_b.place(x=scene_width + audio_width + 2 * gap, y=0,
                          width=deck_width - audio_width, relheight=1)
 
-        decks_container.bind("<Configure>", layout_workspace)
+        workspace.bind("<Configure>", layout_workspace)
         projection_head = ttk.Frame(deck_b)
         projection_head.pack(fill="x", pady=(0, 8))
         ttk.Label(projection_head, text="Projection", style="CardTitle.TLabel").pack(side="left")
         self.projection_tools, self.tabs_b = tool_window(self, "Projection tools")
-        icons.button(projection_head, "settings", "Projection tools", lambda: show_tools(
-            self.projection_tools, self.tabs_b, self.tab_b_ppt)).pack(side="right")
-        icons.button(projection_head, "download", "Downloads", lambda: show_tools(
-            self.projection_tools, self.tabs_b, self.tab_b_download)).pack(side="right", padx=(0, 4))
+        list_tools(projection_head, (
+            ("add", "Add files", self._add_media_b),
+            ("remove", "Remove files", self._remove_b),
+            ("up", "Move item up", lambda: self._move_b(-1)),
+            ("down", "Move item down", lambda: self._move_b(1)),
+            ("download", "Downloads", lambda: show_tools(self.projection_tools, self.tabs_b, self.tab_b_download)),
+            ("settings", "Projection tools", lambda: show_tools(self.projection_tools, self.tabs_b, self.tab_b_ppt)),
+        ))
 
-        from output_monitor import OutputMonitor
-        self.output_monitor = OutputMonitor(
-            deck_b, self._ui_tasks, lambda: _resolve_fftool("ffmpeg"),
-            _no_console_subprocess_kwargs, self._log,
-        )
-        self.output_monitor.pack(fill="x")
-        deck_b.bind("<Configure>", lambda e: self.output_monitor.fit(e.width - 20, e.height))
-        self._monitor_after_id = self.after(500, self._poll_output_monitor)
-
-        # VISUALS controls: no waveform + no IN/OUT editor on this side.
-        visuals_ctrl = ttk.Frame(deck_b, padding=(0, 4, 0, 0))
-        visuals_ctrl.pack(fill="x", pady=(4, 0))
-        visuals_ctrl.columnconfigure(0, weight=1, uniform="visuals_ctrl")
-        visuals_ctrl.columnconfigure(1, weight=1, uniform="visuals_ctrl")
-        visuals_ctrl.columnconfigure(2, weight=1, uniform="visuals_ctrl")
-        self.var_play_b = tk.StringVar(value="Show")
-        self.btn_play_b = self._make_transport_button(visuals_ctrl, self.var_play_b, self._play_deck_b, "play", "Show selected item", True)
-        self.btn_play_b.grid(row=0, column=0, sticky="nsew", padx=2)
-        self.btn_stop_b = self._make_transport_button(visuals_ctrl, "Clear", self._stop_deck_b, "stop", "Clear projection")
-        self.btn_stop_b.grid(row=0, column=1, sticky="nsew", padx=2)
-        self.var_loop_b = tk.StringVar(value="Repeat off")
-        self.btn_loop_b = self._make_transport_button(visuals_ctrl, self.var_loop_b, lambda: self._toggle_loop("B"), "repeat", "Repeat projection")
-        self.btn_loop_b.grid(row=0, column=2, sticky="nsew", padx=2)
-        self.btn_prev_slide = icons.button(visuals_ctrl, "previous", "Previous slide", self._ppt_prev_ui)
-        self.btn_next_slide = icons.button(visuals_ctrl, "next", "Next slide", self._ppt_next_ui)
-        self.btn_prev_slide.grid(row=0, column=3, sticky="nsew", padx=(6, 2))
-        self.btn_next_slide.grid(row=0, column=4, sticky="nsew", padx=2)
-
+        tree_host_b, scrollbar_b = scrollable_tree_host(deck_b)
         self.tree_b = ttk.Treeview(
-            deck_b,
+            tree_host_b, yscrollcommand=scrollbar_b.set,
             columns=("checkbox", "auto", "idx", "kind", "name", "duration"),
             show="headings",
             selectmode="browse",
@@ -5583,7 +5581,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.tree_b.column("name", width=380, minwidth=120, stretch=True)
         self.tree_b.column("duration", width=86, minwidth=78, stretch=False, anchor="e")
         self.tree_b.configure(height=2)
-        self.tree_b.pack(fill="both", expand=True)
+        self.tree_b.pack(side="left", fill="both", expand=True)
+        scrollbar_b.configure(command=self.tree_b.yview)
         try:
             self.tree_b.tag_configure("playing", background="#2e7d32", foreground="#ffffff")
         except Exception:
@@ -5601,12 +5600,26 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.var_total_duration_b = tk.StringVar(value="Total: 00:00:00")
         ttk.Label(deck_b, textvariable=self.var_total_duration_b, font=("Courier", 10, "bold"), anchor="e").pack(fill="x", padx=2, pady=(2, 0))
 
-        btn_b = ttk.Frame(deck_b)
-        btn_b.pack(fill="x", pady=(4, 0))
-        icons.button(btn_b, "add", "Add files", self._add_media_b).pack(side="left")
-        icons.button(btn_b, "remove", "Remove files", self._remove_b).pack(side="left", padx=4)
-        icons.button(btn_b, "down", "Move item down", lambda: self._move_b(1)).pack(side="right")
-        icons.button(btn_b, "up", "Move item up", lambda: self._move_b(-1)).pack(side="right", padx=4)
+        # Keep the slide arrows beside their counter, between Show and Stop.
+        visuals_ctrl = ttk.Frame(deck_b)
+        visuals_ctrl.pack(fill="x", side="bottom", pady=(5, 0))
+        visuals_ctrl.columnconfigure(6, weight=1)
+        self.var_play_b = tk.StringVar(value="Show")
+        self.var_loop_b = tk.StringVar(value="Repeat off")
+        self.var_slide_position = tk.StringVar(value="— / —")
+        self.btn_play_b = self._make_transport_button(visuals_ctrl, self.var_play_b, self._play_deck_b,
+                                                      "play", "Show selected item", True)
+        self.btn_prev_slide = icons.button(visuals_ctrl, "previous", "Previous slide", self._ppt_prev_ui,
+                                         style="SlideNav.TButton", color=palette.VIOLET)
+        slide_position = ttk.Label(visuals_ctrl, textvariable=self.var_slide_position, anchor="center", width=7)
+        self.btn_next_slide = icons.button(visuals_ctrl, "next", "Next slide", self._ppt_next_ui,
+                                         style="SlideNav.TButton", color=palette.VIOLET)
+        self.btn_stop_b = self._make_transport_button(visuals_ctrl, "Clear", self._stop_deck_b, "stop", "Clear projection")
+        self.btn_loop_b = self._make_transport_button(visuals_ctrl, self.var_loop_b, lambda: self._toggle_loop("B"),
+                                                      "repeat", "Repeat projection")
+        for column, widget in enumerate((self.btn_play_b, self.btn_prev_slide, slide_position,
+                                         self.btn_next_slide, self.btn_stop_b, self.btn_loop_b)):
+            widget.grid(row=0, column=column, sticky="nsew", padx=(0, 3))
 
         # Tabs under VISUALS controls (Deck B)
         self.tab_b_setup = tk.Frame(self.tabs_b, bg="#2b2b2b")
@@ -5782,7 +5795,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if self._ppt_running and self._ppt_cue:
             caption = f"{self._ppt_index + 1}/{len(self._ppt_slides)} · {self._ppt_cue.display_name()}"
         self.output_monitor.update_targets(self.video_runner._sess, next_path, next_caption, caption,
-                                           self.settings.output_aspect)
+                                           self.settings.output_aspect, next_is_slide=self._ppt_running)
         self._monitor_after_id = self.after(500, self._poll_output_monitor)
 
     def _on_closing(self):
@@ -9702,12 +9715,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     else:
                         play_text = "Play"
 
-                play_bg = self._btn_play_on_bg if playing else self._btn_off_bg
-                stop_bg = self._btn_stop_on_bg if playing else self._btn_off_bg
-                loop_bg = self._btn_loop_on_bg if loop_enabled else self._btn_off_bg
-                loop_fg = self._btn_loop_on_fg if loop_enabled else self._btn_off_fg
-
-                state = (play_text, play_bg, stop_bg, loop_bg, loop_fg)
+                state = (play_text, playing, loop_enabled)
                 if self._transport_visual_cache.get(deck) == state:
                     return
                 self._transport_visual_cache[deck] = state
@@ -9719,22 +9727,18 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     except Exception:
                         pass
 
-                if btn_play is not None:
-                    try:
-                        btn_play.configure(bg=play_bg, fg=self._btn_off_fg,
-                                           image=self._operator_icons.image("pause" if deck == "A" and playing else "play"))
-                    except Exception:
-                        pass
-                if btn_stop is not None:
-                    try:
-                        btn_stop.configure(bg=stop_bg, fg=self._btn_off_fg)
-                    except Exception:
-                        pass
-                if btn_loop is not None:
-                    try:
-                        btn_loop.configure(bg=loop_bg, fg=loop_fg)
-                    except Exception:
-                        pass
+                if deck == "A":
+                    play_bg, play_icon = (palette.AMBER, "pause") if playing else (palette.CYAN, "play")
+                else:
+                    play_bg, play_icon = palette.MINT, "play"
+                loop_bg, loop_fg = (palette.REPEAT_BG, palette.VIOLET) if loop_enabled else (palette.BUTTON, palette.TEXT)
+                for button, bg, fg, icon in (
+                        (btn_play, play_bg, palette.INK, play_icon),
+                        (btn_stop, palette.STOP_BG, palette.CORAL, "stop"),
+                        (btn_loop, loop_bg, loop_fg, "repeat")):
+                    if button is not None:
+                        button.configure(bg=bg, fg=fg, activebackground=bg, activeforeground=fg,
+                                         highlightbackground=bg, image=self._operator_icons.image(icon, fg))
             except Exception:
                 return
 

@@ -10,6 +10,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from PIL import Image, ImageOps, ImageTk
+from windows_theme import EDGE, MINT, VIOLET
 
 
 _PREVIEW_SIZE = (640, 360)
@@ -133,23 +134,27 @@ class OutputMonitor(ttk.Frame):
         self.errors = {}
         self.canvases = {}
         self.captions = {}
-        for column, (key, title) in enumerate((("live", "On screen"), ("next", "Next slide"))):
+        self.titles = {}
+        self.borders = {}
+        self.rowconfigure(0, weight=1)
+        for column, (key, title) in enumerate((("live", "On screen"), ("next", "Preview"))):
             self.columnconfigure(column, weight=1, uniform="monitor")
             box = ttk.Frame(self)
-            box.grid(row=0, column=column, sticky="nsew", padx=(0, 3) if column == 0 else (3, 0))
-            ttk.Label(box, text=title).pack(anchor="w", pady=(0, 4))
-            canvas = tk.Canvas(box, width=1, height=120, bg="#0b1018", highlightthickness=0)
-            canvas.pack(fill="x")
-            self.canvases[key] = canvas
+            box.grid(row=0, column=column, sticky="nsew", padx=(0, 4) if column == 0 else (4, 0))
+            border = tk.Frame(box, height=2, bg=EDGE)
+            border.pack(fill="x")
+            self.borders[key] = border
+            heading = ttk.Frame(box)
+            heading.pack(fill="x", padx=8, pady=4)
+            self.titles[key] = ttk.Label(heading, text=title)
+            self.titles[key].pack(side="left")
             self.captions[key] = tk.StringVar()
-            ttk.Label(box, textvariable=self.captions[key], width=1, anchor="w").pack(fill="x")
+            ttk.Label(heading, textvariable=self.captions[key], width=1, anchor="e", style="Status.TLabel").pack(
+                side="right", fill="x", expand=True, padx=(8, 0))
+            canvas = tk.Canvas(box, width=1, height=1, bg="#070a10", highlightthickness=0)
+            canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+            self.canvases[key] = canvas
             canvas.bind("<Configure>", lambda event, item=key: self._draw(item))
-
-    def fit(self, width, panel_height):
-        height = max(64, min(round((width - 6) * 9 / 32), round(panel_height * 0.42)))
-        for canvas in self.canvases.values():
-            if int(canvas.cget("height")) != height:
-                canvas.configure(height=height)
 
     def _draw(self, key, status=""):
         if self.closed:
@@ -158,6 +163,11 @@ class OutputMonitor(ttk.Frame):
         canvas.delete("all")
         width, height = max(1, canvas.winfo_width()), max(1, canvas.winfo_height())
         frame = self.frames[key]
+        color = (MINT if key == "live" else VIOLET) if frame is not None else EDGE
+        if self.borders[key].cget("bg") != color:
+            self.borders[key].configure(bg=color)
+            style = "LiveMonitor.TLabel" if key == "live" else "NextMonitor.TLabel"
+            self.titles[key].configure(style=style if frame is not None else "TLabel")
         if frame is None:
             self.photos.pop(key, None)
             canvas.create_text(width // 2, height // 2, text=status, width=max(1, width - 12), fill="#bdbdbd")
@@ -166,11 +176,14 @@ class OutputMonitor(ttk.Frame):
         self.photos[key] = photo
         canvas.create_image(width // 2, height // 2, image=photo)
 
-    def update_targets(self, session, next_path, next_caption, live_caption, aspect="Source"):
+    def update_targets(self, session, next_path, next_caption, live_caption, aspect="Source", *, next_is_slide=False):
         if self.closed:
             return
         self.captions["live"].set(live_caption)
         self.captions["next"].set(next_caption)
+        next_title = "Next slide" if next_is_slide else "Preview"
+        if self.titles["next"].cget("text") != next_title:
+            self.titles["next"].configure(text=next_title)
         live_target = (session, live_caption, aspect)
         if live_target != self.targets["live"]:
             self.frames["live"] = None
