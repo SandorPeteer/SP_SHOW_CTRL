@@ -76,9 +76,16 @@ class OperatorIcons:
             accent = {"selected": CYAN, "playing": MINT, "next": VIOLET}.get(emphasis)
             if accent:
                 ImageDraw.Draw(strip).rectangle((0, 0, pixels(self.root, 2) - 1, strip.height), fill=accent)
-            for x, name, color in ((6, "play", accent or (MINT if autoplay else "#798d9e")),
-                                   (27, kind if kind in _ICON_PATHS else "video", TEXT)):
-                strip.alpha_composite(self._raster(name, color, size), (pixels(self.root, x), pixels(self.root, 2)))
+            if autoplay:
+                badge = Image.new("RGBA", (60, 60))
+                draw = ImageDraw.Draw(badge)
+                draw.rounded_rectangle((5, 7, 55, 53), radius=10, fill="#17392f")
+                draw.line([(18, 42), (30, 17), (42, 42)], fill=MINT, width=5, joint="curve")
+                draw.line([(21, 35), (39, 35)], fill=MINT, width=5)
+                strip.alpha_composite(badge.resize((size, size), Image.Resampling.LANCZOS),
+                                      (pixels(self.root, 4), pixels(self.root, 2)))
+            icon = kind if kind in _ICON_PATHS else "video"
+            strip.alpha_composite(self._raster(icon, TEXT, size), (pixels(self.root, 27), pixels(self.root, 2)))
             self.images[key] = ImageTk.PhotoImage(strip, master=self.root)
         return self.images[key]
 

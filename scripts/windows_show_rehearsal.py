@@ -321,15 +321,37 @@ def rehearse(folder):
         audio_before_resize = audio.get_property("time-pos")
         timings = []
         start_tick = time.perf_counter()
-        for frame in range(75):
-            delay = start_tick + frame / 60 - time.perf_counter()
-            if delay > 0:
-                time.sleep(delay)
+
+        def run_resize(frame):
+            if frame == 75 or errors:
+                app.quit()
+                return
             phase = frame if frame < 38 else 75 - frame
+            size = (920 + phase * 4, 560 + phase * 3)
             tick = time.perf_counter()
-            resize_client(920 + phase * 4, 560 + phase * 3)
-            pump(lambda: None)
-            timings.append((time.perf_counter() - tick) * 1000)
+            resize_client(*size)
+
+            def rendered():
+                workspace = app.wave_a_frame.master.master
+                expected = round((workspace.winfo_width() - 16) * 0.40)
+                if ((app.winfo_width(), app.winfo_height()) != size
+                        or app.wave_a_frame.winfo_width() != expected):
+                    app.after(1, rendered)
+                    return
+                timings.append((time.perf_counter() - tick) * 1000)
+                delay = start_tick + (frame + 1) / 60 - time.perf_counter()
+                app.after(max(1, round(1000 * delay)), run_resize, frame + 1)
+
+            app.after_idle(rendered)
+
+        abort_resize = app.after(6500, app.quit)
+        app.after(0, run_resize, 0)
+        app.mainloop()
+        app.after_cancel(abort_resize)
+        if errors:
+            value, tb = errors.pop(0)
+            raise value.with_traceback(tb)
+        assert len(timings) == 75, f"Completed {len(timings)} resizing passes"
         assert tuple(app.canvas_a.find_withtag("waveform")) == bars
         assert audio.get_property("time-pos") > audio_before_resize
         ordered = sorted(timings)
