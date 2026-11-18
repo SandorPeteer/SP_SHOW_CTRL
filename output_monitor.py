@@ -179,8 +179,10 @@ class OutputMonitor(ttk.Frame):
     def update_targets(self, session, next_path, next_caption, live_caption, aspect="Source", *, next_is_slide=False):
         if self.closed:
             return
-        self.captions["live"].set(live_caption)
-        self.captions["next"].set(next_caption)
+        if self.captions["live"].get() != live_caption:
+            self.captions["live"].set(live_caption)
+        if self.captions["next"].get() != next_caption:
+            self.captions["next"].set(next_caption)
         next_title = "Next slide" if next_is_slide else "Preview"
         if self.titles["next"].cget("text") != next_title:
             self.titles["next"].configure(text=next_title)
@@ -195,7 +197,8 @@ class OutputMonitor(ttk.Frame):
             self.frames["next"] = None
             self.errors.pop("next", None)
             self._draw("next", "Loading preview…" if next_path else "")
-        self._request("live", lambda: capture_output(session))
+        if session is not None and live_caption:
+            self._request("live", lambda: capture_output(session))
         if next_path and self.frames["next"] is None and not self.errors.get("next"):
             self._request("next", lambda: load_preview(next_path, self.ffmpeg(), self.subprocess_kwargs(),
                                                        self.cancelled, aspect))

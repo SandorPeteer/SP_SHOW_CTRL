@@ -3286,7 +3286,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._busy_jobs.pop(job, None)
         if self._busy_jobs and not was_busy:
             self.activity_progress.grid()
-            self.activity_progress.start(24)
+            self.activity_progress.start()
         elif was_busy and not self._busy_jobs:
             self.activity_progress.stop()
             self.activity_progress.grid_remove()
@@ -3648,7 +3648,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         text = {"textvariable": text_or_var} if isinstance(text_or_var, tk.StringVar) else {"text": text_or_var}
         button = ttk.Button(parent, **text, image=self._operator_icons.image(icon), command=command,
                             compound="left" if visible_label else "none", style="Transport.TButton",
-                            cursor="hand2")
+                            width=0, cursor="hand2")
         add_tooltip(button, tooltip)
         return button
 
@@ -5230,7 +5230,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
     # ── UI ──────────────────────────────────────────────────────────────
     def _build_ui(self) -> None:
-        from operator_ui import CueList, OperatorIcons, SceneList, ScrollIndicator, show_tools, tool_window
+        from operator_ui import ActivityIndicator, CueList, OperatorIcons, SceneList, ScrollIndicator, show_tools, tool_window
 
         # Styles: flatter notebook (less padding/border) to save vertical space.
         try:
@@ -5334,10 +5334,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.activity_label = ttk.Label(self.activity_frame, textvariable=self.var_activity, style="Activity.TLabel",
                                         width=24, anchor="e")
         self.activity_label.grid(row=0, column=0, sticky="e")
-        self.activity_progress = ttk.Progressbar(self.activity_frame, orient="horizontal", mode="indeterminate",
-                                                 style="Activity.Horizontal.TProgressbar", length=52)
+        self.activity_progress = ActivityIndicator(self.activity_frame, "#122331")
         self.activity_progress.grid(row=0, column=1, padx=(6, 0))
-        self.activity_progress.start(24)
+        self.activity_progress.start()
         self._render_activity()
 
         workspace = ttk.Frame(root, style="Shell.TFrame")
@@ -9786,7 +9785,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 sel = self._selected_cue_for_deck(deck)
 
                 if deck == "B":
-                    play_text = "Live" if playing else "Show"
+                    play_text = "Show"
                 else:
                     if playing:
                         play_text = "Pause"

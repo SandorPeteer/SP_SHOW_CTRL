@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from PIL import Image, ImageDraw, ImageTk
-from windows_theme import EDGE, MINT, SELECTED, TEXT
+from windows_theme import CYAN, EDGE, MINT, SELECTED, TEXT
 
 
 _ICON_PATHS = {
@@ -114,6 +114,32 @@ def add_tooltip(widget, label):
     widget.bind("<Enter>", schedule, add="+")
     for event in ("<Leave>", "<ButtonPress>", "<Destroy>"):
         widget.bind(event, hide, add="+")
+
+
+class ActivityIndicator(tk.Canvas):
+    """Small motion indicator for work without a measurable completion percentage."""
+    def __init__(self, parent, background):
+        super().__init__(parent, width=52, height=5, bg=background, bd=0, highlightthickness=0)
+        self.create_line(2, 2, 50, 2, width=4, capstyle="round", fill="#284256")
+        self.segment = self.create_line(2, 2, 16, 2, width=4, capstyle="round", fill=CYAN)
+        self.phase = 0
+        self._job = None
+        self.bind("<Destroy>", lambda _event: self.stop(), add="+")
+
+    def start(self):
+        if self._job is None:
+            self._advance()
+
+    def stop(self):
+        if self._job is not None:
+            self.after_cancel(self._job)
+            self._job = None
+
+    def _advance(self):
+        self.phase = (self.phase + 1) % 40
+        offset = round(34 * (1 - abs(1 - self.phase / 20)))
+        self.coords(self.segment, 2 + offset, 2, 16 + offset, 2)
+        self._job = self.after(32, self._advance)
 
 
 class ScrollIndicator:

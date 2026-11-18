@@ -92,8 +92,14 @@ def smoke():
             else:
                 raise RuntimeError("Show Control window did not start")
             import win32con
-            window_style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
-            assert not window_style & win32con.WS_CAPTION
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                window_style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+                if not window_style & win32con.WS_CAPTION:
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError(f"Integrated toolbar did not replace the caption: {window_style:#x}")
             assert window_style & win32con.WS_THICKFRAME
             print("PASS: frozen EXE has integrated chrome and a native resize frame")
             # A second click must reuse the controller, even during initial loading.

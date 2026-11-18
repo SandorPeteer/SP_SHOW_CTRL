@@ -1,4 +1,5 @@
 """Use a colorable ttk theme so Windows paints both tab text and backgrounds."""
+import sys
 from tkinter import ttk
 
 SHELL = "#0b1017"
@@ -50,7 +51,6 @@ def apply_windows_theme(app):
     style.configure("Activity.TLabel", background=SHELL, foreground=CYAN, font=("Segoe UI", 9))
     style.configure("Alert.TLabel", background=SHELL, foreground=CORAL, font=("Segoe UI", 9))
     style.configure("AppTitle.TLabel", background=SHELL, font=("Segoe UI", 12, "bold"))
-    style.configure("Activity.Horizontal.TProgressbar", background=CYAN, troughcolor=FIELD, thickness=4)
     style.configure("ShowTitle.TLabel", background=SHELL, foreground=MUTED, font=("Segoe UI", 10))
     style.configure("SignalTitle.TLabel", font=("Segoe UI", 10, "bold"))
     style.configure("SignalCaption.TLabel", foreground=MUTED, font=("Segoe UI", 9))
@@ -98,12 +98,13 @@ def apply_windows_theme(app):
     style.map("Deck.TNotebook.Tab",
               background=[("disabled", background), ("selected", selected), ("active", "#4a4e55")],
               foreground=[("disabled", disabled), ("selected", "#ffffff"), ("active", "#ffffff")])
-    _apply_rounded_surfaces(app, style)
+    _apply_workspace_surfaces(app, style)
 
 
-def _apply_rounded_surfaces(app, style):
+def _apply_workspace_surfaces(app, style):
     from PIL import Image, ImageDraw, ImageTk
 
+    rounded = sys.platform == "win32"
     pictures = {}
 
     def surface(fill, edge, radius):
@@ -115,12 +116,13 @@ def _apply_rounded_surfaces(app, style):
             pictures[key] = ImageTk.PhotoImage(image.resize((24, 24), Image.Resampling.LANCZOS), master=app)
         return pictures[key]
 
-    for name, fill, edge, radius in (
-            ("WorkspaceCard", PANEL, EDGE, 6),
-            ("Activity", "#122331", "#26435a", 5)):
-        element = name + ".surface"
-        style.element_create(element, "image", surface(fill, edge, radius), border=7, sticky="nsew")
-        style.layout(name + ".TFrame", [(element, {"sticky": "nswe"})])
+    if rounded:
+        for name, fill, edge, radius in (
+                ("WorkspaceCard", PANEL, EDGE, 6),
+                ("Activity", "#122331", "#26435a", 5)):
+            element = name + ".surface"
+            style.element_create(element, "image", surface(fill, edge, radius), border=7, sticky="nsew")
+            style.layout(name + ".TFrame", [(element, {"sticky": "nswe"})])
 
     for name, fill, edge, fg, padding in (
             ("Icon", BUTTON, EDGE, TEXT, (6, 5)),
@@ -136,30 +138,32 @@ def _apply_rounded_surfaces(app, style):
             ("Window", SHELL, SHELL, MUTED, (4, 5)),
             ("CloseWindow", SHELL, SHELL, MUTED, (4, 5)),
     ):
-        element = name + ".surface"
-        active = STOP_BG if name == "CloseWindow" else "#293b4f" if fill in (BUTTON, SHELL) else fill
-        style.element_create(element, "image",
-                             surface(fill, edge, 5),
-                             ("focus", surface(fill, CYAN, 5)),
-                             ("pressed", surface(active, CYAN, 5)),
-                             ("active", surface(active, edge, 5)),
-                             border=6, sticky="nsew")
         role = name + ".TButton"
-        style.layout(role, [(element, {"sticky": "nswe", "children": [
-            ("Button.padding", {"sticky": "nswe", "children": [
-                ("Button.label", {"sticky": "nswe"})
-            ]})
-        ]})])
+        if rounded:
+            element = name + ".surface"
+            active = STOP_BG if name == "CloseWindow" else "#293b4f" if fill in (BUTTON, SHELL) else fill
+            style.element_create(element, "image",
+                                 surface(fill, edge, 5),
+                                 ("focus", surface(fill, CYAN, 5)),
+                                 ("pressed", surface(active, CYAN, 5)),
+                                 ("active", surface(active, edge, 5)),
+                                 border=6, padding=1, sticky="nsew")
+            style.layout(role, [(element, {"sticky": "nswe", "children": [
+                ("Button.padding", {"sticky": "nswe", "children": [
+                    ("Button.label", {"sticky": "nswe"})
+                ]})
+            ]})])
         style.configure(role, padding=padding, background=fill, foreground=fg,
                         font=("Segoe UI", 10, "bold"))
         style.map(role, foreground=[("disabled", MUTED), ("!disabled", fg)])
 
-    style.layout("TMenubutton", [("Icon.surface", {"sticky": "nswe", "children": [
-        ("Menubutton.indicator", {"side": "right", "sticky": ""}),
-        ("Menubutton.padding", {"side": "left", "sticky": "nswe", "children": [
-            ("Menubutton.label", {"sticky": "nswe"}),
-        ]}),
-    ]})])
+    if rounded:
+        style.layout("TMenubutton", [("Icon.surface", {"sticky": "nswe", "children": [
+            ("Menubutton.indicator", {"side": "right", "sticky": ""}),
+            ("Menubutton.padding", {"side": "left", "sticky": "nswe", "children": [
+                ("Menubutton.label", {"sticky": "nswe"}),
+            ]}),
+        ]})])
     style.configure("TMenubutton", padding=(8, 5), arrowcolor=MUTED)
     app._rounded_theme_images = pictures
 
@@ -190,8 +194,10 @@ def controller_chrome(app, drag_surfaces, zoom_button):
     corner = c_uint32(2)  # DWMWCP_ROUND
     attribute(hwnd, 33, byref(corner), sizeof(corner))
 
+    release_capture = WinDLL("user32").ReleaseCapture
+
     def drag(event):
-        win32gui.ReleaseCapture()
+        release_capture()
         xy = (event.x_root & 0xFFFF) | ((event.y_root & 0xFFFF) << 16)
         win32gui.PostMessage(hwnd, win32con.WM_NCLBUTTONDOWN, win32con.HTCAPTION, xy)
 

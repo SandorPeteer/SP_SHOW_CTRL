@@ -102,8 +102,8 @@ def rehearse(folder):
             assert app.activity_progress.winfo_viewable()
             assert app.activity_frame.master == app.btn_output_fullscreen.master
             assert app.activity_progress.winfo_rootx() < app.btn_output_fullscreen.winfo_rootx()
-            progress = float(app.activity_progress["value"])
-            wait_for(lambda: pump(lambda: float(app.activity_progress["value"])), lambda value: value != progress)
+            progress = app.activity_progress.phase
+            wait_for(lambda: pump(lambda: app.activity_progress.phase), lambda value: value != progress)
             assert app._starting_up
             startup_gate.set()
             wait_for(lambda: pump(lambda: not app._starting_up), bool)
