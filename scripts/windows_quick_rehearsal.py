@@ -38,7 +38,7 @@ def rehearse(folder):
     signal += "+(0.04+0.36*sin(2*t)^2)*sin(2*PI*900*t)*between(mod(t,9),3,6)"
     signal += "+(0.06+0.26*sin(4*t)^2)*sin(2*PI*6300*t)*gte(mod(t,9),6)"
     subprocess.run([tools / "ffmpeg/ffmpeg.exe", "-v", "error", "-f", "lavfi", "-i",
-                    f"aevalsrc={signal}:d=35", sound], check=True, timeout=15)
+                    f"aevalsrc='{signal}':d=35", sound], check=True, timeout=15)
     model = dict(version=3, cues_a=[
         {"id": "music", "kind": "audio", "path": str(sound)},
         {"id": "music2", "kind": "audio", "path": str(sound), "auto_play": True},
