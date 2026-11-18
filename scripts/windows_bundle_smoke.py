@@ -91,6 +91,16 @@ def smoke():
                 time.sleep(0.2)
             else:
                 raise RuntimeError("Show Control window did not start")
+            # A second click must reuse the controller, even during initial loading.
+            duplicate = subprocess.Popen([exe], env=env, cwd=test)
+            try:
+                assert duplicate.wait(timeout=8) == 0
+                assert app.poll() is None and win32gui.IsWindow(hwnd)
+            finally:
+                if duplicate.poll() is None:
+                    subprocess.run(["taskkill", "/PID", str(duplicate.pid), "/T", "/F"], capture_output=True)
+                    duplicate.wait(timeout=10)
+            print("PASS: starting the portable EXE twice kept a single controller")
             # Read pixels from the actual frozen executable with a clean PATH/profile.
             from PIL import ImageGrab
             deadline = time.monotonic() + 30

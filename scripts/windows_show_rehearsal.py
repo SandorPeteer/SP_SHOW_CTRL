@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 from unittest.mock import patch
 
@@ -76,7 +77,30 @@ def rehearse(folder):
     app = App()
     long_scene = "Grade 13D · Welcome, class photos and the full awards ceremony"
     try:
-        app.update()
+        def pump(read):
+            app.update()
+            return read()
+
+        # The startup bar animates while projector IPC starts, even with a delayed process.
+        from player import OutputRunner
+        original_start = OutputRunner.ensure_window
+        startup_gate = threading.Event()
+        startup_entered = threading.Event()
+
+        def slow_start(runner):
+            startup_entered.set()
+            assert startup_gate.wait(timeout=5)
+            return original_start(runner)
+
+        with patch.object(OutputRunner, "ensure_window", slow_start):
+            wait_for(lambda: pump(startup_entered.is_set), bool)
+            assert app.activity_progress.winfo_viewable()
+            progress = float(app.activity_progress["value"])
+            wait_for(lambda: pump(lambda: float(app.activity_progress["value"])), lambda value: value != progress)
+            assert app._starting_up
+            startup_gate.set()
+            wait_for(lambda: pump(lambda: not app._starting_up), bool)
+        print("PASS: startup progress and Tk event loop remained responsive during a blocked projector launch")
         from tkinter import ttk
         style = ttk.Style(app)
         assert style.theme_use() == "clam"
@@ -98,7 +122,24 @@ def rehearse(folder):
                        {"id": "B4", "kind": "ppt", "path": "./" + loop_ppt.name}],
             "scenes": [{"id": "school", "name": long_scene, "cue_ids_a": ["A1"], "cue_ids_b": ["B1", "B2", "B3", "B4"]}]}),
             encoding="utf-8")
-        app._load_show_from_path(showfile, set_show_path=True)
+        from player import probe_media_duration_sec
+        probe_gate = threading.Event()
+        probe_entered = threading.Event()
+
+        def slow_probe(path):
+            probe_entered.set()
+            assert probe_gate.wait(timeout=5)
+            return probe_media_duration_sec(path)
+
+        with patch("player.probe_media_duration_sec", slow_probe):
+            app._load_show_from_path(showfile, set_show_path=True)
+            wait_for(lambda: pump(probe_entered.is_set), bool)
+            assert app.activity_progress.winfo_viewable()
+            assert app.tree_a.set("0", "duration") == "—"
+            probe_gate.set()
+            wait_for(lambda: pump(lambda: app.tree_a.set("0", "duration")), lambda value: value == "3:00")
+        print("PASS: an outstanding media probe left the rundown responsive and updated its time in place")
+
         def waveform_ready():
             app.update()
             return app.canvas_a.find_withtag("waveform")
@@ -211,7 +252,10 @@ def rehearse(folder):
             widgets = (*controls, app.scene_listbox, app.tree_a, app.tree_b, app.canvas_a,
                        *app.output_monitor.canvases.values())
             for widget in widgets:
-                assert widget.winfo_viewable() and widget.winfo_width() > 20
+                assert widget.winfo_viewable() and widget.winfo_width() > 20, (
+                    width, height, str(widget), widget.winfo_geometry(),
+                    widget.cget("text") if "text" in widget.keys() else None,
+                )
                 assert widget.winfo_rootx() + widget.winfo_width() <= app.winfo_rootx() + width
                 assert widget.winfo_rooty() + widget.winfo_height() <= app.winfo_rooty() + height
             assert long_scene in app.scene_listbox.get("1.0", "2.0")

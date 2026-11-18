@@ -1757,62 +1757,24 @@ class OutputRunner:
             _swallow_exc(e, note="OutputRunner.is_playing mpv_output_mode")
         sess = self._sess
         if sess is None:
-            try:
-                sess = _get_shared_mpv_output(self.settings)
-            except Exception:
-                sess = None
-            self._sess = sess
-        if sess is None:
             return False
-        # Manual OUT enforcement (safety net if mpv options are ignored).
-        try:
-            if self._stop_at_sec is not None and self._playing_cue is not None and self._playing_cue.kind == "video":
-                pos = sess.get_property("time-pos")
-                if pos is not None and float(pos) >= float(self._stop_at_sec) - 0.001:
-                    try:
-                        sess.stop()
-                    except Exception as e:
-                        _swallow_exc(e, note="OutputRunner.is_playing stop_at_sec stop")
-        except Exception as e:
-            _swallow_exc(e, note="OutputRunner.is_playing stop_at_sec")
-        playing = bool(sess.is_playing())
-        # Fallback end detection: some mpv builds (or some files) may not emit end-file reliably via IPC.
-        # For videos only, treat EOF as "not playing" so the app can auto-advance playlists.
+        playing = sess.is_playing()
         if playing and self._playing_cue is not None and self._playing_cue.kind == "video":
-            try:
-                eof = sess.get_property("eof-reached")
-                if eof is True:
-                    try:
-                        setattr(sess, "_playing", False)
-                    except Exception as e:
-                        _swallow_exc(e, note="OutputRunner.is_playing eof setattr")
+            path, pos, duration, eof = sess.observed("path", "time-pos", "duration", "eof-reached")
+            if path == self._playing_cue.path:
+                # Fallback for mpv builds with different loadfile option support.
+                if (self._stop_at_sec is not None and isinstance(pos, (int, float))
+                        and pos >= self._stop_at_sec - 0.001):
+                    self._stop_at_sec = None
+                    sess.stop()
+                    playing = False
+                elif eof is True or (isinstance(pos, (int, float)) and isinstance(duration, (int, float))
+                                     and duration > 0.5 and pos >= duration - 0.05):
+                    sess._playing = False
                     playing = False
                     self.last_exit_code = 0
                     self.last_end_reason = "eof"
                     self._paused = False
-                    self._stop_at_sec = None
-            except Exception as e:
-                _swallow_exc(e, note="OutputRunner.is_playing eof check")
-            if playing:
-                try:
-                    pos = sess.get_property("time-pos")
-                    dur = sess.get_property("duration")
-                    if pos is not None and dur is not None:
-                        pos_f = float(pos)
-                        dur_f = float(dur)
-                        # Some files report duration late; only use it when sane.
-                        if dur_f > 0.5 and pos_f >= (dur_f - 0.05):
-                            try:
-                                setattr(sess, "_playing", False)
-                            except Exception as e:
-                                _swallow_exc(e, note="OutputRunner.is_playing dur setattr")
-                            playing = False
-                            self.last_exit_code = 0
-                            self.last_end_reason = "eof"
-                            self._paused = False
-                            self._stop_at_sec = None
-                except Exception as e:
-                    _swallow_exc(e, note="OutputRunner.is_playing dur check")
         if not playing:
             info = sess.consume_end_info()
             if info is not None:
@@ -1840,7 +1802,9 @@ class OutputRunner:
         sess = self._sess
         if sess is None:
             return None
-        v = sess.get_property("time-pos")
+        path, v = sess.observed("path", "time-pos")
+        if path != cue.path:
+            return None
         try:
             if v is None:
                 return None
@@ -3079,11 +3043,21 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
         self._show_path: Path | None = None
         self._saving_show = False
+        self._opening_show = False
+        self._starting_up = True
+        self._startup_output_pending = False
+        self._close_after_output = False
+        self._busy_jobs: dict[str, str] = {"startup": "Starting Show Control…"}
         self._show_media_cache = {}
         self._loaded_preset_path: Path | None = None
         self._cues: list[Cue] = []  # Legacy - now using _cues_a and _cues_b
         self._loading_editor = False
-        self._duration_cache: dict[str, float] = {}
+        self._duration_cache: dict[str, float | None] = {}
+        self._duration_pending: set[str] = set()
+        self._duration_jobs: queue.Queue[str | None] = queue.Queue()
+        self._duration_stop = threading.Event()
+        self._duration_worker: threading.Thread | None = None
+        self._duration_refresh_after: str | None = None
         self._current_duration: float | None = None
         self._was_playing = False
         self._was_playing_a = False
@@ -3301,43 +3275,74 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception:
             return False
 
+    def _set_busy(self, job: str, message: str | None) -> None:
+        was_busy = bool(self._busy_jobs)
+        if message:
+            self._busy_jobs[job] = message
+        else:
+            self._busy_jobs.pop(job, None)
+        caption = next((self._busy_jobs[key] for key in
+                        ("startup", "open", "output", "save", "download", "ppt", "wave-A", "duration")
+                        if key in self._busy_jobs), "")
+        self.var_activity.set(caption)
+        if self._busy_jobs and not was_busy:
+            self.activity_progress.grid()
+            self.activity_progress.start(24)
+        elif was_busy and not self._busy_jobs:
+            self.activity_progress.stop()
+            self.activity_progress.grid_remove()
+
     def _startup_sequence(self) -> None:
-        def _after_deps() -> None:
+        self._set_busy("startup", "Checking playback tools…")
+
+        def after_tools():
+            self._startup_output_pending = True
+            self._set_busy("startup", "Starting projector output…")
+
+            def start_output():
+                try:
+                    started = self.video_runner.ensure_window()
+                except Exception as exc:
+                    _swallow_exc(exc, note="startup projector output")
+                    started = False
+                self._ui_tasks.put(lambda: after_output(started))
+
+            threading.Thread(target=start_output, name="start-output", daemon=True).start()
+
+        def after_output(started):
+            self._startup_output_pending = False
+            if self._close_after_output:
+                self._on_closing()
+                return
+            if started:
+                self._log("Drag the output window to the projector, then select Fullscreen.")
+            else:
+                self.after(200, self._start_black_background)
+                self._last_video_playing = False
+                self._monitor_video_playback()
+            self._set_busy("startup", "Opening last show…")
+            self._read_show_in_background(None, finish_startup)
+
+        def finish_startup(path, data, error):
             try:
-                self._init_output_surface()
-            except Exception as e:
-                _swallow_exc(e, note="startup_sequence init_output_surface")
-            loaded = bool(self._show_path or self._saving_show) or self._auto_open_last_show()
-            if not loaded:
-                self._refresh_tree()
-                self._load_selected_into_editor()
+                if error is not None:
+                    self._log(f"Could not open last show: {error}")
+                if path is not None and data is not None:
+                    is_show = path != self._preset_path()
+                    self._load_show_from_path(path, set_show_path=is_show, data=data)
+                    if not is_show:
+                        self._loaded_preset_path = path
+                        self._update_showfile_label()
+                else:
+                    self._refresh_tree()
+                    self._load_selected_into_editor()
+            except Exception as exc:
+                self._log(f"Could not restore the last show: {exc}")
+            finally:
+                self._starting_up = False
+                self._set_busy("startup", None)
 
-        self._ensure_ffmpeg_tools_async(_after_deps)
-
-    def _init_output_surface(self) -> None:
-        """Prepare the 2nd screen output surface.
-
-        If mpv is available and enabled, keep a persistent mpv window open on the 2nd screen.
-        Otherwise fall back to the Tk black background window.
-        """
-        started = False
-        try:
-            started = bool(self.video_runner.ensure_window())
-        except Exception as e:
-            _swallow_exc(e, note="init_output_surface ensure_window")
-            started = False
-        if started:
-            self._log("Drag the output window to the projector, then select Fullscreen.")
-            return
-        try:
-            self.after(200, self._start_black_background)
-        except Exception as e:
-            _swallow_exc(e, note="init_output_surface schedule black_background")
-        try:
-            self._last_video_playing = False
-            self._monitor_video_playback()
-        except Exception as e:
-            _swallow_exc(e, note="init_output_surface monitor_video_playback")
+        self._ensure_ffmpeg_tools_async(after_tools)
 
     def _sync_presentation_button(self) -> None:
         v = getattr(self, "var_presentation_btn", None)
@@ -3354,6 +3359,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             _swallow_exc(e, note="sync_presentation_button")
 
     def _toggle_output_fullscreen(self) -> None:
+        if self._starting_up:
+            return
         session = _get_shared_mpv_output(self.settings)
         if session is None:
             messagebox.showerror("Projection", "The projector window is unavailable.", parent=self)
@@ -3646,8 +3653,14 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 self.var_ppt_status.set(f"{Path(path).name} • {msg}")
         progress("Preparing…")
         self._ppt_preparer.submit(path, progress, self._ppt_prepared)
+        self._update_ppt_activity()
+
+    def _update_ppt_activity(self):
+        count = len(self._ppt_preparer.pending)
+        self._set_busy("ppt", f"Preparing presentations ({count})…" if count else None)
 
     def _ppt_prepared(self, path, files, error):
+        self._update_ppt_activity()
         pending = self._ppt_pending
         take = pending is not None and pending.path == path
         status = f"{Path(path).name} • " + (f"Error: {error}" if error else f"Ready ({len(files)} slides)")
@@ -3702,9 +3715,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if slide.suffix == ".mp4":
             sess = self.video_runner._sess
             # A replaced file can briefly retain the old file's EOF state.
-            if elapsed < 0.25 or Path(sess.get_property("path") or "") != slide:
+            if sess is None or elapsed < 0.25:
                 return
-            if not sess.get_property("eof-reached"):
+            path, eof = sess.observed("path", "eof-reached")
+            if not eof or not path or Path(path) != slide:
                 return
         else:
             seconds = self._ppt_seconds[self._ppt_index]
@@ -4251,6 +4265,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
     def _download_status(self, running, status):
         def apply():
+            self._set_busy("download", str(status) if running else None)
             self.btn_ytdlp_download.configure(state="disabled" if running else "normal")
             self.btn_ytdlp_cancel.configure(state="normal" if running else "disabled")
             if hasattr(self, "btn_ytdlp_update"):
@@ -5253,7 +5268,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         root.pack(fill="both", expand=True)
 
         filebar = ttk.Frame(root, style="Shell.TFrame")
-        filebar.pack(fill="x", pady=(0, 10))
+        filebar.pack(fill="x")
         self.var_showfile = tk.StringVar(value="")
         self.var_presentation_btn = tk.StringVar(value="Fullscreen")
         file_menu = tk.Menu(filebar, tearoff=False)
@@ -5275,6 +5290,17 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         shortcut = "Command" if sys.platform == "darwin" else "Control"
         self.bind(f"<{shortcut}-s>", lambda _e: self._save_show())
         self.bind(f"<{shortcut}-o>", lambda _e: self._open_show())
+
+        activity = ttk.Frame(root, style="Shell.TFrame")
+        activity.pack(fill="x", pady=(2, 5))
+        activity.columnconfigure(0, weight=1)
+        self.var_activity = tk.StringVar(value=self._busy_jobs["startup"])
+        ttk.Label(activity, textvariable=self.var_activity, style="Activity.TLabel", width=1,
+                  anchor="w").grid(row=0, column=0, sticky="ew")
+        self.activity_progress = ttk.Progressbar(activity, orient="horizontal", mode="indeterminate",
+                                                 style="Activity.Horizontal.TProgressbar", length=145)
+        self.activity_progress.grid(row=0, column=1, padx=(10, 0))
+        self.activity_progress.start(24)
 
         workspace = ttk.Frame(root, style="Shell.TFrame")
         workspace.pack(fill="both", expand=True)
@@ -5539,7 +5565,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self.output_monitor.place(x=0, y=0, width=event.width, height=monitor_height)
             decks_container.place(x=0, y=monitor_height + gap, width=event.width,
                                   height=event.height - monitor_height - gap)
-            scene_width = max(210, min(355, round(event.width * 0.22)))
+            scene_minimum = scene_head.winfo_reqwidth() + 20
+            scene_width = max(scene_minimum, min(355, round(event.width * 0.22)))
             deck_width = event.width - scene_width - 2 * gap
             audio_width = round(deck_width * 36 / 78)
             scene_panel.place(x=0, y=0, width=scene_width, relheight=1)
@@ -5787,7 +5814,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     next_path = str(ready[1][0])
                     next_caption = f"1/{len(ready[1])} · {cue.display_name()}"
                 else:
-                    next_caption = "A PPT előkészítésére vár"
+                    next_caption = "Preparing presentation…"
             elif cue and cue.kind in ("image", "video"):
                 next_path, next_caption = cue.path, cue.display_name()
         current = self.video_runner.current_cue()
@@ -5802,7 +5829,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if self._saving_show:
             messagebox.showinfo("Saving show", "The show is still being saved.", parent=self)
             return
-        """Clean up media players before closing the application"""
+        if self._startup_output_pending:
+            self._close_after_output = True
+            self._set_busy("startup", "Closing projector output…")
+            return
+        self._duration_stop.set()
+        if self._duration_worker is not None:
+            self._duration_jobs.put(None)
         self.after_cancel(self._monitor_after_id)
         self.output_monitor.close()
         self._waveform_worker.close()
@@ -5829,6 +5862,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     pass
             # Close image windows
             ImageWindow.close_current()
+            self._cancel_ytdlp_download()
             self._log("Shutting down...")
         except Exception as e:
             self._log(f"Cleanup error: {e}")
@@ -5837,16 +5871,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 _shutdown_shared_mpv_output()
             except Exception:
                 pass
-            # Force kill any remaining ffplay processes
-            try:
-                subprocess.run(["pkill", "-9", "ffplay"], capture_output=True)
-            except Exception:
-                pass
             self.destroy()
 
     # ── Dual Deck Data Management ───────────────────────────────────────
     def _on_deck_a_select(self):
         self._waveform_worker.cancel("A")
+        self._set_busy("wave-A", None)
         sel = self.tree_a.selection()
         self._selected_a = int(sel[0]) if sel else -1
         if self._selected_a >= 0:
@@ -6063,7 +6093,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
         canvas.delete("all")
         self._playback_items[deck] = None
-        canvas.create_text(width // 2, height // 2, text="Hullámforma készül…", fill="#bdbdbd")
+        canvas.create_text(width // 2, height // 2, text="Building waveform…", fill="#bdbdbd")
+        if deck == "A":
+            self._set_busy("wave-A", f"Building waveform · {cue.display_name()}")
         self._waveform_worker.request(
             deck, _resolve_fftool("ffmpeg"), cue.path, width, height,
             lambda png, error: self._apply_waveform_result(deck, cue.id, token, png, error),
@@ -6345,6 +6377,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return
 
         if deck == "A":
+            self._set_busy("wave-A", None)
             cue = self._cues_a[self._selected_a] if 0 <= self._selected_a < len(self._cues_a) else None
             canvas = self.canvas_a
         else:
@@ -7445,6 +7478,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return
 
     def _transport_play_pause(self, deck: str) -> None:
+        if self._starting_up:
+            return
         cue = self._selected_cue_for_deck(deck)
         if cue is None:
             return
@@ -8222,14 +8257,57 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
     def _duration_for_cue(self, cue: Cue) -> float | None:
         if cue.kind not in ("audio", "video"):
             return None
-        key = cue.path
-        if key in self._duration_cache:
-            return self._duration_cache[key]
-        dur = probe_media_duration_sec(cue.path)
-        if dur is None:
-            return None
-        self._duration_cache[key] = dur
-        return dur
+        path = cue.path
+        if path in self._duration_cache:
+            return self._duration_cache[path]
+        if path not in self._duration_pending and len(self._duration_pending) < 128:
+            self._duration_pending.add(path)
+            self._duration_jobs.put(path)
+            if self._duration_worker is None:
+                self._duration_worker = threading.Thread(target=self._probe_durations,
+                                                         name="media-durations", daemon=True)
+                self._duration_worker.start()
+            self._set_busy("duration", f"Reading media durations ({len(self._duration_pending)})…")
+        return None
+
+    def _probe_durations(self) -> None:
+        while (path := self._duration_jobs.get()) is not None and not self._duration_stop.is_set():
+            try:
+                duration = probe_media_duration_sec(path)
+            except Exception as exc:
+                _swallow_exc(exc, note="probe media duration")
+                duration = None
+            self._ui_tasks.put(lambda p=path, d=duration: self._duration_complete(p, d))
+
+    def _duration_complete(self, path, duration) -> None:
+        self._duration_pending.discard(path)
+        self._duration_cache[path] = duration
+        count = len(self._duration_pending)
+        self._set_busy("duration", f"Reading media durations ({count})…" if count else None)
+        if self._duration_refresh_after is None:
+            self._duration_refresh_after = self.after(120, self._refresh_duration_labels)
+
+    def _refresh_duration_labels(self) -> None:
+        self._duration_refresh_after = None
+        for deck, cues, tree, total in (("A", self._cues_a, self.tree_a, self.var_total_duration_a),
+                                         ("B", self._cues_b, self.tree_b, self.var_total_duration_b)):
+            seconds = 0.0
+            for i, cue in enumerate(cues):
+                duration = self._duration_for_cue(cue)
+                if duration is not None and tree.exists(str(i)):
+                    length = (cue.stop_at_sec or duration) - cue.start_sec
+                    text = _format_timecode(length)
+                    if tree.set(str(i), "duration") != text:
+                        tree.set(str(i), "duration", text)
+                    seconds += length
+            total.set(f"Total: {_format_timecode(seconds)}")
+            cue = self._selected_cue_for_deck(deck)
+            if cue is not None and self._duration_cache.get(cue.path) is not None:
+                canvas = self.canvas_a if deck == "A" else self.canvas_b
+                if canvas.find_withtag("waveform"):
+                    self._update_waveform_markers(cue, canvas)
+                if self._selected_cue() is cue and self._current_duration is None:
+                    self._set_timeline(self._duration_cache[cue.path])
 
     def _set_timeline(self, duration: float | None) -> None:
         self._current_duration = duration
@@ -9485,15 +9563,18 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self.after(int(delay_ms), self._poll_playback)
 
     def _drain_ui_tasks(self, max_items: int = 10) -> None:
-        for _ in range(int(max_items)):
+        deadline = time.monotonic() + 0.008
+        for _ in range(max_items):
             try:
                 fn = self._ui_tasks.get_nowait()
-            except Exception:
+            except queue.Empty:
                 return
             try:
                 fn()
-            except Exception:
-                continue
+            except Exception as exc:
+                _swallow_exc(exc, note="background result")
+            if time.monotonic() >= deadline:
+                return
 
     def _update_tree_playing_highlight(self) -> None:
         # Highlight the currently playing cue in each deck's file list without changing selection.
@@ -10541,7 +10622,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
     # ── File IO ─────────────────────────────────────────────────────────
     def _new_show(self) -> None:
-        if self._saving_show:
+        if self._saving_show or self._opening_show or self._starting_up:
             return
         if self._scenes and not messagebox.askyesno("New show", "Start a new show? Unsaved edits will be lost."):
             return
@@ -10558,11 +10639,20 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._add_scene()
         self._update_showfile_label()
 
-    def _load_show_from_path(self, path: Path, *, set_show_path: bool) -> None:
-        data = json.loads(path.read_text(encoding="utf-8"))
+    def _load_show_from_path(self, path: Path, *, set_show_path: bool, data=None) -> None:
+        if data is None:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Expected a Show Control document.")
+        settings = Settings.from_dict(data.get("settings", {}))
+        cues_a = [Cue.from_dict(x) for x in data.get("cues_a", [])]
+        cues_b = [Cue.from_dict(x) for x in data.get("cues_b", [])]
+        if not cues_a and not cues_b and "cues" in data:
+            cues_a = [Cue.from_dict(x) for x in data["cues"]]
+        scenes = [Scene.from_dict(x) for x in data.get("scenes", [])]
         if sys.platform == "win32":
             self._ppt_end()
-        self.settings = Settings.from_dict(data.get("settings", {}))
+        self.settings = settings
         # Persistent settings are user-level and must survive preset/show loads.
         try:
             self._load_persistent_settings()
@@ -10581,13 +10671,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 self.var_ppt_sound.set(bool(playback.get("slide_audio")))
                 self.var_ppt_interval.set(str(playback.get("slide_seconds", "5")))
 
-        # Load dual deck cues
-        self._cues_a = [Cue.from_dict(x) for x in data.get("cues_a", [])]
-        self._cues_b = [Cue.from_dict(x) for x in data.get("cues_b", [])]
-
-        # Legacy support - if old format, load to deck A
-        if not self._cues_a and not self._cues_b and "cues" in data:
-            self._cues_a = [Cue.from_dict(x) for x in data.get("cues", [])]
+        self._cues_a, self._cues_b = cues_a, cues_b
 
         if data.get("media_paths") == "show-folder":
             for cue in self._cues_a + self._cues_b:
@@ -10598,7 +10682,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._queue_ppt(cue)
 
         # Load scenes (backward compatible - defaults to empty list if not present)
-        self._scenes = [Scene.from_dict(x) for x in data.get("scenes", [])]
+        self._scenes = scenes
         self._selected_scene_idx = -1
 
         # Preserve deck assignment from the saved preset (cues_a vs cues_b).
@@ -10737,23 +10821,68 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception:
             pass
 
+    def _read_show_in_background(self, path: Path | None, complete) -> None:
+        preset = self._preset_path()
+
+        def work():
+            selected = path
+            error = None
+            if selected is None:
+                try:
+                    last = _user_data_dir() / "last-show.json"
+                    selected = Path(json.loads(last.read_text(encoding="utf-8"))["path"])
+                except FileNotFoundError:
+                    pass
+                except (OSError, ValueError, TypeError, KeyError) as exc:
+                    error = exc
+            candidates = (selected, preset) if path is None else (selected,)
+            for candidate in candidates:
+                if candidate is None:
+                    continue
+                try:
+                    data = json.loads(candidate.read_text(encoding="utf-8"))
+                    if not isinstance(data, dict):
+                        raise ValueError("Expected a Show Control document.")
+                except FileNotFoundError as exc:
+                    if candidate != preset or path is not None:
+                        error = exc
+                except (OSError, ValueError) as exc:
+                    error = exc
+                else:
+                    self._ui_tasks.put(lambda: complete(candidate, data, None))
+                    return
+            self._ui_tasks.put(lambda: complete(None, None, error))
+
+        threading.Thread(target=work, name="read-show", daemon=True).start()
+
     def _open_show(self) -> None:
-        if self._saving_show:
+        if self._saving_show or self._opening_show or self._starting_up:
             return
-        path = filedialog.askopenfilename(title="Open show", parent=self,
-                                         filetypes=[("Show file", "*.json"), ("All files", "*.*")])
-        if not path:
+        chosen = filedialog.askopenfilename(title="Open show", parent=self,
+                                           filetypes=[("Show file", "*.json"), ("All files", "*.*")])
+        if not chosen:
             return
-        try:
-            self._load_show_from_path(Path(path), set_show_path=True)
-        except Exception as e:
-            messagebox.showerror("Open failed", str(e), parent=self)
-            return
-        self._loaded_preset_path = None
-        self._remember_show(self._show_path)
+        path = Path(chosen)
+        self._opening_show = True
+        self._set_busy("open", f"Opening show · {path.name}")
+
+        def finish(selected, data, error):
+            try:
+                if error is not None:
+                    raise error
+                self._load_show_from_path(selected, set_show_path=True, data=data)
+                self._loaded_preset_path = None
+                self._remember_show(self._show_path)
+            except Exception as exc:
+                messagebox.showerror("Open failed", str(exc), parent=self)
+            finally:
+                self._opening_show = False
+                self._set_busy("open", None)
+
+        self._read_show_in_background(path, finish)
 
     def _save_show(self) -> None:
-        if self._saving_show:
+        if self._saving_show or self._opening_show or self._starting_up:
             return
         if self._show_path is None:
             self._save_show_as()
@@ -10761,7 +10890,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._save_show_to(self._show_path)
 
     def _save_show_as(self) -> None:
-        if self._saving_show:
+        if self._saving_show or self._opening_show or self._starting_up:
             return
         path = filedialog.asksaveasfilename(title="Save show as", parent=self, defaultextension=".json",
                                             initialfile=self._show_path.name if self._show_path else "Show.json",
@@ -10792,8 +10921,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._saving_show = True
         self.btn_save_show.state(["disabled"])
         self.var_showfile.set(f"Saving {path.name}…")
+        self._set_busy("save", f"Saving show and collecting media · {path.name}")
 
         def done(error):
+            self._set_busy("save", None)
             self._saving_show = False
             self.btn_save_show.state(["!disabled"])
             if error is not None:
@@ -11265,9 +11396,30 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
 
 def main() -> None:
-    app = App()
+    if sys.platform != "win32":
+        App().mainloop()
+        return
 
-    app.mainloop()
+    import win32api
+    import win32con
+    import win32event
+    import win32gui
+
+    mutex = win32event.CreateMutex(None, False, r"Local\SPShowControl.Controller")
+    try:
+        if win32api.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            window = win32gui.FindWindow(None, "S.P. Show Control")
+            if window:
+                try:
+                    if win32gui.IsIconic(window):
+                        win32gui.ShowWindow(window, win32con.SW_RESTORE)
+                    win32gui.SetForegroundWindow(window)
+                except win32gui.error:
+                    pass  # Windows may refuse focus, but the first instance is still running.
+            return
+        App().mainloop()
+    finally:
+        mutex.Close()
 
 
 if __name__ == "__main__":

@@ -70,6 +70,7 @@ class MpvIpcSession:
         self._lock = threading.Lock()
         self._pending: dict[int, "queue.Queue[dict]"] = {}
         self._next_id: int = 1
+        self._telemetry: dict[str, object] = {}
         self._playing: bool = False
         self._end_info: tuple[str | None, str | None] | None = None
 
@@ -189,6 +190,10 @@ class MpvIpcSession:
         )
         try:
             self._connect_ipc()
+            for observer, name in enumerate(("path", "time-pos", "duration", "eof-reached"), 1):
+                response = self.command(["observe_property", observer, name], timeout=0.5)
+                if not self._is_success(response):
+                    raise RuntimeError(f"mpv could not observe {name}")
         except Exception:
             self.shutdown()
             raise
@@ -284,6 +289,8 @@ class MpvIpcSession:
         self._proc = None
         self._playing = False
         self._end_info = None
+        with self._lock:
+            self._telemetry.clear()
 
         try:
             if self._sock is not None:
@@ -320,17 +327,17 @@ class MpvIpcSession:
             self._next_id += 1
             return rid
 
-    def _send_json(self, payload: dict) -> None:
+    def _send_json(self, payload: dict, timeout: float) -> None:
         line = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
         if platform.system() == "Windows":
             if self._pipe is None:
                 raise RuntimeError("mpv IPC pipe not connected")
             try:
-                self._pipe.write(line)
+                self._pipe.write(line, timeout)
 
             except (BrokenPipeError, OSError, ValueError) as e:
                 self._swallow_exc(e, "mpv ipc pipe write/flush")
-                raise RuntimeError("mpv IPC write failed") from e
+                raise
             return
         if self._sock is None:
             raise RuntimeError("mpv IPC socket not connected")
@@ -342,8 +349,9 @@ class MpvIpcSession:
         with self._lock:
             self._pending[rid] = q
         try:
-            self._send_json({"command": cmd, "request_id": rid})
-            return q.get(timeout=float(timeout))
+            deadline = time.monotonic() + timeout
+            self._send_json({"command": cmd, "request_id": rid}, timeout)
+            return q.get(timeout=max(0.0, deadline - time.monotonic()))
         except queue.Empty as e:
             raise TimeoutError("mpv IPC request timed out") from e
         finally:
@@ -390,13 +398,20 @@ class MpvIpcSession:
                 if not self._is_success(resp):
                     raise RuntimeError(f"mpv set_property failed: {name}")
                 return True
+            except (TimeoutError, OSError) as e:
+                last_err = e
+                break
             except Exception as e:
                 last_err = e
                 time.sleep(0.05)
-                continue
         if last_err is not None:
             self._swallow_exc(last_err, f"mpv set_property_strict {name}")
         return False
+
+    def observed(self, *names: str) -> tuple[object | None, ...]:
+        """Snapshot values already delivered by mpv. Never waits for IPC."""
+        with self._lock:
+            return tuple(self._telemetry.get(name) for name in names)
 
     def get_property(self, name: str) -> object | None:
         try:
@@ -432,18 +447,15 @@ class MpvIpcSession:
             if start and float(start) > 0:
                 end_v = max(float(start) + 0.001, float(end_v))
             opts.append(f"end={end_v:.3f}")
-        try:
-            resp = self.command(["loadfile", str(path), "replace", *opts], timeout=1.5)
-        except Exception as e:
-            self._swallow_exc(e, "mpv loadfile initial")
-            resp = {}
-        # If mpv rejected options, retry without them so playback still starts.
-        try:
-            if isinstance(resp, dict) and resp.get("error") not in (None, "success"):
-                self.command(["loadfile", str(path), "replace"], timeout=1.5)
-        except Exception as e:
-            self._swallow_exc(e, "mpv loadfile retry")
-        self._playing = True
+        command = ["loadfile", str(path), "replace"]
+        if opts:
+            response = self.command([*command, -1, *opts], timeout=1.0)
+            if not self._is_success(response):
+                response = self.command(command, timeout=1.0)
+        else:
+            response = self.command(command, timeout=1.0)
+        if not self._is_success(response):
+            raise RuntimeError(f"mpv rejected {Path(path).name}: {response.get('error')}")
 
         # Enforce IN (start) via an explicit seek; `start=` loadfile options are not reliable across mpv builds.
         try:
@@ -527,6 +539,17 @@ class MpvIpcSession:
                     self._swallow_exc(e, "mpv ipc response queue error")
             return
         ev = msg.get("event")
+        if ev == "property-change":
+            name = msg.get("name")
+            if name in ("path", "time-pos", "duration", "eof-reached"):
+                with self._lock:
+                    self._telemetry[name] = msg.get("data")
+            return
+        if ev == "start-file":
+            with self._lock:
+                self._telemetry.clear()
+            self._end_info = None
+            return
         if ev == "file-loaded":
             self._playing = True
             return

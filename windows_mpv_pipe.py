@@ -20,7 +20,7 @@ class MpvPipe:
         self._pending = set()
         self._closed = False
 
-    def _transfer(self, data=None):
+    def _transfer(self, data=None, timeout=1.0):
         with self._state:
             if self._closed:
                 raise BrokenPipeError("mpv connection closed")
@@ -31,7 +31,7 @@ class MpvPipe:
             self._pending.add(op)
         try:
             if data is not None and status == _winapi.ERROR_IO_PENDING:
-                if _winapi.WaitForSingleObject(op.event, 1000) == _winapi.WAIT_TIMEOUT:
+                if _winapi.WaitForSingleObject(op.event, max(1, int(timeout * 1000))) == _winapi.WAIT_TIMEOUT:
                     op.cancel()
                     op.GetOverlappedResult(True)
                     raise TimeoutError("mpv pipe write timed out")
@@ -45,10 +45,11 @@ class MpvPipe:
         finally:
             with self._state:
                 self._pending.remove(op)
-                self._state.notify_all()
+                if self._closed and not self._pending:
+                    _winapi.CloseHandle(self._handle)
 
-    def write(self, data):
-        self._transfer(data)
+    def write(self, data, timeout):
+        self._transfer(data, timeout)
 
     def lines(self):
         pending = bytearray()
@@ -66,5 +67,6 @@ class MpvPipe:
             self._closed = True
             for op in self._pending:
                 op.cancel()
-            self._state.wait_for(lambda: not self._pending)
-            _winapi.CloseHandle(self._handle)
+            # The last cancelled transfer closes the handle after draining its OVERLAPPED.
+            if not self._pending:
+                _winapi.CloseHandle(self._handle)

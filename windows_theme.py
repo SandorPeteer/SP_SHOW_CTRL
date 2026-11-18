@@ -38,6 +38,8 @@ def apply_windows_theme(app):
                     bordercolor=border, lightcolor=background, darkcolor=background,
                     troughcolor=field, font=("Segoe UI", 10))
     style.configure("Shell.TFrame", background=SHELL)
+    style.configure("Activity.TLabel", background=SHELL, foreground=CYAN, font=("Segoe UI", 9))
+    style.configure("Activity.Horizontal.TProgressbar", background=CYAN, troughcolor=FIELD, thickness=4)
     style.configure("ShowTitle.TLabel", background=SHELL, font=("Segoe UI", 12, "bold"))
     style.configure("CardTitle.TLabel", font=("Segoe UI", 13, "bold"))
     style.configure("Tooltip.TLabel", background="#304158", foreground=foreground)
