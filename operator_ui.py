@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from PIL import Image, ImageDraw, ImageTk
-from windows_theme import CYAN, EDGE, MINT, SELECTED, TEXT
+from windows_theme import CYAN, EDGE, LIVE_ROW, MINT, NEXT_ROW, SELECTED, TEXT, VIOLET, pixels
 
 
 _ICON_PATHS = {
@@ -62,18 +62,23 @@ class OperatorIcons:
         return source.resize((size, size), Image.Resampling.LANCZOS)
 
     def image(self, name, color=TEXT, size=19):
+        size = pixels(self.root, size)
         key = (name, color, size)
         if key not in self.images:
             self.images[key] = ImageTk.PhotoImage(self._raster(name, color, size), master=self.root)
         return self.images[key]
 
-    def row_image(self, kind, autoplay):
-        key = ("cue", kind, autoplay)
+    def row_image(self, kind, autoplay, emphasis=None):
+        key = ("cue", kind, autoplay, emphasis)
         if key not in self.images:
-            strip = Image.new("RGBA", (46, 22))
-            for x, name, color in ((3, "play", MINT if autoplay else "#798d9e"),
-                                   (26, kind if kind in _ICON_PATHS else "video", TEXT)):
-                strip.alpha_composite(self._raster(name, color, 18), (x, 2))
+            size = pixels(self.root, 18)
+            strip = Image.new("RGBA", (pixels(self.root, 46), pixels(self.root, 22)))
+            accent = {"selected": CYAN, "playing": MINT, "next": VIOLET}.get(emphasis)
+            if accent:
+                ImageDraw.Draw(strip).rectangle((0, 0, pixels(self.root, 2) - 1, strip.height), fill=accent)
+            for x, name, color in ((6, "play", accent or (MINT if autoplay else "#798d9e")),
+                                   (27, kind if kind in _ICON_PATHS else "video", TEXT)):
+                strip.alpha_composite(self._raster(name, color, size), (pixels(self.root, x), pixels(self.root, 2)))
             self.images[key] = ImageTk.PhotoImage(strip, master=self.root)
         return self.images[key]
 
@@ -197,11 +202,14 @@ class CueList(ttk.Treeview):
         super().__init__(parent, style="Cue.Treeview", show="tree", selectmode="browse", height=2,
                          columns=("checkbox", "auto", "idx", "kind", "name", "duration"),
                          displaycolumns=("checkbox", "name", "duration"))
-        self.column("#0", width=52, minwidth=52, stretch=False)
+        icon_width = pixels(parent, 52)
+        self.column("#0", width=icon_width, minwidth=icon_width, stretch=False)
         self.column("checkbox", width=0, minwidth=0, stretch=False, anchor="center")
         self.column("name", width=110, minwidth=40)
         self.column("duration", width=72, minwidth=62, stretch=False, anchor="e")
-        self.tag_configure("playing", foreground=MINT)
+        self.tag_configure("playing", background=LIVE_ROW, foreground=MINT)
+        self.tag_configure("next", background=NEXT_ROW, foreground=VIOLET)
+        self.emphasis = {}
         self.scroll_indicator = ScrollIndicator(parent, self)
 
     def insert(self, parent, index, iid=None, **kwargs):
@@ -211,15 +219,40 @@ class CueList(ttk.Treeview):
 
     def item(self, item, option=None, **kwargs):
         if "values" in kwargs:
-            self._icons_for_values(kwargs)
+            self._icons_for_values(kwargs, self.emphasis.get(item))
         return super().item(item, option, **kwargs)
 
-    def _icons_for_values(self, options):
+    def delete(self, *items):
+        for item in items:
+            self.emphasis.pop(item, None)
+        super().delete(*items)
+
+    def _icons_for_values(self, options, emphasis=None):
         values = options["values"]
-        options["image"] = self.icons.row_image(values[3], bool(values[1]))
+        options["image"] = self.icons.row_image(values[3], bool(values[1]), emphasis)
+
+    def set_emphasis(self, playing, following):
+        updated = {iid: "selected" for iid in self.selection()}
+        if following is not None:
+            updated[following] = "next"
+        if playing is not None:
+            updated[playing] = "playing"
+        if updated == self.emphasis:
+            return
+        for iid in self.emphasis.keys() | updated.keys():
+            state = updated.get(iid)
+            if state == self.emphasis.get(iid) or not self.exists(iid):
+                continue
+            row = super().item(iid)
+            values = row["values"]
+            tags = [tag for tag in row["tags"] if tag not in ("playing", "next")]
+            if state in ("playing", "next"):
+                tags.append(state)
+            super().item(iid, tags=tags, image=self.icons.row_image(values[3], bool(values[1]), state))
+        self.emphasis = updated
 
     def autoswitch_hit(self, event):
-        return 0 <= event.x < 26 and self.identify_column(event.x) == "#0"
+        return 0 <= event.x < pixels(self, 26) and self.identify_column(event.x) == "#0"
 
 
 class SceneList(tk.Text):
@@ -232,6 +265,7 @@ class SceneList(tk.Text):
         self.row_count = 0
         self.selected = -1
         self.tag_configure("scene_row", lmargin2=24)
+        self.tag_configure("next_scene", background=NEXT_ROW, foreground=VIOLET)
         self.tag_configure("current_scene", background=SELECTED, foreground=TEXT)
         self.bind("<Button-1>", self._mouse_select)
         self.bind("<Double-1>", lambda _e: "break")
@@ -251,15 +285,19 @@ class SceneList(tk.Text):
                 self.tag_configure(tag, foreground="#c4d0e0")
             self.insert("end", f"{index + 1:02d}  ", ("scene_row", tag))
             self.insert("end", " ".join(name.splitlines()) + "\n", ("scene_row",))
+        self.tag_raise("next_scene")
         self.tag_raise("current_scene")
         self.configure(state="disabled")
 
     def select(self, index, *, reveal=True):
         self.tag_remove("current_scene", "1.0", "end")
+        self.tag_remove("next_scene", "1.0", "end")
         self.selected = index if 0 <= index < self.row_count else -1
         if self.selected >= 0:
             start = f"{self.selected + 1}.0"
             self.tag_add("current_scene", start, f"{self.selected + 2}.0")
+            if self.selected + 1 < self.row_count:
+                self.tag_add("next_scene", f"{self.selected + 2}.0", f"{self.selected + 3}.0")
             if reveal:
                 self.see(start)
 

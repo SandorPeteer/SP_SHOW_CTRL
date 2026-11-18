@@ -2998,6 +2998,7 @@ class BlackScreenWindow:
 
 class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
     def __init__(self):
+        palette.configure_source_dpi()
         super().__init__()
         try:
             _install_global_exception_logging()
@@ -3011,12 +3012,14 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception:
             sw, sh = 1280, 720
         # Default target is comfortably below 1920x1080 for laptop use.
-        w = int(max(900, min(1280, sw - 52)))
-        h = int(max(550, min(820, sh - 110)))
+        min_width = min(palette.pixels(self, 900), sw - 16)
+        min_height = min(palette.pixels(self, 550), sh - 80)
+        w = max(min_width, min(palette.pixels(self, 1280), sw - 52))
+        h = max(min_height, min(palette.pixels(self, 820), sh - 110))
         x = int(max(0, (sw - w) // 2))
         y = int(max(0, (sh - h) // 2))
         self.geometry(f"{w}x{h}+{x}+{y}")
-        self.minsize(900, 550)
+        self.minsize(min_width, min_height)
         self._app_icon_image: tk.PhotoImage | None = None
         try:
             icon_path = _resource_path("assets", "logo.png")
@@ -3105,8 +3108,6 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._loop_b_enabled: bool = False
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         _append_app_log(f"[{ts}] App started ({APP_NAME} {APP_VERSION})\n")
-        self._playing_iid_a: str | None = None
-        self._playing_iid_b: str | None = None
         self._cueid_to_iid_a: dict[str, str] = {}
         self._cueid_to_iid_b: dict[str, str] = {}
         self._now_time_cache: dict[str, str] = {"A": "", "B": ""}
@@ -5299,8 +5300,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         file_menu.add_command(label="New show", command=self._new_show)
         file_menu.add_command(label="Save show as…", command=self._save_show_as)
         ttk.Menubutton(filebar, text="File", menu=file_menu, width=5).pack(side="left", padx=(0, 6))
-        icons.button(filebar, "open", "Open show", self._open_show).pack(side="left", padx=(0, 4))
-        self.btn_save_show = icons.button(filebar, "save", "Save show", self._save_show)
+        icons.button(filebar, "open", "Open show", self._open_show, style="Toolbar.TButton").pack(side="left", padx=(0, 4))
+        self.btn_save_show = icons.button(filebar, "save", "Save show", self._save_show, style="Toolbar.TButton")
         self.btn_save_show.pack(side="left")
         self.lbl_showfile = ttk.Label(filebar, textvariable=self.var_showfile, anchor="w", width=1,
                                       style="ShowTitle.TLabel")
@@ -5319,7 +5320,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self.after_idle(lambda: palette.controller_chrome(
                 self, (filebar, app_title, self.lbl_showfile), self.btn_zoom_window
             ))
-        icons.button(filebar, "settings", "App settings", self._open_global_setup).pack(side="right")
+        icons.button(filebar, "settings", "App settings", self._open_global_setup, style="Toolbar.TButton").pack(side="right")
         self.btn_output_fullscreen = icons.button(filebar, "fullscreen", "Projector fullscreen / windowed",
                                                   self._toggle_output_fullscreen, visible_label=True,
                                                   style="Accent.TButton", color=palette.INK)
@@ -5402,6 +5403,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.tree_a = CueList(tree_host_a, icons)
         self.tree_a.pack(fill="both", expand=True, padx=(0, 6))
         self.tree_a.bind("<<TreeviewSelect>>", lambda _e: self._on_deck_a_select())
+        self.tree_a.bind("<<TreeviewSelect>>", lambda _e: self._update_tree_playing_highlight(), add="+")
         self.tree_a.bind("<Double-1>", lambda _e: self._play_deck_a())
         self.tree_a.bind("<Button-1>", self._on_tree_a_click)  # checkbox/auto toggles
         self.tree_a.bind("<Configure>", lambda _e: self._schedule_tree_column_layout("A"))
@@ -5450,6 +5452,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.canvas_a.pack(fill="both", expand=True)
         self._wave_peaks_a = ()
         self._wave_bars_a = []
+        self._wave_size_a = (1, 1)
         self._wave_bright_a = None
         self.canvas_a.bind("<Configure>", self._resize_waveform_a)
         self.canvas_a.bind("<Button-1>", lambda e: self._waveform_click(e, "A", "IN"))
@@ -5574,19 +5577,29 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         # VISUALS (right column): images/PPT
         deck_b = ttk.Frame(decks_container, padding=8, style="WorkspaceCard.TFrame")
 
-        def layout_workspace(event):
-            if event.width < 680 or event.height < 240:
+        layout_job = None
+
+        def queue_workspace_layout(_event):
+            nonlocal layout_job
+            if layout_job is None:
+                layout_job = workspace.after_idle(layout_workspace)
+
+        def layout_workspace():
+            nonlocal layout_job
+            layout_job = None
+            width, height = workspace.winfo_width(), workspace.winfo_height()
+            if width < 680 or height < 240:
                 return
             gap = 8
-            signal_height = (event.height - gap) // 3
-            signal_row.place(x=0, y=0, width=event.width, height=signal_height)
-            waveform_width = round((event.width - 2 * gap) * 0.40)
+            signal_height = (height - gap) // 3
+            signal_row.place(x=0, y=0, width=width, height=signal_height)
+            waveform_width = round((width - 2 * gap) * 0.40)
             self.wave_a_frame.place(x=0, y=0, width=waveform_width, relheight=1)
-            self.output_monitor.place(x=waveform_width + gap, y=0, width=event.width - waveform_width - gap,
+            self.output_monitor.place(x=waveform_width + gap, y=0, width=width - waveform_width - gap,
                                       relheight=1)
-            decks_container.place(x=0, y=signal_height + gap, width=event.width,
-                                  height=event.height - signal_height - gap)
-            usable_width = event.width - 2 * gap
+            decks_container.place(x=0, y=signal_height + gap, width=width,
+                                  height=height - signal_height - gap)
+            usable_width = width - 2 * gap
             scene_minimum = scene_head.winfo_reqwidth() + 17
             scene_width = max(scene_minimum, round(usable_width * 0.24))
             deck_width = usable_width - scene_width
@@ -5596,7 +5609,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             deck_b.place(x=scene_width + audio_width + 2 * gap, y=0,
                          width=deck_width - audio_width, relheight=1)
 
-        workspace.bind("<Configure>", layout_workspace)
+        workspace.bind("<Configure>", queue_workspace_layout)
         projection_head = ttk.Frame(deck_b)
         projection_head.pack(fill="x", pady=(0, 8))
         ttk.Label(projection_head, text="Projection", style="CardTitle.TLabel").pack(side="left")
@@ -5614,6 +5627,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.tree_b = CueList(tree_host_b, icons)
         self.tree_b.pack(fill="both", expand=True, padx=(0, 6))
         self.tree_b.bind("<<TreeviewSelect>>", lambda _e: self._on_deck_b_select())
+        self.tree_b.bind("<<TreeviewSelect>>", lambda _e: self._update_tree_playing_highlight(), add="+")
         self.tree_b.bind("<Double-1>", lambda _e: self._play_deck_b())
         self.tree_b.bind("<Button-1>", self._on_tree_b_click)  # checkbox/auto toggles
         self.tree_b.bind("<Configure>", lambda _e: self._schedule_tree_column_layout("B"))
@@ -6408,6 +6422,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                             bounds = alpha.crop((left, 0, right, image.height)).getbbox()
                             peaks.append((bounds[3] - bounds[1]) / image.height if bounds else 0.0)
                         self._wave_peaks_a = tuple(peaks)
+                        self._wave_bars_a.clear()
                         self._resize_waveform_a()
                     else:
                         self._waveform_b_photo = ImageTk.PhotoImage(image)
@@ -6440,26 +6455,30 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if not self._wave_peaks_a:
             return
         canvas = self.canvas_a
-        canvas.delete("waveform")
         width, height = canvas.winfo_width(), canvas.winfo_height()
-        count = min(len(self._wave_peaks_a), max(1, width // 4))
-        peaks = self._wave_peaks_a
-        self._wave_bars_a = []
-        for index in range(count):
-            start = index * len(peaks) // count
-            end = (index + 1) * len(peaks) // count
-            level = max(peaks[start:end])
-            x = (index + 0.5) * width / count
-            half = max(1, level * (height - 4) / 2)
-            bar = canvas.create_line(x, height / 2 - half, x, height / 2 + half,
-                                     fill=palette.CYAN, width=2, capstyle="round", tags=("waveform",))
-            self._wave_bars_a.append(bar)
-        self._wave_bright_a = len(self._wave_bars_a)
+        old_width, old_height = self._wave_size_a
+        if self._wave_bars_a:
+            if (width, height) == self._wave_size_a:
+                return
+            canvas.scale("waveform", 0, 0, width / old_width, height / old_height)
+        else:
+            count = min(len(self._wave_peaks_a), max(1, width // 4))
+            peaks = self._wave_peaks_a
+            for index in range(count):
+                start = index * len(peaks) // count
+                end = (index + 1) * len(peaks) // count
+                level = max(peaks[start:end])
+                x = (index + 0.5) * width / count
+                half = max(1, level * (height - 4) / 2)
+                bar = canvas.create_line(x, height / 2 - half, x, height / 2 + half,
+                                         fill=palette.CYAN, width=2, capstyle="round", tags=("waveform",))
+                self._wave_bars_a.append(bar)
+            self._wave_bright_a = len(self._wave_bars_a)
+            canvas.tag_lower("waveform")
+        self._wave_size_a = (width, height)
         cue = self._selected_cue_for_deck("A")
         if cue:
             self._update_waveform_markers(cue, canvas)
-        canvas.tag_lower("waveform")
-        self._update_waveform_playback_visuals()
 
     def _tint_waveform_a(self, fraction: float) -> None:
         count = len(self._wave_bars_a)
@@ -8014,13 +8033,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if total <= 50:
             return
         checkbox_on = bool(self._checkbox_mode_a) if deck == "A" else bool(self._checkbox_mode_b)
-        w_checkbox = 30 if checkbox_on else 0
-        w_duration = 68
+        w_checkbox = palette.pixels(self, 30) if checkbox_on else 0
+        w_duration = palette.pixels(self, 68)
         fixed = int(w_checkbox + tree.column("#0", "width") + w_duration)
         w_name = max(40, int(total - fixed))
         try:
             tree.column("checkbox", width=w_checkbox, minwidth=(w_checkbox if checkbox_on else 0), stretch=False, anchor="center")
-            tree.column("duration", width=w_duration, minwidth=62, stretch=False, anchor="e")
+            tree.column("duration", width=w_duration, minwidth=palette.pixels(self, 62), stretch=False, anchor="e")
             tree.column("name", width=w_name, minwidth=40, stretch=True)
         except Exception:
             return
@@ -9575,75 +9594,24 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 return
 
     def _update_tree_playing_highlight(self) -> None:
-        # Highlight the currently playing cue in each deck's file list without changing selection.
-        if self._playing_iid_a is None and self._playing_iid_b is None:
-            try:
-                if not (self.audio_runner.is_playing() or self.video_runner.is_playing()):
-                    return
-            except Exception:
-                pass
-        new_iid_a: str | None = None
-        new_iid_b: str | None = None
-        try:
-            if self.video_runner.is_playing():
-                cue = self.video_runner.current_cue()
-                owner = getattr(self.video_runner, "owner_deck", None)
-                if cue is not None and owner == "A":
-                    iid = self._cueid_to_iid_a.get(cue.id)
-                    if iid is not None and self.tree_a.exists(iid):
-                        new_iid_a = iid
-                if cue is not None and owner == "B":
-                    iid = self._cueid_to_iid_b.get(cue.id)
-                    if iid is not None and self.tree_b.exists(iid):
-                        new_iid_b = iid
-        except Exception:
-            pass
-        try:
-            if new_iid_a is None and self.audio_runner.is_playing():
-                cue = self.audio_runner.current_cue()
-                if cue is not None:
-                    iid = self._cueid_to_iid_a.get(cue.id)
-                    if iid is not None and self.tree_a.exists(iid):
-                        new_iid_a = iid
-        except Exception:
-            pass
-
-        if new_iid_a == self._playing_iid_a and new_iid_b == self._playing_iid_b:
-            return
-
-        if new_iid_a != self._playing_iid_a:
-            try:
-                if self._playing_iid_a is not None and self.tree_a.exists(self._playing_iid_a):
-                    tags = [t for t in (self.tree_a.item(self._playing_iid_a).get("tags") or ()) if t != "playing"]
-                    self.tree_a.item(self._playing_iid_a, tags=tuple(tags))
-            except Exception:
-                pass
-            try:
-                if new_iid_a is not None and self.tree_a.exists(new_iid_a):
-                    tags = list(self.tree_a.item(new_iid_a).get("tags") or ())
-                    if "playing" not in tags:
-                        tags.append("playing")
-                    self.tree_a.item(new_iid_a, tags=tuple(tags))
-            except Exception:
-                pass
-            self._playing_iid_a = new_iid_a
-
-        if new_iid_b != self._playing_iid_b:
-            try:
-                if self._playing_iid_b is not None and self.tree_b.exists(self._playing_iid_b):
-                    tags = [t for t in (self.tree_b.item(self._playing_iid_b).get("tags") or ()) if t != "playing"]
-                    self.tree_b.item(self._playing_iid_b, tags=tuple(tags))
-            except Exception:
-                pass
-            try:
-                if new_iid_b is not None and self.tree_b.exists(new_iid_b):
-                    tags = list(self.tree_b.item(new_iid_b).get("tags") or ())
-                    if "playing" not in tags:
-                        tags.append("playing")
-                    self.tree_b.item(new_iid_b, tags=tuple(tags))
-            except Exception:
-                pass
-            self._playing_iid_b = new_iid_b
+        audio = self.audio_runner.current_cue() if self.audio_runner.is_playing() else None
+        output = self.video_runner.current_cue() if self.video_runner.is_playing() else None
+        owner = self.video_runner.owner_deck
+        for deck, tree, cues, ids, selected, active in (
+                ("A", self.tree_a, self._cues_a, self._cueid_to_iid_a, self._selected_a,
+                 output if output and owner == "A" else audio),
+                ("B", self.tree_b, self._cues_b, self._cueid_to_iid_b, self._selected_b,
+                 output if output and owner == "B" else None)):
+            playing = ids.get(active.id) if active else None
+            anchor = int(playing) if playing is not None else selected
+            following = anchor + 1 if 0 <= anchor < len(cues) else None
+            if active and playing is not None and active.kind in ("audio", "video"):
+                repeat = self._loop_enabled_for_deck(deck)
+                if deck == "B" and active.kind == "video" and active.auto_play:
+                    following = self._visuals_next_autoplay_index(active.id, wrap=repeat)
+                elif repeat:
+                    following = None
+            tree.set_emphasis(playing, str(following) if following is not None and following < len(cues) else None)
 
     def _handle_runner_finished(self, deck: str, runner) -> None:
         if sys.platform == "win32" and deck == "B" and self._ppt_running:
@@ -10120,17 +10088,6 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     var.set(db_txt)
             except Exception:
                 pass
-
-        try:
-            canvas.tag_raise("vu_peak")
-        except Exception:
-            pass
-        try:
-            canvas.tag_raise("vu_bg")
-            canvas.tag_raise("vu_seg")
-            canvas.tag_raise("vu_peak")
-        except Exception:
-            pass
 
     def _update_waveform_playback_visuals(self) -> None:
         runner_a = self.audio_runner

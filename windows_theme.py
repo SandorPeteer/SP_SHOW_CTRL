@@ -2,16 +2,18 @@
 import sys
 from tkinter import ttk
 
-SHELL = "#0b1017"
-PANEL = "#131c27"
-FIELD = "#0d141e"
+SHELL = "#0d131b"
+PANEL = "#121d28"
+FIELD = "#0e1722"
 EDGE = "#2b3949"
 TEXT = "#ecf5ff"
 MUTED = "#a9bbcd"
 BUTTON = "#1c2938"
-SELECTED = "#192f40"
+SELECTED = "#193747"
 CYAN = "#59d8ff"
 MINT = "#57f3b9"
+LIVE_ROW = "#15382f"
+NEXT_ROW = "#2b2541"
 AMBER = "#ffd27c"
 CORAL = "#ff748b"
 VIOLET = "#c3a3ff"
@@ -19,6 +21,19 @@ INK = "#07131d"
 STOP_BG = "#331e2a"
 REPEAT_BG = "#2a2040"
 WAVE_UNPLAYED = "#346e88"
+
+
+def configure_source_dpi():
+    """Match the executable manifest when running player.py with Python."""
+    if sys.platform == "win32" and not getattr(sys, "frozen", False):
+        from ctypes import WinDLL
+        WinDLL("shcore").SetProcessDpiAwareness(1)
+
+
+def pixels(widget, logical):
+    if sys.platform == "win32":
+        return max(1, round(logical * widget.winfo_fpixels("1i") / 96))
+    return logical
 
 
 def apply_windows_theme(app):
@@ -46,7 +61,7 @@ def apply_windows_theme(app):
         ("Treeitem.image", {"side": "left", "sticky": ""}),
         ("Treeitem.text", {"side": "left", "sticky": ""}),
     ]})])
-    style.configure("Cue.Treeview", rowheight=33, font=("Segoe UI", 11))
+    style.configure("Cue.Treeview", rowheight=pixels(app, 33), font=("Segoe UI", 11))
     style.map("Cue.Treeview", background=[("selected", SELECTED)], foreground=[("selected", TEXT)])
     style.configure("Activity.TLabel", background=SHELL, foreground=CYAN, font=("Segoe UI", 9))
     style.configure("Alert.TLabel", background=SHELL, foreground=CORAL, font=("Segoe UI", 9))
@@ -107,13 +122,15 @@ def _apply_workspace_surfaces(app, style):
     rounded = sys.platform == "win32"
     pictures = {}
 
-    def surface(fill, edge, radius):
-        key = (fill, edge, radius)
+    def surface(fill, edge, radius, underlay):
+        key = (fill, edge, radius, underlay)
         if key not in pictures:
-            image = Image.new("RGBA", (72, 72))
-            ImageDraw.Draw(image).rounded_rectangle((0, 0, 71, 71), radius=radius * 3,
+            size = pixels(app, 20)
+            image = Image.new("RGB", (size * 3, size * 3), underlay)
+            ImageDraw.Draw(image).rounded_rectangle((0, 0, image.width - 1, image.height - 1),
+                                                     radius=pixels(app, radius) * 3,
                                                      fill=fill, outline=edge, width=3)
-            pictures[key] = ImageTk.PhotoImage(image.resize((24, 24), Image.Resampling.LANCZOS), master=app)
+            pictures[key] = ImageTk.PhotoImage(image.resize((size, size), Image.Resampling.LANCZOS), master=app)
         return pictures[key]
 
     if rounded:
@@ -121,12 +138,13 @@ def _apply_workspace_surfaces(app, style):
                 ("WorkspaceCard", PANEL, EDGE, 6),
                 ("Activity", "#122331", "#26435a", 5)):
             element = name + ".surface"
-            style.element_create(element, "image", surface(fill, edge, radius), border=7, sticky="nsew")
+            style.element_create(element, "image", surface(fill, edge, radius, SHELL), border=pixels(app, 7), sticky="nsew")
             style.layout(name + ".TFrame", [(element, {"sticky": "nswe"})])
 
     for name, fill, edge, fg, padding in (
             ("Icon", BUTTON, EDGE, TEXT, (6, 5)),
             ("HeaderIcon", BUTTON, EDGE, TEXT, (3, 3)),
+            ("Toolbar", BUTTON, EDGE, TEXT, (6, 5)),
             ("SlideNav", BUTTON, EDGE, VIOLET, (5, 5)),
             ("Accent", CYAN, CYAN, INK, (8, 5)),
             ("Transport", BUTTON, EDGE, TEXT, (6, 5)),
@@ -142,23 +160,24 @@ def _apply_workspace_surfaces(app, style):
         if rounded:
             element = name + ".surface"
             active = STOP_BG if name == "CloseWindow" else "#293b4f" if fill in (BUTTON, SHELL) else fill
+            underlay = SHELL if name in ("Toolbar", "Accent", "Window", "CloseWindow") else PANEL
             style.element_create(element, "image",
-                                 surface(fill, edge, 5),
-                                 ("focus", surface(fill, CYAN, 5)),
-                                 ("pressed", surface(active, CYAN, 5)),
-                                 ("active", surface(active, edge, 5)),
-                                 border=6, padding=1, sticky="nsew")
+                                 surface(fill, edge, 5, underlay),
+                                 ("pressed", surface(active, CYAN, 5, underlay)),
+                                 ("focus", surface(fill, CYAN, 5, underlay)),
+                                 ("active", surface(active, edge, 5, underlay)),
+                                 border=pixels(app, 6), padding=1, sticky="nsew")
             style.layout(role, [(element, {"sticky": "nswe", "children": [
                 ("Button.padding", {"sticky": "nswe", "children": [
                     ("Button.label", {"sticky": "nswe"})
                 ]})
             ]})])
-        style.configure(role, padding=padding, background=fill, foreground=fg,
+        style.configure(role, padding=tuple(pixels(app, n) for n in padding), background=fill, foreground=fg,
                         font=("Segoe UI", 10, "bold"))
         style.map(role, foreground=[("disabled", MUTED), ("!disabled", fg)])
 
     if rounded:
-        style.layout("TMenubutton", [("Icon.surface", {"sticky": "nswe", "children": [
+        style.layout("TMenubutton", [("Toolbar.surface", {"sticky": "nswe", "children": [
             ("Menubutton.indicator", {"side": "right", "sticky": ""}),
             ("Menubutton.padding", {"side": "left", "sticky": "nswe", "children": [
                 ("Menubutton.label", {"sticky": "nswe"}),

@@ -155,6 +155,7 @@ def rehearse(folder):
         assert Path(app._cues_a[0].path) == music
         assert Path(app._cues_b[1].path) == clip
         before_import = controller_dpi(app)
+        assert before_import[0] == 1, before_import
         with patch("player.filedialog.askopenfilenames", return_value=(str(ppt),)):
             app._add_media_b()
         assert Path(app._cues_b[-1].path) == ppt
@@ -268,14 +269,16 @@ def rehearse(folder):
         assert style.lookup(app.btn_play_a.cget("style"), "background") == palette.AMBER
         assert style.lookup(app.btn_play_b.cget("style"), "background") == palette.MINT
         assert style.lookup(app.btn_stop_b.cget("style"), "foreground") == palette.CORAL
-        measured = []
-        for width, height in ((900, 550), (980, 620), (1440, 820), (980, 620)):
-            # Resize the native captionless window, as the Windows sizing border does.
+        def resize_client(width, height):
             x0, y0, x1, y1 = win32gui.GetWindowRect(wrapper)
             _, _, client_width, client_height = win32gui.GetClientRect(wrapper)
             win32gui.SetWindowPos(wrapper, 0, 20, 40, width + x1 - x0 - client_width,
                                   height + y1 - y0 - client_height,
                                   win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+
+        measured = []
+        for width, height in ((900, 550), (980, 620), (1440, 820), (980, 620)):
+            resize_client(width, height)
             actual = wait_for(lambda: pump(lambda: (app.winfo_width(), app.winfo_height())),
                               lambda size: size == (width, height))
             assert actual == (width, height)
@@ -310,6 +313,34 @@ def rehearse(folder):
         assert measured[2][0] > measured[1][0] and measured[2][1] > measured[1][1], measured
         assert measured[3] == measured[1], measured
         print("PASS: waveform and both monitors fill the upper third; all 34 controls fit from 900x550 through 1440x820")
+        wait_for(lambda: pump(lambda: len(app.output_monitor.photos)), lambda count: count == 2)
+        assert "playing" in app.tree_a.item("0", "tags")
+        assert "playing" in app.tree_b.item("2", "tags")
+        assert "next" in app.tree_b.item("3", "tags")
+        bars = tuple(app.canvas_a.find_withtag("waveform"))
+        audio_before_resize = audio.get_property("time-pos")
+        timings = []
+        start_tick = time.perf_counter()
+        for frame in range(75):
+            delay = start_tick + frame / 60 - time.perf_counter()
+            if delay > 0:
+                time.sleep(delay)
+            phase = frame if frame < 38 else 75 - frame
+            tick = time.perf_counter()
+            resize_client(920 + phase * 4, 560 + phase * 3)
+            pump(lambda: None)
+            timings.append((time.perf_counter() - tick) * 1000)
+        assert tuple(app.canvas_a.find_withtag("waveform")) == bars
+        assert audio.get_property("time-pos") > audio_before_resize
+        ordered = sorted(timings)
+        p95 = ordered[(len(ordered) * 95 + 99) // 100 - 1]
+        print(f"Resize with both previews and live audio (75 frames at 60Hz): "
+              f"p95 {p95:.2f} ms, max {max(timings):.2f} ms", flush=True)
+        assert p95 < 16.667 and max(timings) < 66.667, (p95, max(timings))
+        resize_client(980, 620)
+        wait_for(lambda: pump(lambda: (app.winfo_width(), app.winfo_height())), lambda size: size == (980, 620))
+        wait_for(lambda: pump(lambda: not app.output_monitor.resize_jobs), bool)
+        print("PASS: kept the waveform items and media clock running during a 60Hz resize")
         # Scroll only overflows. The indicator overlays the edge and leaves row geometry alone.
         tree = app.tree_b
         assert tuple(map(str, tree["show"])) == ("tree",)

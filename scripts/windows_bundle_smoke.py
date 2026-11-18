@@ -51,10 +51,10 @@ def smoke():
     resources = win32api.LoadLibraryEx(str(exe), 0, 2)  # LOAD_LIBRARY_AS_DATAFILE
     try:
         manifest = ElementTree.fromstring(win32api.LoadResource(resources, 24, 1))  # RT_MANIFEST
-        assert manifest.findtext(".//{*}dpiAwareness") == "Unaware"
+        assert manifest.findtext(".//{*}dpiAwareness") == "System"
     finally:
         win32api.FreeLibrary(resources)
-    print("PASS: packaged controller requests Windows scaling at startup")
+    print("PASS: packaged controller requests system-DPI rendering at startup")
 
     with tempfile.TemporaryDirectory(prefix="Show Control próba ") as test:
         env = {k: v for k, v in os.environ.items() if not k.startswith("SP_SHOW_CTRL_")}
@@ -91,6 +91,14 @@ def smoke():
                 time.sleep(0.2)
             else:
                 raise RuntimeError("Show Control window did not start")
+            from ctypes import c_int, c_void_p, windll
+            hwnd_context = windll.user32.GetWindowDpiAwarenessContext
+            hwnd_context.argtypes = (c_void_p,)
+            hwnd_context.restype = c_void_p
+            awareness = windll.user32.GetAwarenessFromDpiAwarenessContext
+            awareness.argtypes = (c_void_p,)
+            awareness.restype = c_int
+            assert awareness(hwnd_context(hwnd)) == 1
             import win32con
             deadline = time.monotonic() + 8
             while time.monotonic() < deadline:

@@ -131,6 +131,10 @@ class OutputMonitor(ttk.Frame):
         self.targets = {"live": None, "next": None}
         self.frames = {"live": None, "next": None}
         self.photos = {}
+        self.photo_sources = {}
+        self.items = {}
+        self.resize_jobs = {}
+        self.status = {}
         self.errors = {}
         self.canvases = {}
         self.captions = {}
@@ -155,26 +159,60 @@ class OutputMonitor(ttk.Frame):
             canvas = tk.Canvas(box, width=1, height=1, bg="#070a10", highlightthickness=0)
             canvas.pack(fill="both", expand=True)
             self.canvases[key] = canvas
-            canvas.bind("<Configure>", lambda event, item=key: self._draw(item))
+            self.items[key] = canvas.create_image(0, 0)
+            self.status[key] = canvas.create_text(0, 0, fill="#bdbdbd")
+            canvas.bind("<Configure>", lambda event, item=key: self._resize(item, event.width, event.height))
+
+    def _resize(self, key, width, height):
+        # While the border is dragged, center the existing image. Refit it only
+        # after the size settles, rather than allocating a new bitmap per event.
+        self._position(key, width, height)
+        job = self.resize_jobs.get(key)
+        if job is not None:
+            self.after_cancel(job)
+        self.resize_jobs[key] = self.after(65, self._finish_resize, key)
+
+    def _position(self, key, width, height):
+        canvas = self.canvases[key]
+        canvas.coords(self.items[key], width // 2, height // 2)
+        canvas.coords(self.status[key], width // 2, height // 2)
+
+    def _finish_resize(self, key):
+        self.resize_jobs.pop(key, None)
+        self._present(key)
 
     def _draw(self, key, status=""):
         if self.closed:
             return
-        canvas = self.canvases[key]
-        canvas.delete("all")
-        width, height = max(1, canvas.winfo_width()), max(1, canvas.winfo_height())
         frame = self.frames[key]
         if key == "live":
             badge = "● Live" if frame is not None else ""
             if self.live_badge.get() != badge:
                 self.live_badge.set(badge)
+        self.canvases[key].itemconfigure(self.status[key], text=status if frame is None else "")
         if frame is None:
+            self.canvases[key].itemconfigure(self.items[key], image="")
             self.photos.pop(key, None)
-            canvas.create_text(width // 2, height // 2, text=status, width=max(1, width - 12), fill="#bdbdbd")
+            self.photo_sources.pop(key, None)
+        elif key not in self.resize_jobs:
+            self._present(key)
+
+    def _present(self, key):
+        frame = self.frames[key]
+        if self.closed or frame is None:
             return
-        photo = ImageTk.PhotoImage(ImageOps.contain(frame, (width, height)))
+        canvas = self.canvases[key]
+        width, height = canvas.winfo_width(), canvas.winfo_height()
+        if width < 2 or height < 2:
+            return
+        source = self.photo_sources.get(key)
+        if source is not None and source[0] is frame and source[1:] == (width, height):
+            return
+        scaled = ImageOps.contain(frame, (width, height), Image.Resampling.BILINEAR)
+        photo = ImageTk.PhotoImage(scaled, master=canvas)
+        canvas.itemconfigure(self.items[key], image=photo)
         self.photos[key] = photo
-        canvas.create_image(width // 2, height // 2, image=photo)
+        self.photo_sources[key] = (frame, width, height)
 
     def update_targets(self, session, next_path, next_caption, live_caption, aspect="Source", *, next_is_slide=False):
         if self.closed:
@@ -229,5 +267,8 @@ class OutputMonitor(ttk.Frame):
 
     def close(self):
         self.closed = True
+        for job in self.resize_jobs.values():
+            self.after_cancel(job)
+        self.resize_jobs.clear()
         self.cancelled.set()
         self.executor.shutdown(wait=False, cancel_futures=True)
