@@ -17,6 +17,7 @@ VIOLET = "#c3a3ff"
 INK = "#07131d"
 STOP_BG = "#331e2a"
 REPEAT_BG = "#2a2040"
+WAVE_UNPLAYED = "#346e88"
 
 
 def apply_windows_theme(app):
@@ -50,11 +51,16 @@ def apply_windows_theme(app):
     style.configure("Alert.TLabel", background=SHELL, foreground=CORAL, font=("Segoe UI", 9))
     style.configure("AppTitle.TLabel", background=SHELL, font=("Segoe UI", 12, "bold"))
     style.configure("Activity.Horizontal.TProgressbar", background=CYAN, troughcolor=FIELD, thickness=4)
-    style.configure("ShowTitle.TLabel", background=SHELL, font=("Segoe UI", 12, "bold"))
-    style.configure("CardTitle.TLabel", font=("Segoe UI", 13, "bold"))
+    style.configure("ShowTitle.TLabel", background=SHELL, foreground=MUTED, font=("Segoe UI", 10))
+    style.configure("SignalTitle.TLabel", font=("Segoe UI", 10, "bold"))
+    style.configure("SignalCaption.TLabel", foreground=MUTED, font=("Segoe UI", 9))
+    style.configure("Activity.TFrame", background="#122331", relief="solid", borderwidth=1)
+    style.configure("Activity.TLabel", background="#122331")
+    style.configure("Alert.TLabel", background="#122331")
+    style.configure("CardTitle.TLabel", font=("Segoe UI", 10, "bold"))
     style.configure("Tooltip.TLabel", background="#304158", foreground=foreground)
     style.configure("Status.TLabel", foreground=MUTED)
-    style.configure("LiveMonitor.TLabel", foreground=MINT, font=("Segoe UI", 10, "bold"))
+    style.configure("LiveMonitor.TLabel", foreground=MINT, font=("Segoe UI", 9, "bold"))
     style.configure("NextMonitor.TLabel", foreground=VIOLET, font=("Segoe UI", 10, "bold"))
     style.map(".", foreground=[("disabled", disabled)])
     style.configure("TButton", background=raised, padding=(8, 4), relief="flat")
@@ -92,24 +98,109 @@ def apply_windows_theme(app):
     style.map("Deck.TNotebook.Tab",
               background=[("disabled", background), ("selected", selected), ("active", "#4a4e55")],
               foreground=[("disabled", disabled), ("selected", "#ffffff"), ("active", "#ffffff")])
+    _apply_rounded_surfaces(app, style)
 
 
-def dark_window_frame(app):
-    """Keep native Windows resize and window commands with matching dark chrome."""
+def _apply_rounded_surfaces(app, style):
+    from PIL import Image, ImageDraw, ImageTk
+
+    pictures = {}
+
+    def surface(fill, edge, radius):
+        key = (fill, edge, radius)
+        if key not in pictures:
+            image = Image.new("RGBA", (72, 72))
+            ImageDraw.Draw(image).rounded_rectangle((0, 0, 71, 71), radius=radius * 3,
+                                                     fill=fill, outline=edge, width=3)
+            pictures[key] = ImageTk.PhotoImage(image.resize((24, 24), Image.Resampling.LANCZOS), master=app)
+        return pictures[key]
+
+    for name, fill, edge, radius in (
+            ("WorkspaceCard", PANEL, EDGE, 6),
+            ("Activity", "#122331", "#26435a", 5)):
+        element = name + ".surface"
+        style.element_create(element, "image", surface(fill, edge, radius), border=7, sticky="nsew")
+        style.layout(name + ".TFrame", [(element, {"sticky": "nswe"})])
+
+    for name, fill, edge, fg, padding in (
+            ("Icon", BUTTON, EDGE, TEXT, (6, 5)),
+            ("HeaderIcon", BUTTON, EDGE, TEXT, (3, 3)),
+            ("SlideNav", BUTTON, EDGE, VIOLET, (5, 5)),
+            ("Accent", CYAN, CYAN, INK, (8, 5)),
+            ("Transport", BUTTON, EDGE, TEXT, (6, 5)),
+            ("Playing", AMBER, AMBER, INK, (8, 5)),
+            ("ReadyPlay", CYAN, CYAN, INK, (8, 5)),
+            ("Show", MINT, MINT, INK, (8, 5)),
+            ("Stop", STOP_BG, "#754559", CORAL, (6, 5)),
+            ("Repeat", REPEAT_BG, "#655183", VIOLET, (6, 5)),
+            ("Window", SHELL, SHELL, MUTED, (4, 5)),
+            ("CloseWindow", SHELL, SHELL, MUTED, (4, 5)),
+    ):
+        element = name + ".surface"
+        active = STOP_BG if name == "CloseWindow" else "#293b4f" if fill in (BUTTON, SHELL) else fill
+        style.element_create(element, "image",
+                             surface(fill, edge, 5),
+                             ("focus", surface(fill, CYAN, 5)),
+                             ("pressed", surface(active, CYAN, 5)),
+                             ("active", surface(active, edge, 5)),
+                             border=6, sticky="nsew")
+        role = name + ".TButton"
+        style.layout(role, [(element, {"sticky": "nswe", "children": [
+            ("Button.padding", {"sticky": "nswe", "children": [
+                ("Button.label", {"sticky": "nswe"})
+            ]})
+        ]})])
+        style.configure(role, padding=padding, background=fill, foreground=fg,
+                        font=("Segoe UI", 10, "bold"))
+        style.map(role, foreground=[("disabled", MUTED), ("!disabled", fg)])
+
+    style.layout("TMenubutton", [("Icon.surface", {"sticky": "nswe", "children": [
+        ("Menubutton.indicator", {"side": "right", "sticky": ""}),
+        ("Menubutton.padding", {"side": "left", "sticky": "nswe", "children": [
+            ("Menubutton.label", {"sticky": "nswe"}),
+        ]}),
+    ]})])
+    style.configure("TMenubutton", padding=(8, 5), arrowcolor=MUTED)
+    app._rounded_theme_images = pictures
+
+
+def controller_chrome(app, drag_surfaces, zoom_button):
+    """Remove the system caption while preserving native taskbar and resizing."""
     from ctypes import WinDLL, byref, c_int, c_uint32, c_void_p, sizeof
+    import win32con
+    import win32gui
 
-    ancestor = WinDLL("user32").GetAncestor
-    ancestor.argtypes = (c_void_p, c_uint32)
-    ancestor.restype = c_void_p
-    window = ancestor(app.winfo_id(), 2)  # GA_ROOT
-    if not window:
+    hwnd = win32gui.GetAncestor(app.winfo_id(), 2)  # GA_ROOT
+    if not hwnd:
         return
+    style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+    win32gui.SetWindowLong(hwnd, win32con.GWL_STYLE, style & ~win32con.WS_CAPTION)
+    extended = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+    win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, extended | win32con.WS_EX_APPWINDOW)
+    win32gui.SetWindowPos(hwnd, 0, 0, 0, 0, 0, win32con.SWP_NOSIZE | win32con.SWP_NOMOVE |
+                          win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE | win32con.SWP_FRAMECHANGED)
+
     attribute = WinDLL("dwmapi").DwmSetWindowAttribute
     attribute.argtypes = (c_void_p, c_uint32, c_void_p, c_uint32)
     enabled = c_int(1)
-    if attribute(window, 20, byref(enabled), sizeof(enabled)):
-        attribute(window, 19, byref(enabled), sizeof(enabled))
-    for key, color in ((34, EDGE), (35, SHELL), (36, TEXT)):
-        r, g, b = bytes.fromhex(color[1:])
-        value = c_uint32(r | (g << 8) | (b << 16))
-        attribute(window, key, byref(value), sizeof(value))
+    if attribute(hwnd, 20, byref(enabled), sizeof(enabled)):
+        attribute(hwnd, 19, byref(enabled), sizeof(enabled))
+    border = c_uint32(0xFFFFFFFE)  # DWMWA_COLOR_NONE
+    attribute(hwnd, 34, byref(border), sizeof(border))
+    corner = c_uint32(2)  # DWMWCP_ROUND
+    attribute(hwnd, 33, byref(corner), sizeof(corner))
+
+    def drag(event):
+        win32gui.ReleaseCapture()
+        xy = (event.x_root & 0xFFFF) | ((event.y_root & 0xFFFF) << 16)
+        win32gui.PostMessage(hwnd, win32con.WM_NCLBUTTONDOWN, win32con.HTCAPTION, xy)
+
+    def maximize(_event=None):
+        mode = win32con.SW_RESTORE if win32gui.IsZoomed(hwnd) else win32con.SW_MAXIMIZE
+        win32gui.ShowWindow(hwnd, mode)
+        return "break"
+
+    zoom_button.configure(command=maximize)
+    for widget in drag_surfaces:
+        widget.bind("<ButtonPress-1>", drag, add="+")
+        widget.bind("<Double-Button-1>", maximize, add="+")

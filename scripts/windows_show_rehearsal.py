@@ -236,7 +236,20 @@ def rehearse(folder):
                 yield from main_controls(child)
 
         controls = list(main_controls(app))
-        assert len(controls) == 31, len(controls)
+        assert len(controls) == 34, len(controls)
+        caption_controls = (app.btn_minimize_window, app.btn_zoom_window, app.btn_close_window)
+        assert app.btn_output_fullscreen.master == caption_controls[0].master.master
+        assert app.btn_output_fullscreen.winfo_rootx() < caption_controls[0].winfo_rootx()
+        from win32gui import GetAncestor, IsZoomed
+        wrapper = GetAncestor(app.winfo_id(), 2)
+        assert not IsZoomed(wrapper)
+        app.btn_zoom_window.invoke()
+        app.update()
+        assert IsZoomed(wrapper)
+        app.btn_zoom_window.invoke()
+        app.update()
+        assert not IsZoomed(wrapper)
+        print("PASS: window, file and projection controls share a single toolbar; maximize and restore work")
 
         def tool_order(last):
             tool = next(button for button in controls if button.cget("text") == last)
@@ -247,9 +260,9 @@ def rehearse(folder):
         assert tool_order("Projection tools") == ["Add files", "Remove files", "Move item up", "Move item down",
                                                     "Downloads", "Projection tools"]
         assert app.var_slide_position.get() == "01 / 02"
-        assert app.btn_play_a.cget("bg") == palette.AMBER
-        assert app.btn_play_b.cget("bg") == palette.MINT
-        assert app.btn_stop_b.cget("fg") == palette.CORAL
+        assert style.lookup(app.btn_play_a.cget("style"), "background") == palette.AMBER
+        assert style.lookup(app.btn_play_b.cget("style"), "background") == palette.MINT
+        assert style.lookup(app.btn_stop_b.cget("style"), "foreground") == palette.CORAL
         measured = []
         for width, height in ((900, 550), (980, 620), (1440, 820), (980, 620)):
             app.geometry(f"{width}x{height}+20+40")
@@ -272,14 +285,20 @@ def rehearse(folder):
             assert monitor.winfo_rooty() + monitor.winfo_height() < lower.winfo_rooty()
             assert abs(2 * monitor.winfo_height() - lower.winfo_height()) <= 2
             left, right = monitor.canvases.values()
+            wave = app.canvas_a
+            assert wave.winfo_rootx() + wave.winfo_width() < left.winfo_rootx() < right.winfo_rootx()
+            assert wave.winfo_rooty() == left.winfo_rooty() == right.winfo_rooty()
+            assert wave.winfo_width() > left.winfo_width()
             assert abs(left.winfo_width() - right.winfo_width()) <= 1
             assert left.winfo_height() == right.winfo_height()
+            assert app.tree_a.winfo_rooty() == app.tree_b.winfo_rooty()
+            assert app.btn_play_a.winfo_rooty() == app.btn_play_b.winfo_rooty()
             assert app.btn_play_b.winfo_rootx() < app.btn_prev_slide.winfo_rootx()
             assert app.btn_prev_slide.winfo_rootx() < app.btn_next_slide.winfo_rootx() < app.btn_stop_b.winfo_rootx()
             measured.append((app.scene_listbox.winfo_width(), app.output_monitor.canvases["live"].winfo_height()))
         assert measured[2][0] > measured[1][0] and measured[2][1] > measured[1][1], measured
         assert measured[3] == measured[1], measured
-        print("PASS: two side-by-side monitors occupy 1/3; all 31 controls fit from 900x550 through 1440x820")
+        print("PASS: waveform and both monitors fill the upper third; all 34 controls fit from 900x550 through 1440x820")
         # Scroll only overflows. The indicator overlays the edge and leaves row geometry alone.
         tree = app.tree_b
         assert tuple(map(str, tree["show"])) == ("tree",)
@@ -304,7 +323,9 @@ def rehearse(folder):
         tree.yview_moveto(0)
         pump(lambda: None)
         print("PASS: scrolling overlays a transient indicator without shifting the cue columns")
-        ImageGrab.grab().save(root / "dist/windows-rehearsal-preview.png")
+        x, y = app.winfo_rootx(), app.winfo_rooty()
+        ImageGrab.grab(bbox=(x, y, x + app.winfo_width(), y + app.winfo_height())).save(
+            root / "dist/windows-rehearsal-preview.png")
         visual.set_property("window-minimized", False)
         app.btn_output_fullscreen.invoke()
         app._ppt_next_ui()

@@ -91,6 +91,11 @@ def smoke():
                 time.sleep(0.2)
             else:
                 raise RuntimeError("Show Control window did not start")
+            import win32con
+            window_style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+            assert not window_style & win32con.WS_CAPTION
+            assert window_style & win32con.WS_THICKFRAME
+            print("PASS: frozen EXE has integrated chrome and a native resize frame")
             # A second click must reuse the controller, even during initial loading.
             duplicate = subprocess.Popen([exe], env=env, cwd=test)
             try:
@@ -111,7 +116,7 @@ def smoke():
                 bounds = win32gui.GetWindowRect(hwnd)
                 frame = ImageGrab.grab(bbox=bounds)
                 blue = sum(count for count, rgb in (frame.convert("RGB").getcolors(frame.width * frame.height) or [])
-                           if abs(rgb[0] - 74) < 5 and abs(rgb[1] - 158) < 5 and abs(rgb[2] - 255) < 5)
+                           if abs(rgb[0] - 89) < 5 and abs(rgb[1] - 216) < 5 and abs(rgb[2] - 255) < 5)
                 if blue > 700:
                     break
                 time.sleep(0.2)

@@ -3129,6 +3129,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         from media_waveform import WaveformWorker
         self._waveform_worker = WaveformWorker(self._ui_tasks)
         self._ppt_pending = None
+        self._ppt_errors: dict[str, str] = {}
         self._ppt_cue = None
         self._ppt_slides = []
         self._ppt_index = 0
@@ -3645,12 +3646,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         from operator_ui import add_tooltip
 
         text = {"textvariable": text_or_var} if isinstance(text_or_var, tk.StringVar) else {"text": text_or_var}
-        button = tk.Button(parent, **text, image=self._operator_icons.image(icon), command=command,
-                           compound="left" if visible_label else "none", font=("Segoe UI", 10, "bold"),
-                           padx=7, pady=4, bg=palette.BUTTON, fg=palette.TEXT,
-                           activebackground=palette.SELECTED, activeforeground=palette.TEXT, relief="flat", bd=0,
-                           highlightthickness=1, highlightbackground=palette.BUTTON, highlightcolor=palette.CYAN,
-                           cursor="hand2")
+        button = ttk.Button(parent, **text, image=self._operator_icons.image(icon), command=command,
+                            compound="left" if visible_label else "none", style="Transport.TButton",
+                            cursor="hand2")
         add_tooltip(button, tooltip)
         return button
 
@@ -3664,15 +3662,37 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             if (self._ppt_pending and self._ppt_pending.path == path) or (not self._ppt_running and not self._ppt_pending):
                 self.var_ppt_status.set(f"{Path(path).name} • {msg}")
         progress("Preparing…")
+        self._ppt_errors.pop(path, None)
         self._ppt_preparer.submit(path, progress, self._ppt_prepared)
-        self._update_ppt_activity()
+        self._update_ppt_activity(path)
 
-    def _update_ppt_activity(self):
-        count = len(self._ppt_preparer.pending)
-        self._set_busy("ppt", f"Preparing presentations ({count})…" if count else None)
+    def _ppt_detail(self, cue: Cue) -> str:
+        if sys.platform != "win32" or cue.kind != "ppt":
+            return "—"
+        path = cue.path
+        ready = self._ppt_preparer.ready.get(path)
+        if ready:
+            count = len(ready[1])
+            return f"{count} slide" if count == 1 else f"{count} slides"
+        if path in self._ppt_preparer.pending:
+            return "Preparing…"
+        return "Failed" if path in self._ppt_errors else "—"
+
+    def _update_ppt_activity(self, path):
+        jobs = self._ppt_preparer.pending
+        count = len(jobs)
+        caption = f"Preparing slides ({count})…" if count else None
+        if count == 1:
+            caption = f"Preparing slides · {Path(next(iter(jobs))).name}"
+        self._set_busy("ppt", caption)
+        for index, cue in enumerate(self._cues_b):
+            if cue.path == path and self.tree_b.exists(str(index)):
+                self.tree_b.set(str(index), "duration", self._ppt_detail(cue))
 
     def _ppt_prepared(self, path, files, error):
-        self._update_ppt_activity()
+        if error:
+            self._ppt_errors[path] = error
+        self._update_ppt_activity(path)
         pending = self._ppt_pending
         take = pending is not None and pending.path == path
         status = f"{Path(path).name} • " + (f"Error: {error}" if error else f"Ready ({len(files)} slides)")
@@ -3940,19 +3960,15 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             _swallow_exc(e, note="ppt_post_nav_check restore_visuals_after_ppt")
 
     def _set_wave_title(self, deck: str, cue: Cue | None) -> None:
-        if cue is None:
-            text = "Waveform"
-        elif cue.kind in ("audio", "video"):
-            text = _shorten_middle(cue.display_name(), 42)
-        else:
-            text = "Waveform"
-        try:
-            if deck == "A":
-                self.wave_a_frame.configure(text=text)
-            else:
-                self.wave_b_frame.configure(text=text)
-        except Exception as e:
-            _swallow_exc(e, note="set_wave_title")
+        if deck == "A":
+            self.var_wave_source.set(cue.display_name() if cue else "")
+            self._update_wave_scale(cue)
+
+    def _update_wave_scale(self, cue: Cue | None) -> None:
+        duration = self._duration_for_cue(cue) if cue else None
+        for index, tick in enumerate(self._wave_scale_ticks):
+            tick.set(_format_timecode(duration * index / 4) if duration else "")
+        self.var_wave_duration.set(f"/ {_format_timecode(duration)}" if duration else "")
 
     def _preset_path(self) -> Path:
         if _is_frozen():
@@ -5268,8 +5284,6 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             pass
 
         palette.apply_windows_theme(self)
-        if sys.platform == "win32":
-            self.after_idle(lambda: palette.dark_window_frame(self))
 
         icons = self._operator_icons = OperatorIcons(self)
         root = ttk.Frame(self, padding=(12, 10), style="Shell.TFrame")
@@ -5277,7 +5291,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
         filebar = ttk.Frame(root, style="Shell.TFrame")
         filebar.pack(fill="x", pady=(0, 8))
-        ttk.Label(filebar, text="SP Show Control", style="AppTitle.TLabel").pack(side="left", padx=(0, 12))
+        app_title = ttk.Label(filebar, text="SP Show Control", style="AppTitle.TLabel")
+        app_title.pack(side="left", padx=(0, 12))
         self.var_showfile = tk.StringVar(value="")
         self.var_presentation_btn = tk.StringVar(value="Fullscreen")
         file_menu = tk.Menu(filebar, tearoff=False)
@@ -5290,6 +5305,20 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.lbl_showfile = ttk.Label(filebar, textvariable=self.var_showfile, anchor="w", width=1,
                                       style="ShowTitle.TLabel")
         self.lbl_showfile.pack(side="left", fill="x", expand=True, padx=12)
+        if sys.platform == "win32":
+            caption = ttk.Frame(filebar, style="Shell.TFrame")
+            caption.pack(side="right", padx=(6, 0))
+            self.btn_minimize_window = icons.button(caption, "minimize", "Minimize", self.iconify,
+                                                    color=palette.MUTED, style="Window.TButton", size=16)
+            self.btn_zoom_window = icons.button(caption, "maximize", "Maximize / restore", lambda: None,
+                                                color=palette.MUTED, style="Window.TButton", size=16)
+            self.btn_close_window = icons.button(caption, "close", "Close Show Control", self._on_closing,
+                                                 color=palette.MUTED, style="CloseWindow.TButton", size=16)
+            for button in (self.btn_minimize_window, self.btn_zoom_window, self.btn_close_window):
+                button.pack(side="left")
+            self.after_idle(lambda: palette.controller_chrome(
+                self, (filebar, app_title, self.lbl_showfile), self.btn_zoom_window
+            ))
         icons.button(filebar, "settings", "App settings", self._open_global_setup).pack(side="right")
         self.btn_output_fullscreen = icons.button(filebar, "fullscreen", "Projector fullscreen / windowed",
                                                   self._toggle_output_fullscreen, visible_label=True,
@@ -5300,22 +5329,24 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.bind(f"<{shortcut}-s>", lambda _e: self._save_show())
         self.bind(f"<{shortcut}-o>", lambda _e: self._open_show())
 
-        self.activity_frame = ttk.Frame(filebar, style="Shell.TFrame")
+        self.activity_frame = ttk.Frame(filebar, padding=(7, 3), style="Activity.TFrame")
         self.var_activity = tk.StringVar(value=self._busy_jobs["startup"])
         self.activity_label = ttk.Label(self.activity_frame, textvariable=self.var_activity, style="Activity.TLabel",
                                         width=24, anchor="e")
         self.activity_label.grid(row=0, column=0, sticky="e")
         self.activity_progress = ttk.Progressbar(self.activity_frame, orient="horizontal", mode="indeterminate",
-                                                 style="Activity.Horizontal.TProgressbar", length=68)
+                                                 style="Activity.Horizontal.TProgressbar", length=52)
         self.activity_progress.grid(row=0, column=1, padx=(6, 0))
         self.activity_progress.start(24)
         self._render_activity()
 
         workspace = ttk.Frame(root, style="Shell.TFrame")
         workspace.pack(fill="both", expand=True)
+        signal_row = ttk.Frame(workspace, style="Shell.TFrame")
+        self.wave_a_frame = ttk.Frame(signal_row, padding=6, style="WorkspaceCard.TFrame")
         from output_monitor import OutputMonitor
         self.output_monitor = OutputMonitor(
-            workspace, self._ui_tasks, lambda: _resolve_fftool("ffmpeg"),
+            signal_row, icons, self._ui_tasks, lambda: _resolve_fftool("ffmpeg"),
             _no_console_subprocess_kwargs, self._log,
         )
         self._monitor_after_id = self.after(500, self._poll_output_monitor)
@@ -5380,55 +5411,61 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self.tree_a.drop_target_register(DND_FILES)
             self.tree_a.dnd_bind('<<Drop>>', lambda e: self._on_drop_deck_a(e.data))
 
-        # Total duration summary for Deck A
         self.var_total_duration_a = tk.StringVar(value="Total: 00:00:00")
-        ttk.Label(deck_a, textvariable=self.var_total_duration_a, font=("Courier", 10, "bold"), anchor="e").pack(fill="x", padx=2, pady=(2, 0))
 
-        # Waveform placeholder (Deck A)
-        self.wave_a_frame = ttk.Frame(deck_a)
-        self.wave_a_frame.pack(fill="x", pady=(4, 0))
-        self.canvas_a = tk.Canvas(self.wave_a_frame, height=66, bg=palette.FIELD, highlightthickness=0, cursor="crosshair")
-        self.canvas_a.pack(fill="x")
+        wave_head = ttk.Frame(self.wave_a_frame)
+        wave_head.pack(fill="x", pady=(0, 5))
+        ttk.Label(wave_head, image=icons.image("waveform", palette.CYAN, 16), text="Waveform",
+                  compound="left", style="SignalTitle.TLabel").pack(side="left")
+        self.var_now_a_time = tk.StringVar(value="—")
+        self.var_wave_duration = tk.StringVar()
+        ttk.Label(wave_head, textvariable=self.var_wave_duration, style="SignalCaption.TLabel").pack(side="right")
+        self.lbl_now_a_time = tk.Label(wave_head, textvariable=self.var_now_a_time, anchor="e", bd=0,
+                                       padx=0, pady=0, font=("Segoe UI", 9), fg=palette.CYAN, bg=palette.PANEL)
+        self.lbl_now_a_time.pack(side="right", padx=(0, 4))
+        self._now_time_default_fg_a = self.lbl_now_a_time.cget("fg")
+
+        meter = ttk.Frame(self.wave_a_frame)
+        meter.pack(side="bottom", fill="x", pady=(4, 0))
+        self.var_wave_source = tk.StringVar()
+        ttk.Label(meter, textvariable=self.var_wave_source, width=16,
+                  style="SignalCaption.TLabel").pack(side="left")
+        self.var_vu_a_db = tk.StringVar(value="")
+        self.lbl_vu_a_db = ttk.Label(meter, textvariable=self.var_vu_a_db, width=8, anchor="e",
+                                    style="SignalCaption.TLabel")
+        self.lbl_vu_a_db.pack(side="right")
+        self.vu_canvas_a = tk.Canvas(meter, width=1, height=5, bg=palette.EDGE, highlightthickness=0, bd=0)
+        self.vu_canvas_a.pack(side="left", fill="x", expand=True, padx=5)
+
+        scale = ttk.Frame(self.wave_a_frame)
+        scale.pack(side="bottom", fill="x", pady=(3, 0))
+        self._wave_scale_ticks = [tk.StringVar() for _ in range(5)]
+        for column, tick in enumerate(self._wave_scale_ticks):
+            anchor = "w" if column == 0 else "e" if column == 4 else "center"
+            ttk.Label(scale, textvariable=tick, width=1, anchor=anchor,
+                      style="SignalCaption.TLabel").grid(row=0, column=column, sticky="ew")
+            scale.columnconfigure(column, weight=1, uniform="wave_scale")
+
+        self.canvas_a = tk.Canvas(self.wave_a_frame, width=1, height=1, bg=palette.FIELD, highlightthickness=0,
+                                  cursor="crosshair")
+        self.canvas_a.pack(fill="both", expand=True)
+        self._wave_peaks_a = ()
+        self._wave_bars_a = []
+        self._wave_bright_a = None
+        self.canvas_a.bind("<Configure>", self._resize_waveform_a)
         self.canvas_a.bind("<Button-1>", lambda e: self._waveform_click(e, "A", "IN"))
         self.canvas_a.bind("<Button-2>", lambda e: self._waveform_click(e, "A", "OUT"))
         self.canvas_a.bind("<Button-3>", lambda e: self._waveform_click(e, "A", "OUT"))
 
-        # Playback block (Deck A) - under preview
-        now_a = ttk.Frame(deck_a, padding=(0, 4, 0, 0))
-        now_a.pack(fill="x")
-        self.var_now_a_time = tk.StringVar(value="—")
-        now_a_top = ttk.Frame(now_a)
-        now_a_top.pack(fill="x")
-        now_a_top.columnconfigure(2, weight=1)
-        self.vu_canvas_a = tk.Canvas(
-            now_a_top,
-            width=94,
-            height=10,
-            bg=palette.FIELD,
-            highlightthickness=0,
-            bd=0,
-        )
-        self.vu_canvas_a.grid(row=0, column=0, sticky="w", pady=(4, 0))
-        self.var_vu_a_db = tk.StringVar(value="")  # e.g. "-12.3 dB"
-        self.lbl_vu_a_db = tk.Label(now_a_top, textvariable=self.var_vu_a_db, anchor="w", font=("Courier", 10), fg="#cfcfcf")
-        self.lbl_vu_a_db.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=(2, 0))
-        self.lbl_now_a_time = tk.Label(now_a_top, textvariable=self.var_now_a_time, anchor="e", font=("Courier", 14, "bold"))
-        self.lbl_now_a_time.grid(row=0, column=2, sticky="e", padx=(10, 0))
-        self._now_time_default_fg_a = self.lbl_now_a_time.cget("fg")
-
-        now_a_ctrl = ttk.Frame(now_a)
-        now_a_ctrl.pack(fill="x", pady=(4, 0))
-        now_a_ctrl.columnconfigure(0, weight=1, uniform="playrow_a")
-        now_a_ctrl.columnconfigure(1, weight=1, uniform="playrow_a")
-        now_a_ctrl.columnconfigure(2, weight=1, uniform="playrow_a")
+        now_a_ctrl = ttk.Frame(deck_a)
+        now_a_ctrl.pack(side="bottom", fill="x", pady=(7, 0))
         self.var_play_a = tk.StringVar(value="Play")
         self.btn_play_a = self._make_transport_button(now_a_ctrl, self.var_play_a, self._play_deck_a, "play", "Play / pause", True)
-        self.btn_play_a.grid(row=0, column=0, sticky="nsew", padx=2)
         self.btn_stop_a = self._make_transport_button(now_a_ctrl, "Stop", self._stop_deck_a, "stop", "Stop media")
-        self.btn_stop_a.grid(row=0, column=1, sticky="nsew", padx=2)
         self.var_loop_a = tk.StringVar(value="Repeat off")
         self.btn_loop_a = self._make_transport_button(now_a_ctrl, self.var_loop_a, lambda: self._toggle_loop("A"), "repeat", "Repeat media")
-        self.btn_loop_a.grid(row=0, column=2, sticky="nsew", padx=2)
+        for button in (self.btn_play_a, self.btn_stop_a, self.btn_loop_a):
+            button.pack(side="left", padx=(0, 4))
 
         # Tabs under playback block (Deck A)
         self.tab_a_setup = tk.Frame(self.tabs_a, bg="#2b2b2b")
@@ -5437,6 +5474,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.tabs_a.add(self.tab_a_setup, text="Options")
         self.tabs_a.add(self.tab_a_inout, text="IN/OUT")
         self.tabs_a.add(self.tab_a_more, text="Playback")
+        ttk.Label(self.tab_a_more, textvariable=self.var_total_duration_a).pack(anchor="w", padx=10, pady=(12, 0))
 
         # Setup tab (Deck A) - per-cue target
         setup_a = ttk.Frame(self.tab_a_setup, padding=6)
@@ -5541,14 +5579,19 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             if event.width < 680 or event.height < 240:
                 return
             gap = 8
-            monitor_height = (event.height - gap) // 3
-            self.output_monitor.place(x=0, y=0, width=event.width, height=monitor_height)
-            decks_container.place(x=0, y=monitor_height + gap, width=event.width,
-                                  height=event.height - monitor_height - gap)
-            scene_minimum = scene_head.winfo_reqwidth() + 20
-            scene_width = max(scene_minimum, min(355, round(event.width * 0.22)))
-            deck_width = event.width - scene_width - 2 * gap
-            audio_width = round(deck_width * 36 / 78)
+            signal_height = (event.height - gap) // 3
+            signal_row.place(x=0, y=0, width=event.width, height=signal_height)
+            waveform_width = round((event.width - 2 * gap) * 0.40)
+            self.wave_a_frame.place(x=0, y=0, width=waveform_width, relheight=1)
+            self.output_monitor.place(x=waveform_width + gap, y=0, width=event.width - waveform_width - gap,
+                                      relheight=1)
+            decks_container.place(x=0, y=signal_height + gap, width=event.width,
+                                  height=event.height - signal_height - gap)
+            usable_width = event.width - 2 * gap
+            scene_minimum = scene_head.winfo_reqwidth() + 17
+            scene_width = max(scene_minimum, round(usable_width * 0.24))
+            deck_width = usable_width - scene_width
+            audio_width = round(deck_width * 34 / 76)
             scene_panel.place(x=0, y=0, width=scene_width, relheight=1)
             deck_a.place(x=scene_width + gap, y=0, width=audio_width, relheight=1)
             deck_b.place(x=scene_width + audio_width + 2 * gap, y=0,
@@ -5582,17 +5625,16 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
         # Total duration summary for Deck B
         self.var_total_duration_b = tk.StringVar(value="Total: 00:00:00")
-        ttk.Label(deck_b, textvariable=self.var_total_duration_b, font=("Courier", 10, "bold"), anchor="e").pack(fill="x", padx=2, pady=(2, 0))
 
         # Keep the slide arrows beside their counter, between Show and Stop.
         visuals_ctrl = ttk.Frame(deck_b)
-        visuals_ctrl.pack(fill="x", side="bottom", pady=(5, 0))
+        visuals_ctrl.pack(fill="x", side="bottom", pady=(7, 0))
         visuals_ctrl.columnconfigure(6, weight=1)
         self.var_play_b = tk.StringVar(value="Show")
         self.var_loop_b = tk.StringVar(value="Repeat off")
         self.var_slide_position = tk.StringVar(value="— / —")
         self.btn_play_b = self._make_transport_button(visuals_ctrl, self.var_play_b, self._play_deck_b,
-                                                      "play", "Show selected item", True)
+                                                      "show", "Show selected item", True)
         self.btn_prev_slide = icons.button(visuals_ctrl, "previous", "Previous slide", self._ppt_prev_ui,
                                          style="SlideNav.TButton", color=palette.VIOLET)
         slide_position = ttk.Label(visuals_ctrl, textvariable=self.var_slide_position, anchor="center", width=7)
@@ -5640,6 +5682,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         playlist_b.pack(fill="x")
         self.var_visuals_playlist_info = tk.StringVar(value="Auto-play videos: 0")
         ttk.Label(playlist_b, textvariable=self.var_visuals_playlist_info).pack(anchor="w")
+        ttk.Label(playlist_b, textvariable=self.var_total_duration_b).pack(anchor="w", pady=(3, 0))
         playlist_btns = ttk.Frame(playlist_b)
         playlist_btns.pack(fill="x", pady=(6, 0))
         ttk.Button(playlist_btns, text="Play playlist", command=self._play_visuals_autoplay).pack(side="left")
@@ -5649,8 +5692,6 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         ppt_tab = ttk.Frame(self.tab_b_ppt, padding=6)
         ppt_tab.pack(fill="x")
         if sys.platform == "win32":
-            self.lbl_ppt_status = ttk.Label(deck_b, textvariable=self.var_ppt_status, width=1, style="Status.TLabel")
-            self.lbl_ppt_status.pack(fill="x", pady=(4, 0))
             ttk.Label(ppt_tab, textvariable=self.var_ppt_status, wraplength=360).pack(fill="x", pady=(0, 4))
         ppt_tools = ttk.Frame(ppt_tab)
         ppt_tools.pack(fill="x", pady=(4, 0))
@@ -5771,7 +5812,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     next_path = str(ready[1][0])
                     next_caption = f"1/{len(ready[1])} · {cue.display_name()}"
                 else:
-                    next_caption = "Preparing presentation…"
+                    if cue.path in self._ppt_errors:
+                        next_caption = self._ppt_errors[cue.path]
+                    else:
+                        next_caption = self._ppt_detail(cue)
             elif cue and cue.kind in ("image", "video"):
                 next_path, next_caption = cue.path, cue.display_name()
         current = self.video_runner.current_cue()
@@ -5835,6 +5879,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
     def _on_deck_a_select(self):
         self._waveform_worker.cancel("A")
         self._set_busy("wave-A", None)
+        self._wave_peaks_a = ()
+        self._wave_bars_a.clear()
         sel = self.tree_a.selection()
         self._selected_a = int(sel[0]) if sel else -1
         if self._selected_a >= 0:
@@ -5984,8 +6030,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
     def _refresh_waveform_markers(self, cue: Cue, canvas: tk.Canvas, deck_name: str) -> None:
         try:
-            images = getattr(self, "_waveform_images", None)
-            has_image = bool(images and images.get(deck_name))
+            has_image = bool(canvas.find_withtag("waveform"))
         except Exception:
             has_image = False
         if has_image:
@@ -6005,31 +6050,16 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 width = 600
                 height = 60
 
-            if cue.start_sec:
-                x = int((cue.start_sec / duration) * width)
-                canvas.create_line(x, 0, x, height, fill="#00ff00", width=2, tags=("marker",))
-                canvas.create_text(
-                    x,
-                    5,
-                    text=f"IN: {_format_timecode(cue.start_sec, with_ms=True)}",
-                    anchor="nw",
-                    fill="#00ff00",
-                    font=("Arial", 8, "bold"),
-                    tags=("marker",),
-                )
-
-            if cue.stop_at_sec:
-                x = int((cue.stop_at_sec / duration) * width)
-                canvas.create_line(x, 0, x, height, fill="#ff0000", width=2, tags=("marker",))
-                canvas.create_text(
-                    x,
-                    height - 5,
-                    text=f"OUT: {_format_timecode(cue.stop_at_sec, with_ms=True)}",
-                    anchor="sw",
-                    fill="#ff0000",
-                    font=("Arial", 8, "bold"),
-                    tags=("marker",),
-                )
+            for label, position, color in (("IN", cue.start_sec, palette.CYAN),
+                                           ("OUT", cue.stop_at_sec, palette.VIOLET)):
+                if position is None or (label == "IN" and not position):
+                    continue
+                x = max(0, min(width - 1, round(position * width / duration)))
+                canvas.create_line(x, 0, x, height, fill=color, tags=("marker",))
+                left_side = x > width - 32
+                x_text = x - 4 if left_side else x + 4
+                canvas.create_text(x_text, 4, text=label, fill=palette.TEXT, font=("Segoe UI", 8, "bold"),
+                                   anchor="ne" if left_side else "nw", tags=("marker",))
         except Exception:
             return
 
@@ -6053,6 +6083,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._playback_items[deck] = None
         canvas.create_text(width // 2, height // 2, text="Building waveform…", fill="#bdbdbd")
         if deck == "A":
+            self._wave_peaks_a = ()
+            self._wave_bars_a.clear()
             self._set_busy("wave-A", f"Building waveform · {cue.display_name()}")
         self._waveform_worker.request(
             deck, _resolve_fftool("ffmpeg"), cue.path, width, height,
@@ -6361,53 +6393,30 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if width < 10 or height < 10:
             width, height = 600, 60
 
-        photo = None
+        drawn = False
         if png_bytes:
+            from io import BytesIO
+            from PIL import Image, ImageTk
             try:
-                from io import BytesIO
-                try:
-                    from PIL import Image, ImageTk  # type: ignore[reportMissingImports]
-                except Exception:
-                    Image = None  # type: ignore[assignment]
-                    ImageTk = None  # type: ignore[assignment]
-
-                if Image is None or ImageTk is None:
-                    raise RuntimeError("Pillow (PIL) not installed")
-
-                img = Image.open(BytesIO(png_bytes))
-                try:
-                    levels = self._compute_vu_levels_from_image(img)
-                    if levels:
-                        down = self._downsample_levels(levels, 240)
-                        peak = 0.0
-                        try:
-                            peak = max(float(v) for v in down) if down else 0.0
-                        except Exception:
-                            peak = 0.0
-                        self._vu_profile_cache[cue_id] = (int(len(down)), float(peak), list(down))
-                        try:
-                            cue.vu_profile_q = self._quantize_levels(down)
-                        except Exception:
-                            pass
-                        self._vu_req_inflight.discard(cue_id)
-                except Exception:
-                    pass
-                photo = ImageTk.PhotoImage(img)
+                with Image.open(BytesIO(png_bytes)) as image:
+                    if deck == "A":
+                        alpha = image.getchannel("A")
+                        count = min(144, image.width)
+                        peaks = []
+                        for i in range(count):
+                            left = i * image.width // count
+                            right = (i + 1) * image.width // count
+                            bounds = alpha.crop((left, 0, right, image.height)).getbbox()
+                            peaks.append((bounds[3] - bounds[1]) / image.height if bounds else 0.0)
+                        self._wave_peaks_a = tuple(peaks)
+                        self._resize_waveform_a()
+                    else:
+                        self._waveform_b_photo = ImageTk.PhotoImage(image)
+                        canvas.create_image(0, 0, anchor="nw", image=self._waveform_b_photo, tags=("waveform",))
+                    drawn = True
             except Exception as exc:
                 err_text = str(exc)
-                photo = None
-
-        if photo is not None:
-            try:
-                if not hasattr(self, "_waveform_images"):
-                    self._waveform_images = {}
-                self._waveform_images[deck] = photo
-            except Exception:
-                pass
-            try:
-                canvas.create_image(0, 0, anchor="nw", image=photo, tags=("waveform",))
-            except Exception:
-                pass
+        if drawn:
             self._update_waveform_markers(cue, canvas)
             self._update_waveform_playback_visuals()
         else:
@@ -6415,7 +6424,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 canvas.create_text(
                     width // 2,
                     height // 2,
-                    text="Hullámforma hiba\n" + (err_text or "Ismeretlen hiba")[:160],
+                    text="Waveform unavailable\n" + (err_text or "Unknown error")[:160],
                     width=max(1, width - 12),
                     fill="#888888",
                     font=("Arial", 10),
@@ -6427,6 +6436,42 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     self._log(f"Deck {deck}: Waveform preview unavailable ({err_text.strip()})")
                 except Exception:
                     pass
+
+    def _resize_waveform_a(self, _event=None) -> None:
+        if not self._wave_peaks_a:
+            return
+        canvas = self.canvas_a
+        canvas.delete("waveform")
+        width, height = canvas.winfo_width(), canvas.winfo_height()
+        count = min(len(self._wave_peaks_a), max(1, width // 4))
+        peaks = self._wave_peaks_a
+        self._wave_bars_a = []
+        for index in range(count):
+            start = index * len(peaks) // count
+            end = (index + 1) * len(peaks) // count
+            level = max(peaks[start:end])
+            x = (index + 0.5) * width / count
+            half = max(1, level * (height - 4) / 2)
+            bar = canvas.create_line(x, height / 2 - half, x, height / 2 + half,
+                                     fill=palette.CYAN, width=2, capstyle="round", tags=("waveform",))
+            self._wave_bars_a.append(bar)
+        self._wave_bright_a = len(self._wave_bars_a)
+        cue = self._selected_cue_for_deck("A")
+        if cue:
+            self._update_waveform_markers(cue, canvas)
+        canvas.tag_lower("waveform")
+        self._update_waveform_playback_visuals()
+
+    def _tint_waveform_a(self, fraction: float) -> None:
+        count = len(self._wave_bars_a)
+        bright = min(count, max(0, int(fraction * count)))
+        previous = self._wave_bright_a
+        if previous is None or bright == previous:
+            return
+        color = palette.CYAN if bright > previous else palette.WAVE_UNPLAYED
+        for bar in self._wave_bars_a[min(bright, previous):max(bright, previous)]:
+            self.canvas_a.itemconfigure(bar, fill=color)
+        self._wave_bright_a = bright
 
     def _nudge_in(self, deck: str, delta_sec: float) -> None:
         if deck != "A":
@@ -6724,7 +6769,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 duration_str = _format_timecode(duration)
                 total_duration += duration
             else:
-                duration_str = "—"
+                duration_str = self._ppt_detail(cue)
 
             self.tree_b.insert("", "end", iid=iid, values=(
                 checkbox_mark,
@@ -8180,7 +8225,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                         duration = float(full_duration) - float(cue.start_sec)
                     duration_str = _format_timecode(duration)
                 else:
-                    duration_str = "—"
+                    duration_str = self._ppt_detail(cue)
                 values = (
                     checkbox_mark,
                     "▶" if cue.auto_play else "",
@@ -8253,6 +8298,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     seconds += length
             total.set(f"Total: {_format_timecode(seconds)}")
             cue = self._selected_cue_for_deck(deck)
+            if deck == "A":
+                self._update_wave_scale(cue)
             if cue is not None and self._duration_cache.get(cue.path) is not None:
                 canvas = self.canvas_a if deck == "A" else self.canvas_b
                 if canvas.find_withtag("waveform"):
@@ -9761,17 +9808,16 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                         pass
 
                 if deck == "A":
-                    play_bg, play_icon = (palette.AMBER, "pause") if playing else (palette.CYAN, "play")
+                    play_style, play_icon = ("Playing", "pause") if playing else ("ReadyPlay", "play")
                 else:
-                    play_bg, play_icon = palette.MINT, "play"
-                loop_bg, loop_fg = (palette.REPEAT_BG, palette.VIOLET) if loop_enabled else (palette.BUTTON, palette.TEXT)
-                for button, bg, fg, icon in (
-                        (btn_play, play_bg, palette.INK, play_icon),
-                        (btn_stop, palette.STOP_BG, palette.CORAL, "stop"),
-                        (btn_loop, loop_bg, loop_fg, "repeat")):
+                    play_style, play_icon = "Show", "show"
+                loop_style, loop_fg = ("Repeat", palette.VIOLET) if loop_enabled else ("Transport", palette.TEXT)
+                for button, style, fg, icon in (
+                        (btn_play, play_style, palette.INK, play_icon),
+                        (btn_stop, "Stop", palette.CORAL, "stop"),
+                        (btn_loop, loop_style, loop_fg, "repeat")):
                     if button is not None:
-                        button.configure(bg=bg, fg=fg, activebackground=bg, activeforeground=fg,
-                                         highlightbackground=bg, image=self._operator_icons.image(icon, fg))
+                        button.configure(style=f"{style}.TButton", image=self._operator_icons.image(icon, fg))
             except Exception:
                 return
 
@@ -9856,14 +9902,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             except Exception:
                 pass
 
-        bg = canvas.create_rectangle(0, 0, 0, 0, fill="#1f1f1f", outline="#3b3b3b", width=1, tags=("vu_bg",))
-        # LED-style segments.
-        seg_ids: list[int] = []
-        for _ in range(24):
-            seg_ids.append(canvas.create_rectangle(0, 0, 0, 0, fill="#2a2a2a", outline="", tags=("vu_seg",)))
-        # Peak marker as a thin in-bar rectangle (keeps within bar height).
-        peak = canvas.create_rectangle(0, 0, 0, 0, fill="#eaeaea", outline="", tags=("vu_peak",))
-        items = {"bg": bg, "peak": peak, **{f"s{i}": sid for i, sid in enumerate(seg_ids)}}
+        bg = canvas.create_rectangle(0, 0, 0, 0, fill=palette.EDGE, outline="", tags=("vu_bg",))
+        level = canvas.create_rectangle(0, 0, 0, 0, fill=palette.MINT, outline="", tags=("vu_level",))
+        peak = canvas.create_rectangle(0, 0, 0, 0, fill=palette.TEXT, outline="", tags=("vu_peak",))
+        items = {"bg": bg, "peak": peak, "level": level}
         self._vu_items[deck] = items
         self._vu_visible[deck] = False
         return items
@@ -10058,73 +10100,16 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             h = int(canvas.winfo_height() or 0)
         except Exception:
             w, h = 0, 0
-        if w < 20 or h < 8:
-            w, h = 120, 10
+        if w < 20 or h < 2:
+            return
 
         items = self._ensure_vu_items(deck, canvas)
         self._set_vu_visible(deck, canvas, True)
 
-        # Thin LED-style bar area.
-        bar_h = max(6, min(10, h))
-        y0 = int((h - bar_h) / 2)
-        y1 = y0 + bar_h
-        canvas.coords(items["bg"], 0, y0, w, y1)
-
-        inner_y0 = y0 + 1
-        inner_y1 = y1 - 1
-
-        # LED segments (blue -> red gradient, with a red-zone tail).
-        seg_total = 24
-        seg_ids = [items.get(f"s{i}") for i in range(seg_total)]
-        seg_ids = [sid for sid in seg_ids if isinstance(sid, int)]
-        if seg_ids:
-            seg_total = len(seg_ids)
-
-        gap = 1
-        usable_w = max(1, (w - 2) - (seg_total - 1) * gap)
-        seg_w = max(1, int(usable_w / seg_total))
-        # If too cramped, reduce the number of visible segments.
-        while seg_total > 12 and seg_w <= 2:
-            seg_total -= 4
-            seg_ids = seg_ids[:seg_total]
-            usable_w = max(1, (w - 2) - (seg_total - 1) * gap)
-            seg_w = max(1, int(usable_w / seg_total))
-
-        lit = int(round(max(0.0, min(1.0, cur)) * seg_total))
-        # Red zone: last ~6 dB (relative to the top of scale).
-        red_db = float(max_db) - 6.0
-        red_zone_norm = (red_db - float(min_db)) / (float(max_db) - float(min_db))
-        red_zone_start = max(0, min(seg_total - 1, int(seg_total * max(0.0, min(1.0, red_zone_norm)))))
-        base_off = "#2a2a2a"
-        blue = (0x4A, 0x9E, 0xFF)  # matches waveform blue
-        red = (0xFF, 0x17, 0x44)
-
-        def _mix(c1, c2, t: float) -> str:
-            t = max(0.0, min(1.0, float(t)))
-            r = int(c1[0] + (c2[0] - c1[0]) * t)
-            g = int(c1[1] + (c2[1] - c1[1]) * t)
-            b = int(c1[2] + (c2[2] - c1[2]) * t)
-            return f"#{r:02x}{g:02x}{b:02x}"
-
-        for i, sid in enumerate(seg_ids):
-            x0 = 1 + i * (seg_w + gap)
-            x1 = min(w - 1, x0 + seg_w)
-            canvas.coords(sid, x0, inner_y0, x1, inner_y1)
-            if i < lit:
-                t = 0.0 if seg_total <= 1 else float(i) / float(seg_total - 1)
-                if i >= red_zone_start:
-                    # Force a stronger red in the last zone.
-                    t = max(t, 0.85)
-                canvas.itemconfigure(sid, fill=_mix(blue, red, t), state="normal")
-            else:
-                canvas.itemconfigure(sid, fill=base_off, state="normal")
-
-        # Peak marker
-        px = max(1, min(w - 1, 1 + int((w - 2) * float(peak))))
-        px0 = max(1, px - 1)
-        px1 = min(w - 1, px + 1)
-        canvas.coords(items["peak"], px0, inner_y0, px1, inner_y1)
-        canvas.itemconfigure(items["peak"], state="normal")
+        canvas.coords(items["bg"], 0, 0, w, h)
+        canvas.coords(items["level"], 0, 0, round(w * cur), h)
+        peak_x = min(w - 1, round(w * peak))
+        canvas.coords(items["peak"], peak_x, 0, peak_x + 1, h)
 
         # dB readout (approx.; derived from precomputed envelope + normalization gain/ceiling)
         db_txt = f"{float(dbfs):>5.1f} dB"
@@ -10205,6 +10190,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
     def _clear_waveform_playback(self, deck: str, canvas: tk.Canvas) -> None:
         try:
+            if deck == "A":
+                self._tint_waveform_a(1.0)
             self._set_playback_visibility(deck, canvas, visible=False)
         except Exception:
             return
@@ -10280,7 +10267,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 # Segment progress bar (bottom), without obscuring the waveform.
                 bar_y0 = max(0, height - 10)
                 bar_y1 = max(1, height - 2)
-                if x1 - x0 >= 2:
+                if deck == "A":
+                    self._tint_waveform_a(px / width)
+                if deck != "A" and x1 - x0 >= 2:
                     played_x = max(x0, min(x1, px))
                     canvas.coords(items["seg_bg"], x0, bar_y0, x1, bar_y1)
                     canvas.itemconfigure(items["seg_bg"], fill="#555555")
@@ -10362,7 +10351,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             # Segment progress bar (bottom), without obscuring the waveform.
             bar_y0 = max(0, height - 10)
             bar_y1 = max(1, height - 2)
-            if x1 - x0 >= 2:
+            if deck == "A":
+                self._tint_waveform_a(px / width)
+            if deck != "A" and x1 - x0 >= 2:
                 played_x = max(x0, min(x1, px))
                 rem_fill = "#ff1744" if blink_on else "#ffab00"
                 canvas.coords(items["seg_bg"], x0, bar_y0, x1, bar_y1)

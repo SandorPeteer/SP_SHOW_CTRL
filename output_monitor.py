@@ -10,7 +10,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from PIL import Image, ImageOps, ImageTk
-from windows_theme import EDGE, MINT, VIOLET
+from windows_theme import MINT, VIOLET
 
 
 _PREVIEW_SIZE = (640, 360)
@@ -118,8 +118,8 @@ def load_preview(path, ffmpeg, subprocess_kwargs, cancel=None, aspect="Source"):
 
 
 class OutputMonitor(ttk.Frame):
-    def __init__(self, parent, ui_queue, ffmpeg, subprocess_kwargs, log):
-        super().__init__(parent)
+    def __init__(self, parent, icons, ui_queue, ffmpeg, subprocess_kwargs, log):
+        super().__init__(parent, style="Shell.TFrame")
         self.ui_queue = ui_queue
         self.ffmpeg = ffmpeg
         self.subprocess_kwargs = subprocess_kwargs
@@ -135,24 +135,25 @@ class OutputMonitor(ttk.Frame):
         self.canvases = {}
         self.captions = {}
         self.titles = {}
-        self.borders = {}
         self.rowconfigure(0, weight=1)
-        for column, (key, title) in enumerate((("live", "On screen"), ("next", "Preview"))):
+        self.live_badge = tk.StringVar()
+        for column, (key, title, icon, accent) in enumerate((
+                ("live", "On screen", "screen", MINT), ("next", "Preview", "slides", VIOLET))):
             self.columnconfigure(column, weight=1, uniform="monitor")
-            box = ttk.Frame(self, style="WorkspaceCard.TFrame")
+            box = ttk.Frame(self, padding=6, style="WorkspaceCard.TFrame")
             box.grid(row=0, column=column, sticky="nsew", padx=(0, 4) if column == 0 else (4, 0))
-            border = tk.Frame(box, height=2, bg=EDGE)
-            border.pack(fill="x")
-            self.borders[key] = border
             heading = ttk.Frame(box)
-            heading.pack(fill="x", padx=8, pady=4)
-            self.titles[key] = ttk.Label(heading, text=title)
+            heading.pack(fill="x", pady=(0, 5))
+            self.titles[key] = ttk.Label(heading, text=title, image=icons.image(icon, accent, 16),
+                                         compound="left", style="SignalTitle.TLabel")
             self.titles[key].pack(side="left")
+            if key == "live":
+                ttk.Label(heading, textvariable=self.live_badge, style="LiveMonitor.TLabel").pack(side="right")
             self.captions[key] = tk.StringVar()
-            ttk.Label(heading, textvariable=self.captions[key], width=1, anchor="e", style="Status.TLabel").pack(
-                side="right", fill="x", expand=True, padx=(8, 0))
+            ttk.Label(box, textvariable=self.captions[key], width=1, anchor="w",
+                      style="SignalCaption.TLabel").pack(side="bottom", fill="x", pady=(4, 0))
             canvas = tk.Canvas(box, width=1, height=1, bg="#070a10", highlightthickness=0)
-            canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+            canvas.pack(fill="both", expand=True)
             self.canvases[key] = canvas
             canvas.bind("<Configure>", lambda event, item=key: self._draw(item))
 
@@ -163,11 +164,10 @@ class OutputMonitor(ttk.Frame):
         canvas.delete("all")
         width, height = max(1, canvas.winfo_width()), max(1, canvas.winfo_height())
         frame = self.frames[key]
-        color = (MINT if key == "live" else VIOLET) if frame is not None else EDGE
-        if self.borders[key].cget("bg") != color:
-            self.borders[key].configure(bg=color)
-            style = "LiveMonitor.TLabel" if key == "live" else "NextMonitor.TLabel"
-            self.titles[key].configure(style=style if frame is not None else "TLabel")
+        if key == "live":
+            badge = "● Live" if frame is not None else ""
+            if self.live_badge.get() != badge:
+                self.live_badge.set(badge)
         if frame is None:
             self.photos.pop(key, None)
             canvas.create_text(width // 2, height // 2, text=status, width=max(1, width - 12), fill="#bdbdbd")
