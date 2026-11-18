@@ -121,7 +121,10 @@ def smoke():
                     win32gui.ShowWindow(output_hwnd, 6)
                 bounds = win32gui.GetWindowRect(hwnd)
                 frame = ImageGrab.grab(bbox=bounds)
-                blue = sum(count for count, rgb in (frame.convert("RGB").getcolors(frame.width * frame.height) or [])
+                # Restrict detection to the upper-left waveform lane. The
+                # Fullscreen button uses the same neon color elsewhere.
+                lane = frame.convert("RGB").crop((20, 67, round(frame.width * 0.38), round(frame.height * 0.31)))
+                blue = sum(count for count, rgb in (lane.getcolors(lane.width * lane.height) or [])
                            if abs(rgb[0] - 89) < 5 and abs(rgb[1] - 216) < 5 and abs(rgb[2] - 255) < 5)
                 if blue > 700:
                     break
