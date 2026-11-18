@@ -104,7 +104,7 @@ class OperatorQmlTests(unittest.TestCase):
         finally:
             delete(engine)
 
-    def test_open_cancel_then_save_uses_separate_native_dialog_lifetimes(self):
+    def test_open_cancel_then_save_keeps_request_ids_and_shortcuts(self):
         from PySide6.QtCore import QMetaObject
         from shiboken6 import delete
         bridge = Bridge()
@@ -114,22 +114,16 @@ class OperatorQmlTests(unittest.TestCase):
         engine.load(QUrl.fromLocalFile(str(Path(__file__).resolve().parents[1] / "operator.qml")))
         window = engine.rootObjects()[0]
         try:
-            open_dialog = window.findChild(QObject, "operatorOpenFileDialog")
-            save_dialog = window.findChild(QObject, "operatorSaveFileDialog")
-            self.assertIsNotNone(open_dialog)
-            self.assertIsNotNone(save_dialog)
-            self.assertIsNot(open_dialog, save_dialog)
+            dialog = window.findChild(QObject, "operatorFileDialog")
+            self.assertIsNotNone(dialog)
             folder = QUrl.fromLocalFile(str(Path.home())).toString()
-            for request_id, (kind, dialog) in enumerate((("open", open_dialog), ("save", save_dialog),
-                                                        ("open", open_dialog), ("save", save_dialog)), start=1):
+            for request_id, kind in enumerate(("open", "save", "open", "save"), start=1):
                 bridge.current = {"dialog": dict(id=request_id, kind=kind, title=f"{kind.title()} show",
                     multiple=False, folder=folder, initial=folder + "/Show.json", filters=["Show (*.json)"], suffix="json")}
                 bridge.stateChanged.emit()
                 QTest.qWait(50)
                 self.assertTrue(dialog.property("visible"), (kind, bridge.dialog_events))
                 self.assertEqual(dialog.property("requestId"), request_id)
-                other = save_dialog if kind == "open" else open_dialog
-                self.assertFalse(other.property("visible"))
                 # Rejection exercises the real Quick dialog signals. Native
                 # HWND/input/owner behavior remains covered by the Windows gate.
                 self.assertTrue(QMetaObject.invokeMethod(dialog, "reject"))

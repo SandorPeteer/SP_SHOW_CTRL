@@ -24,7 +24,7 @@ def model_method(name):
 
 
 class DialogTests(unittest.TestCase):
-    def test_queued_cancel_unwinds_before_next_save_as_command(self):
+    def queued_dialog_actions(self, commands, kind="open", followup_kind=None):
         # Run the real worker dispatch/tick and real nested Tk wait_variable.
         # Both commands are already in the pipe before the answer is handled.
         app = tk.Tk()
@@ -33,31 +33,63 @@ class DialogTests(unittest.TestCase):
         app._closing = False
         app._log = Mock()
         relay = OperatorDialogs(app)
-        commands = deque([("dialog_result", {"id": 1, "value": ""}), ("save_as", None)])
+        commands = deque([*commands, ("test_done", None)])
         connection = SimpleNamespace(poll=lambda: bool(commands), recv=commands.popleft)
         finished = tk.BooleanVar(app, False)
         calls = []
-        def save_as():
-            calls.append(relay.state)
-            finished.set(True)
+        def action(name):
+            calls.append((name, relay.state))
+            if followup_kind:
+                self.assertEqual(relay.request(dict(kind=followup_kind, title="Follow-up", cancel="")), "")
+        actions = {name: (lambda name=name: action(name))
+                   for name in ("open", "save", "save_as", "a_add", "b_add", "new", "a_play", "a_remove", "close")}
+        actions["test_done"] = lambda: finished.set(True)
         source = Path(__file__).resolve().parents[1] / "quick_controller.py"
         worker = next(node for node in ast.parse(source.read_text(encoding="utf-8")).body
                       if isinstance(node, ast.FunctionDef) and node.name == "controller_worker")
         methods = [node for node in worker.body if isinstance(node, ast.FunctionDef)
                    and node.name in ("run_action", "tick")]
-        namespace = dict(app=app, dialogs=relay, connection=connection, actions={"save_as": save_as},
+        namespace = dict(app=app, dialogs=relay, connection=connection, actions=actions,
                          queue=queue, outgoing=queue.Queue(1), snapshot=lambda: ({}, {}))
         exec(compile(ast.Module(body=methods, type_ignores=[]), str(source), "exec"), namespace)
         app.after(0, namespace["tick"])
-        self.assertEqual(relay.files("open"), "")
+        self.assertEqual(relay.request(dict(kind=kind, title="Test", cancel="")), "")
         self.assertIsNone(relay.state)
         timeout = app.after(1000, lambda: finished.set(True))
         app.wait_variable(finished)
         app.after_cancel(timeout)
         for timer in app.tk.call("after", "info"):
             app.after_cancel(timer)
-        self.assertEqual(calls, [None])
         self.assertFalse(commands)
+        return calls
+
+    def test_queued_cancel_unwinds_before_next_save_as_command(self):
+        calls = self.queued_dialog_actions([("dialog_result", {"id": 1, "value": ""}), ("save_as", None)])
+        self.assertEqual(calls, [("save_as", None)])
+
+    def test_native_close_gap_defers_save_as_until_cancel_has_unwound(self):
+        calls = self.queued_dialog_actions([("save_as", None), ("dialog_result", {"id": 1, "value": ""})])
+        self.assertEqual(calls, [("save_as", None)])
+
+    def test_native_close_gap_retains_only_one_file_action_and_no_destructive_actions(self):
+        calls = self.queued_dialog_actions([(name, None) for name in
+            ("save_as", "save_as", "open", "new", "a_play", "a_remove", "close")]
+            + [("dialog_result", {"id": 1, "value": ""})])
+        self.assertEqual(calls, [("save_as", None)])
+
+    def test_message_confirmation_never_queues_actions_to_run_after_cancel(self):
+        calls = self.queued_dialog_actions([(name, None) for name in
+            ("save_as", "open", "new", "a_play", "a_remove", "close")]
+            + [("dialog_result", {"id": 1, "value": ""})], kind="message")
+        self.assertEqual(calls, [])
+
+    def test_deferred_action_can_open_another_dialog_without_stalling_or_repeating(self):
+        for next_kind in ("save", "message"):
+            with self.subTest(next_kind=next_kind):
+                calls = self.queued_dialog_actions([("save_as", None),
+                    ("dialog_result", {"id": 1, "value": ""}),
+                    ("dialog_result", {"id": 2, "value": ""})], followup_kind=next_kind)
+                self.assertEqual(calls, [("save_as", None)])
 
     def native_owner_fixture(self):
         window = Mock(spec=tk.Toplevel)

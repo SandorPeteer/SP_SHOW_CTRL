@@ -17,6 +17,8 @@ def exercise_dialogs(process, controller, folder, environment):
     import win32process
     from PIL import ImageChops, ImageGrab, ImageStat
 
+    # Windows TEMP may use an 8.3 alias; _remember_show stores resolved paths.
+    folder = Path(folder).resolve()
     root = Path(__file__).resolve().parents[1]
     evidence = {"environment": "virtual Windows desktop, frozen EXE", "checks": [],
                 "limitations": ["Controller HWND ownership and its virtual monitor are verified; "

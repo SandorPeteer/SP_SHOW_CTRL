@@ -95,6 +95,7 @@ def controller_worker(connection):
             dialogs.respond(value)
             return
         if dialogs.state and name != "window":
+            dialogs.defer_file_action(name, value)
             return
         if name in actions:
             actions[name]()
@@ -222,8 +223,11 @@ def controller_worker(connection):
         # loop, which must still receive its Qt answer and publish playback state.
         app.after(33, tick)
         try:
-            if connection.poll():
-                name, value = connection.recv()
+            command = dialogs.take_deferred_file_action()
+            if command is None and connection.poll():
+                command = connection.recv()
+            if command is not None:
+                name, value = command
                 run_action(name, value)
                 if app._closing:
                     return

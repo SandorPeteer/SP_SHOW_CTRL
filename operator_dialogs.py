@@ -18,10 +18,28 @@ class OperatorDialogs:
         self._tool_owner_pending = set()
         self._owned_tools = set()
         self._tool_focus_pending = False
+        self._deferred_file_action = None
 
     @property
     def state(self):
         return self.pending[-1][0] if self.pending else None
+
+    def defer_file_action(self, name, value):
+        # A native picker can re-enable its owner before Qt emits rejected or
+        # accepted. Keep one following file action through that close boundary;
+        # never collect playback/destructive actions or message-popup input.
+        if (self.state and self.state.get("kind") in ("open", "save", "folder")
+                and name in ("open", "save", "save_as", "a_add", "b_add")
+                and self._deferred_file_action is None):
+            self._deferred_file_action = (name, value)
+            self.app._log(f"Operator file action deferred until native dialog closes: {name}")
+
+    def take_deferred_file_action(self):
+        if self.state:
+            return None
+        action = self._deferred_file_action
+        self._deferred_file_action = None
+        return action
 
     def request(self, spec):
         self.sequence += 1
