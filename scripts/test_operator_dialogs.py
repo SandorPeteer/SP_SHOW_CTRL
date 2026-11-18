@@ -13,7 +13,7 @@ import tkinter as tk
 
 def model_method(name):
     source = Path(__file__).resolve().parents[1] / "player.py"
-    app = next(node for node in ast.parse(source.read_text()).body
+    app = next(node for node in ast.parse(source.read_text(encoding="utf-8")).body
                if isinstance(node, ast.ClassDef) and node.name == "App")
     method = next(node for node in app.body if isinstance(node, ast.FunctionDef) and node.name == name)
     namespace = {"sys": SimpleNamespace(platform="win32"), "messagebox": Mock()}

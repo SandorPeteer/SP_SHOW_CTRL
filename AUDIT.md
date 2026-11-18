@@ -14,8 +14,9 @@ A vizsgálat a csomagolt Show Control belépési pontját követte a vezérlőfe
 
 ## A 2026.11.18-i kezelési modell
 
-- Az Új műsor megerősítése a Qt-ablakon belül jelenik meg; a fájl- és színválasztók, valamint a külön eszközablakok a kezelőablakhoz tartoznak. Az Escape/Cancel visszaadja a fókuszt. A Qt és a lejátszó worker közötti adatátvitel nem várakoztatja a Qt eseménykezelését; kapcsolatvesztéskor látható hibajelzés marad.
+- Az Új műsor megerősítése a Qt-ablakon belül jelenik meg; a fájl- és színválasztók, valamint a külön eszközablakok a kezelőablakhoz tartoznak. Az Escape/Cancel, illetve az eszközablak bezárása visszaadja a fókuszt. A natív Windows-tulajdonost a GW_OWNER szerinti kapcsolat igazolja. A Qt és a lejátszó worker közötti adatátvitel nem várakoztatja a Qt eseménykezelését; kapcsolatvesztéskor látható hibajelzés marad.
 - A kijelölés, a következő indítandó elem és a futó média külön állapot. A kézzel előkészített elem az indítás/folytatás célpontja, a görgetési helyet az idő- és állapotfrissítések megőrzik. Másik jelenet korábbi lejátszásának vége nem indíthat elemet az új jelenetben.
+- A Page Up/Page Down a Qt által elfogadott PgUp/PgDown gyorsbillentyűnevekkel működik; valódi billentyűeseményes regresszió ellenőrzi az előre/hátra léptetést és az inaktív prezentáció tiltását.
 - Az On screen és a Next slide teljes panelje és képterülete egyforma, a vízszintes VU a hullámforma alatt van. A belső keretek és hátterek megszűntek. Az Audio only kapcsoló közvetlenül az Audio/Video fejlécben van. A visszaszámláló a végéhez közel állandó borostyán jelzést kap; a hullámforma lejátszott szakaszának sötétítése megmarad.
 - A folyamatos hullámforma a dekódolt PCM tényleges pozitív/negatív kitéréseiből készül. Megőrzi a csendet, az egymáshoz viszonyított amplitúdókat és a rövid csúcsokat; frekvenciaszínezése külön FFT-elemzésből származik.
 - Alapmódban egyetlen hangforrás és egyetlen VU-kijelzés van. A prezentáció hangja A-t a valódi lejátszási pozíción szünetelteti; a dia vége nem folytatja A-t. Kézi A Play visszaigazolt B-némítás után indul.

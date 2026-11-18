@@ -11,6 +11,23 @@ import time
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root))
 
+# The Windows runner has no sound device. Multiprocessing imports this test
+# module in its spawned controller too, so both real mpv players get the null
+# audio output even when production --no-config intentionally ignores MPV_HOME.
+# Only this rehearsal's known bundled executable is affected.
+_bundled_mpv = os.path.normcase(os.path.abspath(root / "dist/SP Show Control/_internal/tools/mpv/mpv.exe"))
+_process_launcher = subprocess.Popen
+
+
+def _rehearsal_process(args, *positional, **options):
+    if (isinstance(args, (list, tuple)) and args and
+            os.path.normcase(os.path.abspath(args[0])) == _bundled_mpv):
+        args = [*args, "--ao=null"]
+    return _process_launcher(args, *positional, **options)
+
+
+subprocess.Popen = _rehearsal_process
+
 from PySide6.QtCore import QObject, Qt, QTimer
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtTest import QTest
@@ -53,6 +70,8 @@ def rehearse(folder):
     result = []
 
     def test(qt_app, window, bridge):
+        import win32api
+        import win32con
         import win32gui
         assert isinstance(window, QQuickWindow)
         start = time.monotonic()
@@ -65,6 +84,16 @@ def rehearse(folder):
         saved_rows = None
         event_ticks = []
         meter_evidence = {}
+        presenter = {"sent": False, "shortcut_activated": False}
+        shortcut = next((item for item in window.findChildren(QObject)
+                         if item.metaObject().className() == "QQuickShortcut" and
+                         item.property("sequence") == "PgDown"), None)
+        assert shortcut is not None, "Presenter shortcut must use Qt's valid PgDown sequence"
+
+        def shortcut_activated():
+            presenter["shortcut_activated"] = True
+
+        shortcut.activated.connect(shortcut_activated)
         window.frameSwapped.connect(lambda: swaps.append(time.perf_counter()))
         resize_timer = QTimer(window)
         resize_timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -76,6 +105,8 @@ def rehearse(folder):
                 if time.monotonic() - start > 45:
                     raise RuntimeError(f"Timed out in Qt rehearsal phase {phase}, {bridge.current!r}")
                 state = bridge.current
+                if presenter["sent"] and not presenter["shortcut_activated"] and time.monotonic() - presenter["sent_at"] > .5:
+                    raise AssertionError(f"PageDown reached an active operator but did not activate its Qt shortcut: {presenter}")
                 meter = state.get("vu", {})
                 audible_a = meter.get("source") == "audio" and meter.get("available") and any(
                     channel["level"] > .01 for channel in meter.get("channels", []))
@@ -152,8 +183,36 @@ def rehearse(folder):
                             previous_next = bridge.revisions.get("next")
                             if fullscreen:
                                 win32gui.ShowWindow(fullscreen, 9)
+                            presenter["foreground_before"] = win32gui.GetForegroundWindow()
+                            presenter["qt_active_before"] = window.isActive()
+                            hwnd = int(window.winId())
+                            win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
+                            win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
+                            win32gui.SetForegroundWindow(hwnd)
                             window.requestActivate()
-                            QTest.keyClick(window, Qt.Key.Key_PageDown)
+                            deadline = time.monotonic() + 3
+
+                            def send_when_active():
+                                try:
+                                    foreground = win32gui.GetForegroundWindow()
+                                    if foreground != hwnd or not window.isActive():
+                                        if time.monotonic() >= deadline:
+                                            raise AssertionError(f"Operator did not receive focus before PageDown: HWND {foreground}/{hwnd}, Qt active={window.isActive()}")
+                                        QTimer.singleShot(16, send_when_active)
+                                        return
+                                    assert shortcut.property("enabled") and bridge.current.get("slides")
+                                    presenter.update(foreground_at_key=foreground, operator_hwnd=hwnd,
+                                                     qt_active_at_key=window.isActive(), sent=True,
+                                                     sent_at=time.monotonic())
+                                    # Native focus and Qt activation are both established.
+                                    # Exercise the real QML shortcut, never the model handler.
+                                    QTest.keyClick(window, Qt.Key.Key_PageDown)
+                                    (root / "dist/windows-qt-presenter-input.json").write_text(json.dumps(presenter, indent=2))
+                                except Exception as exc:
+                                    result.append(exc)
+                                    qt_app.quit()
+
+                            QTimer.singleShot(0, send_when_active)
                         except Exception as exc:
                             result.append(exc)
                             qt_app.quit()

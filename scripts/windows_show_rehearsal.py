@@ -16,6 +16,37 @@ sys.path.insert(0, str(root))
 from player import App, get_monitors
 
 
+def null_audio_command(command, mpv_exe):
+    """Test-only AO injection; production --no-config deliberately ignores MPV_HOME."""
+    if (isinstance(command, (list, tuple)) and command and
+            os.path.normcase(os.path.abspath(os.fspath(command[0]))) ==
+            os.path.normcase(os.path.abspath(os.fspath(mpv_exe)))):
+        return [command[0], "--ao=null", *command[1:]]
+    return command
+
+
+def audio_diagnostics(app):
+    """Actual engine state on failure, including why a PCM meter is unavailable."""
+    result = {}
+    for deck, session in (("A", app.audio_runner._media_clock), ("B", app.video_runner._sess)):
+        if session is None:
+            result[deck] = {"connected": False}
+            continue
+        with session._lock:
+            state = {"observed": dict(session._telemetry),
+                     "meter_loading": session._meter_loading,
+                     "meter_wait_clock": session._meter_wait_clock,
+                     "meter_ready_layout": session._meter_ready_layout,
+                     "clock_age": time.monotonic() - session._clock_updated}
+        state["actual"] = {name: session.get_property(name) for name in (
+            "path", "time-pos", "duration", "pause", "mute", "volume", "core-idle",
+            "eof-reached", "options/ao", "current-ao", "audio-params", "audio-out-params",
+            "af", "af-metadata/sp-meter")}
+        state["meter"] = app._vu_snapshot(deck)
+        result[deck] = state
+    return result
+
+
 def controller_dpi(app):
     from ctypes import byref, c_int, c_void_p, windll
     from tkinter import font
@@ -44,7 +75,8 @@ def rehearse(folder):
     tools = root / "dist/SP Show Control/_internal/tools"
     os.environ["SP_SHOW_CTRL_MPV"] = str(tools / "mpv/mpv.exe")
     os.environ["SP_SHOW_CTRL_FFMPEG_DIR"] = str(tools / "ffmpeg")
-    # CI has no physical sound card. Decode audio against the real-time null output.
+    # MediaRunner accepts MPV_HOME, but the persistent OutputRunner deliberately
+    # uses --no-config. Inject the null AO in the test process launcher as well.
     os.environ["MPV_HOME"] = str(folder)
     (folder / "mpv.conf").write_text("ao=null\n")
     music = folder / "iskolai próba.wav"
@@ -71,7 +103,15 @@ def rehearse(folder):
     (loop_dir / "slides.json").write_text(json.dumps({"version": 1,
         "sha256": hashlib.sha256(loop_ppt.read_bytes()).hexdigest(),
         "slides": ["png"] * 4, "seconds": [0.4, 0.5, 0.4, 0.5]}))
-    app = App()
+    original_popen = subprocess.Popen
+    launch_patch = patch("subprocess.Popen", side_effect=lambda command, *args, **kwargs:
+        original_popen(null_audio_command(command, tools / "mpv/mpv.exe"), *args, **kwargs))
+    launch_patch.start()
+    try:
+        app = App()
+    except BaseException:
+        launch_patch.stop()
+        raise
     # Use the production Qt-worker clock path even in this native Tk-layout
     # rehearsal. Pause/resume creates a new player, so a fixed external pipe
     # would become stale and would no longer prove the resumed position.
@@ -172,6 +212,7 @@ def rehearse(folder):
         app._selected_a = 0
         app._transport_play_pause("A")
         before = wait_for(audio_time, lambda v: isinstance(v, (int, float)) and v > 0)
+        assert app.audio_runner._media_clock.get_property("current-ao") == "null"
         for index in (0, 1, 0):
             app._selected_b = index
             app._transport_play_pause("B")
@@ -180,6 +221,9 @@ def rehearse(folder):
             wait_for(lambda: visual.get_property("path"), lambda v: v and Path(v) == expected)
             wait_for(lambda: visual.get_property("video-params"), bool)
             assert visual.get_property("mute") is True
+            if index == 1:
+                wait_for(lambda: visual.get_property("current-ao"), lambda value: value == "null")
+                assert visual.get_property("audio-out-params"), "The rehearsal video has no decoded audio output"
             before = wait_for(audio_time, lambda v: v and v > before)
         import win32gui
         import win32process
@@ -581,9 +625,16 @@ def rehearse(folder):
         print("PPT status:", ascii(app.var_ppt_status.get()), flush=True)
         print("Recent events:", ascii(app._log_buffer[-10:]) if isinstance(app._log_buffer, list)
               else ascii(list(app._log_buffer)[-10:]), flush=True)
+        try:
+            print("Audio diagnostics:", json.dumps(audio_diagnostics(app), ensure_ascii=True), flush=True)
+        except Exception as diagnostic_error:
+            print("Audio diagnostics failed:", repr(diagnostic_error), flush=True)
         raise
     finally:
-        app._on_closing()
+        try:
+            app._on_closing()
+        finally:
+            launch_patch.stop()
 
 
 if __name__ == "__main__":

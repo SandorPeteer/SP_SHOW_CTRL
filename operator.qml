@@ -142,8 +142,8 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+Shift+M"; onActivated: screen.action("a_tools") }
     Shortcut { sequence: "Ctrl+Shift+P"; onActivated: screen.action("b_tools") }
     Shortcut { sequence: "Ctrl+E"; onActivated: screen.action("scene_edit") }
-    Shortcut { sequence: "PageUp"; enabled: !!screen.ui.slides; onActivated: operatorBridge.press("slide_key", -1) }
-    Shortcut { sequence: "PageDown"; enabled: !!screen.ui.slides; onActivated: operatorBridge.press("slide_key", 1) }
+    Shortcut { sequence: "PgUp"; enabled: !!screen.ui.slides; onActivated: operatorBridge.press("slide_key", -1) }
+    Shortcut { sequence: "PgDown"; enabled: !!screen.ui.slides; onActivated: operatorBridge.press("slide_key", 1) }
     Shortcut { sequence: "Left"; enabled: !!screen.ui.slides; onActivated: operatorBridge.press("slide_key", -1) }
     Shortcut { sequence: "Right"; enabled: !!screen.ui.slides; onActivated: operatorBridge.press("slide_key", 1) }
 

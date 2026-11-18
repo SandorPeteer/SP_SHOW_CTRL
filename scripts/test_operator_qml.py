@@ -76,6 +76,30 @@ class OperatorQmlTests(unittest.TestCase):
         from waveform_item import register_waveform_item
         register_waveform_item()
 
+    def test_presenter_page_keys_dispatch_only_while_slides_are_running(self):
+        from shiboken6 import delete
+        bridge = Bridge()
+        bridge.current = {"slides": True}
+        engine = QQmlApplicationEngine()
+        engine.addImageProvider("icon", EmptyImages())
+        engine.rootContext().setContextProperty("operatorBridge", bridge)
+        engine.load(QUrl.fromLocalFile(str(Path(__file__).resolve().parents[1] / "operator.qml")))
+        self.assertTrue(engine.rootObjects())
+        window = engine.rootObjects()[0]
+        try:
+            window.requestActivate()
+            self.assertTrue(QTest.qWaitForWindowActive(window, 1000))
+            QTest.keyClick(window, Qt.Key.Key_PageDown)
+            QTest.keyClick(window, Qt.Key.Key_PageUp)
+            self.assertEqual(bridge.commands, [("slide_key", 1), ("slide_key", -1)])
+            bridge.current = {"slides": False}
+            bridge.stateChanged.emit()
+            QTest.keyClick(window, Qt.Key.Key_PageDown)
+            QTest.keyClick(window, Qt.Key.Key_PageUp)
+            self.assertEqual(len(bridge.commands), 2)
+        finally:
+            delete(engine)
+
     def test_dense_waveform_follows_signed_pcm_and_preserves_silence(self):
         from waveform_item import AudioWaveform
         samples = [{"minimum": 0, "maximum": 0, "color": "#59d8ff"} for _ in range(2048)]

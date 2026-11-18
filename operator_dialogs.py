@@ -16,6 +16,8 @@ class OperatorDialogs:
         self.pending = []
         self.sequence = 0
         self._tool_owner_pending = set()
+        self._owned_tools = set()
+        self._tool_focus_pending = False
 
     @property
     def state(self):
@@ -85,6 +87,8 @@ class OperatorDialogs:
         colorchooser.askcolor = self.color
         if sys.platform == "win32":
             self.app.bind_all("<Map>", self._own_tool_window, add="+")
+            self.app.bind_all("<Unmap>", self._release_tool_focus, add="+")
+            self.app.bind_all("<Destroy>", self._release_tool_focus, add="+")
 
     def _own_tool_window(self, event):
         window = event.widget
@@ -135,3 +139,33 @@ class OperatorDialogs:
         if direct_owner != owner:
             raise RuntimeError(f"Tool window ownership failed: window={handle}, owner={direct_owner}, "
                                f"expected={owner}")
+        self._owned_tools.add(window)
+
+    def _release_tool_focus(self, event):
+        if event.widget not in self._owned_tools or self._tool_focus_pending:
+            return
+        self._tool_focus_pending = True
+
+        def closed():
+            self._tool_focus_pending = False
+            closed_tools = set()
+            for window in self._owned_tools:
+                if not window.winfo_exists() or window.state() == "withdrawn":
+                    closed_tools.add(window)
+            self._owned_tools.difference_update(closed_tools)
+            # Ignore minimize/remap and leave any other editor or Qt dialog in
+            # charge of input. Child widgets and projector windows never enter
+            # _owned_tools, so their lifecycle cannot activate the operator.
+            if not closed_tools or self._owned_tools or self.pending:
+                return
+            import win32gui
+            owner = getattr(self.app, "_operator_hwnd", None)
+            if (owner and win32gui.IsWindow(owner) and win32gui.IsWindowVisible(owner)
+                    and win32gui.GetForegroundWindow() != owner):
+                # The Tk worker received Escape/the close click, so Windows
+                # permits it to return activation to the separate Qt process.
+                win32gui.SetForegroundWindow(owner)
+
+        # Tk's withdraw/destroy can activate another native window. Wait until
+        # that teardown has finished, then explicitly return to the operator.
+        self.app.after_idle(closed)

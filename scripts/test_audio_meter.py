@@ -142,6 +142,65 @@ class AudioMeterTests(unittest.TestCase):
                 wait_for(session.audio_levels, lambda value: value["active"] and len(value["channels"]) == count)
                 self.assertEqual(session.get_property("audio-out-params")["channel-count"], count)
 
+    def test_production_output_image_to_muted_video_then_presentation_audio(self):
+        from unittest.mock import patch
+        from PIL import Image
+        from player import App, Cue, OutputRunner, Settings
+        from scripts.test_audio_routing import AudioRoutingTests
+        from scripts.windows_show_rehearsal import null_audio_command, audio_diagnostics
+        ffmpeg = (str(root / "dist/SP Show Control/_internal/tools/ffmpeg/ffmpeg.exe")
+                  if sys.platform == "win32" else shutil.which("ffmpeg"))
+        clip = self.folder / "slide.mp4"
+        still = self.folder / "slide.png"
+        Image.new("RGB", (160, 90), "red").save(still)
+        subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i",
+                        "color=c=red:size=160x90:rate=10:duration=4", "-f", "lavfi", "-i",
+                        "sine=frequency=440:duration=4", "-c:v", "mpeg4", "-c:a", "aac",
+                        "-shortest", str(clip)], check=True, timeout=10, **process_options)
+        # The real persistent-output start contains --no-config. Its fixture AO
+        # must be an explicit CLI option, not an ignored MPV_HOME preference.
+        (self.folder / "mpv.conf").write_text("ao=null\n")
+        session = MpvIpcSession(mpv, name="OUTPUT_" + uuid.uuid4().hex,
+                                second_screen_left=0, second_screen_top=0, fullscreen=False)
+        if os.name != "nt":
+            session.ipc_server = str(self.folder / "output.sock")
+        original_popen = subprocess.Popen
+        def launch(command, *args, **kwargs):
+            command = null_audio_command(command, mpv)
+            self.assertIn("--no-config", command)
+            self.assertIn("--ao=null", command)
+            return original_popen([*command, "--vo=null"], *args, **kwargs)
+        fixture = AudioRoutingTests()
+        fixture.setUp()
+        app = fixture.app
+        app.audio_runner.is_playing.return_value = False
+        app.audio_runner._media_clock = None
+        app.video_runner = output = OutputRunner(Settings())
+        output._sess = session
+        app._vu_snapshot = lambda deck: App._vu_snapshot(app, deck)
+        try:
+            with patch.dict(os.environ, {"MPV_HOME": str(self.folder)}), patch("subprocess.Popen", side_effect=launch):
+                session.start()
+            with patch.object(output, "ensure_window", return_value=True):
+                output.play_for_deck("B", Cue(id="still", path=str(still), kind="image"))
+                wait_for(lambda: session.get_property("path"), lambda value: value == str(still))
+                output.play_for_deck("B", Cue(id="clip", path=str(clip), kind="video"))
+            wait_for(lambda: session.get_property("path"), lambda value: value == str(clip))
+            wait_for(lambda: session.get_property("current-ao"), lambda value: value == "null")
+            muted = wait_for(session.audio_levels, lambda value: value["available"] and value["muted"])
+            self.assertFalse(muted["active"])
+            self.assertEqual(session.get_property("volume"), 0)
+            self.assertTrue(app._ppt_apply_sound())
+            sounding = wait_for(lambda: app._vu_snapshot("B"), lambda value: value["active"] and
+                                any(channel["level"] > .01 for channel in value["channels"]))
+            self.assertFalse(sounding["muted"])
+            self.assertEqual(app._active_audio_meter()["source"], "presentation")
+        except Exception:
+            print("Production output diagnostic:", audio_diagnostics(app), flush=True)
+            raise
+        finally:
+            session.shutdown()
+
     def test_real_two_player_handoff_and_explicit_mix(self):
         from unittest.mock import patch
         from scripts.test_audio_routing import AudioRoutingTests
