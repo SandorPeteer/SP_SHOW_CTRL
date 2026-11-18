@@ -16,7 +16,9 @@ Kapcsolódó doksik:
 - **Scene-ek**: Scene lista, `PREV/NEXT`, opcionális auto-advance.
 - **Deck A / Deck B**: külön cue-listák audio/video/PPT elemekkel.
 - **IN/OUT pontok**: cue-onként vágási pontok (időkód mezők + waveform marker).
-- **Waveform**: generálás + kattintható markerek (audio/video).
+- **Waveform**: generálás és kattintható jelölők (audio/video).
+- **Kezelőfelület**: két előnézet, egy Fullscreen gomb, ikonokkal jelölt cue-k. A görgetésjelző csak mozgáskor látható.
+- **Háttérmunka**: a felső sáv mutatja az indítást, nyitást, mentést, előkészítést és letöltést. Windowson egy példány indul munkamenetenként.
 - **Kivetítés / 2nd screen output**: mpv (ajánlott) vagy ffplay backend, 2nd screen pozíció beállítással.
 - **PowerPoint cue**: Windows alatt diánként előkészített kép vagy videó, lapozás a folyamatos mpv-kimeneten. macOS-en PowerPoint-diavetítés vezérlése (Accessibility engedély kellhet).
 

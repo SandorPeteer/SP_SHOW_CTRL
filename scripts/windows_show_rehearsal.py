@@ -280,8 +280,13 @@ def rehearse(folder):
         print("PASS: two side-by-side monitors occupy 1/3; all 31 controls fit from 900x550 through 1440x820")
         # Scroll only overflows. The indicator overlays the edge and leaves row geometry alone.
         tree = app.tree_b
-        assert tree["show"] == ("tree",)
+        assert tuple(map(str, tree["show"])) == ("tree",)
         assert not any(isinstance(widget, ttk.Scrollbar) for widget in tree.master.winfo_children())
+        assert app.tree_a.item("0", "image") and tree.item("0", "image")
+        from operator_ui import ScrollIndicator
+        for widget in (app.scene_listbox, app.tree_a, tree):
+            assert isinstance(widget.scroll_indicator, ScrollIndicator)
+            assert not any(isinstance(child, ttk.Scrollbar) for child in widget.master.winfo_children())
         indicator = tree.scroll_indicator
         for i in range(40):
             tree.insert("", "end", iid=f"scroll-{i}", values=("", "", i, "video", f"Rehearsal {i}", "0:04"))
