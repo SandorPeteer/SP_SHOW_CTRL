@@ -139,7 +139,7 @@ class OutputMonitor(ttk.Frame):
         self.rowconfigure(0, weight=1)
         for column, (key, title) in enumerate((("live", "On screen"), ("next", "Preview"))):
             self.columnconfigure(column, weight=1, uniform="monitor")
-            box = ttk.Frame(self)
+            box = ttk.Frame(self, style="WorkspaceCard.TFrame")
             box.grid(row=0, column=column, sticky="nsew", padx=(0, 4) if column == 0 else (4, 0))
             border = tk.Frame(box, height=2, bg=EDGE)
             border.pack(fill="x")

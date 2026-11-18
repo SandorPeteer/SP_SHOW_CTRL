@@ -71,6 +71,7 @@ class MpvIpcSession:
         self._pending: dict[int, "queue.Queue[dict]"] = {}
         self._next_id: int = 1
         self._telemetry: dict[str, object] = {}
+        self._retry_after = 0.0
         self._playing: bool = False
         self._end_info: tuple[str | None, str | None] | None = None
 
@@ -291,6 +292,7 @@ class MpvIpcSession:
         self._end_info = None
         with self._lock:
             self._telemetry.clear()
+            self._retry_after = 0.0
 
         try:
             if self._sock is not None:
@@ -347,13 +349,17 @@ class MpvIpcSession:
         rid = self._next_request_id()
         q: "queue.Queue[dict]" = queue.Queue(maxsize=1)
         with self._lock:
+            if time.monotonic() < self._retry_after:
+                raise TimeoutError("mpv output is temporarily unresponsive")
             self._pending[rid] = q
         try:
             deadline = time.monotonic() + timeout
             self._send_json({"command": cmd, "request_id": rid}, timeout)
             return q.get(timeout=max(0.0, deadline - time.monotonic()))
-        except queue.Empty as e:
-            raise TimeoutError("mpv IPC request timed out") from e
+        except (queue.Empty, OSError) as e:
+            with self._lock:
+                self._retry_after = time.monotonic() + 0.5
+            raise TimeoutError("mpv did not respond to the IPC request") from e
         finally:
             with self._lock:
                 self._pending.pop(rid, None)

@@ -75,10 +75,15 @@ def rehearse(folder):
         "sha256": hashlib.sha256(loop_ppt.read_bytes()).hexdigest(),
         "slides": ["png"] * 4, "seconds": [0.4, 0.5, 0.4, 0.5]}))
     app = App()
+    errors = []
+    app.report_callback_exception = lambda error, value, tb: errors.append((value, tb))
     long_scene = "Grade 13D · Welcome, class photos and the full awards ceremony"
     try:
         def pump(read):
             app.update()
+            if errors:
+                exc, tb = errors.pop(0)
+                raise exc.with_traceback(tb)
             return read()
 
         # The startup bar animates while projector IPC starts, even with a delayed process.
@@ -273,6 +278,25 @@ def rehearse(folder):
         assert measured[2][0] > measured[1][0] and measured[2][1] > measured[1][1], measured
         assert measured[3] == measured[1], measured
         print("PASS: two side-by-side monitors occupy 1/3; all 31 controls fit from 900x550 through 1440x820")
+        # Scroll only overflows. The indicator overlays the edge and leaves row geometry alone.
+        tree = app.tree_b
+        assert tree["show"] == ("tree",)
+        assert not any(isinstance(widget, ttk.Scrollbar) for widget in tree.master.winfo_children())
+        indicator = tree.scroll_indicator
+        for i in range(40):
+            tree.insert("", "end", iid=f"scroll-{i}", values=("", "", i, "video", f"Rehearsal {i}", "0:04"))
+        pump(lambda: None)
+        assert not indicator.thumb.winfo_ismapped()
+        initial = (tree.winfo_width(), tree.column("name", "width"))
+        tree.yview_moveto(0.54)
+        wait_for(lambda: pump(indicator.thumb.winfo_ismapped), bool)
+        assert (tree.winfo_width(), tree.column("name", "width")) == initial
+        wait_for(lambda: pump(indicator.thumb.winfo_ismapped), lambda shown: not shown)
+        assert (tree.winfo_width(), tree.column("name", "width")) == initial
+        tree.delete(*(f"scroll-{i}" for i in range(40)))
+        tree.yview_moveto(0)
+        pump(lambda: None)
+        print("PASS: scrolling overlays a transient indicator without shifting the cue columns")
         ImageGrab.grab().save(root / "dist/windows-rehearsal-preview.png")
         visual.set_property("window-minimized", False)
         app.btn_output_fullscreen.invoke()

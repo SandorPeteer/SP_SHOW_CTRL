@@ -3047,7 +3047,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._starting_up = True
         self._startup_output_pending = False
         self._close_after_output = False
+        self._closing = False
         self._busy_jobs: dict[str, str] = {"startup": "Starting Show Control…"}
+        self._callback_notice = ""
         self._show_media_cache = {}
         self._loaded_preset_path: Path | None = None
         self._cues: list[Cue] = []  # Legacy - now using _cues_a and _cues_b
@@ -3282,9 +3284,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         else:
             self._busy_jobs.pop(job, None)
         caption = next((self._busy_jobs[key] for key in
-                        ("startup", "open", "output", "save", "download", "ppt", "wave-A", "duration")
+                        ("startup", "open", "save", "download", "ppt", "wave-A", "duration", "analysis")
                         if key in self._busy_jobs), "")
-        self.var_activity.set(caption)
+        self.var_activity.set(caption or self._callback_notice)
+        self.activity_label.configure(style="Alert.TLabel" if not caption and self._callback_notice else "Activity.TLabel")
         if self._busy_jobs and not was_busy:
             self.activity_progress.grid()
             self.activity_progress.start(24)
@@ -4557,15 +4560,11 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             _append_app_log("".join(traceback.format_exception(exc, val, tb)))
         except Exception:
             pass
-        try:
-            log_path = _app_log_file() if _is_file_logging_enabled(self.settings) else "(file logging disabled)"
-            messagebox.showerror(
-                "Error",
-                f"{exc.__name__}: {val}\n\nLog:\n{log_path}",
-                parent=self,
-            )
-        except Exception:
-            pass
+        self._callback_notice = f"Control error · {type(val).__name__} · see App settings → Logs"
+        if hasattr(self, "activity_label") and not self._busy_jobs:
+            self.activity_label.configure(style="Alert.TLabel")
+            self.var_activity.set(self._callback_notice)
+
 
     def _copy_log(self) -> None:
         txt = getattr(self, "log_text", None)
@@ -5207,7 +5206,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
     # ── UI ──────────────────────────────────────────────────────────────
     def _build_ui(self) -> None:
-        from operator_ui import OperatorIcons, SceneList, show_tools, tool_window
+        from operator_ui import CueList, OperatorIcons, SceneList, ScrollIndicator, show_tools, tool_window
 
         # Styles: flatter notebook (less padding/border) to save vertical space.
         try:
@@ -5260,8 +5259,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception:
             pass
 
+        palette.apply_windows_theme(self)
         if sys.platform == "win32":
-            palette.apply_windows_theme(self)
+            self.after_idle(lambda: palette.dark_window_frame(self))
 
         icons = self._operator_icons = OperatorIcons(self)
         root = ttk.Frame(self, padding=(12, 10), style="Shell.TFrame")
@@ -5269,6 +5269,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
         filebar = ttk.Frame(root, style="Shell.TFrame")
         filebar.pack(fill="x")
+        ttk.Label(filebar, text="SP Show Control", style="AppTitle.TLabel").pack(side="left", padx=(0, 12))
         self.var_showfile = tk.StringVar(value="")
         self.var_presentation_btn = tk.StringVar(value="Fullscreen")
         file_menu = tk.Menu(filebar, tearoff=False)
@@ -5295,8 +5296,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         activity.pack(fill="x", pady=(2, 5))
         activity.columnconfigure(0, weight=1)
         self.var_activity = tk.StringVar(value=self._busy_jobs["startup"])
-        ttk.Label(activity, textvariable=self.var_activity, style="Activity.TLabel", width=1,
-                  anchor="w").grid(row=0, column=0, sticky="ew")
+        self.activity_label = ttk.Label(activity, textvariable=self.var_activity, style="Activity.TLabel",
+                                        width=1, anchor="w")
+        self.activity_label.grid(row=0, column=0, sticky="ew")
         self.activity_progress = ttk.Progressbar(activity, orient="horizontal", mode="indeterminate",
                                                  style="Activity.Horizontal.TProgressbar", length=145)
         self.activity_progress.grid(row=0, column=1, padx=(10, 0))
@@ -5319,14 +5321,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 icons.button(group, icon, label, command, size=16, style="HeaderIcon.TButton").pack(
                     side="left", padx=(2, 0))
 
-        def scrollable_tree_host(panel):
-            host = ttk.Frame(panel)
+        def list_host(panel):
+            host = tk.Frame(panel, bg=palette.FIELD, bd=0, highlightthickness=0)
             host.pack(fill="both", expand=True)
-            scrollbar = ttk.Scrollbar(host)
-            scrollbar.pack(side="right", fill="y")
-            return host, scrollbar
+            return host
 
-        scene_panel = ttk.Frame(decks_container, padding=10)
+        scene_panel = ttk.Frame(decks_container, padding=8, style="WorkspaceCard.TFrame")
         scene_head = ttk.Frame(scene_panel)
         scene_head.pack(fill="x", pady=(0, 8))
         ttk.Label(scene_head, text="Rundown", style="CardTitle.TLabel").pack(side="left")
@@ -5336,15 +5336,11 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             ("up", "Move scene up", lambda: self._move_scene(-1)),
             ("down", "Move scene down", lambda: self._move_scene(1)),
         ))
-        scene_list_frame = ttk.Frame(scene_panel)
-        scene_list_frame.pack(fill="both", expand=True)
-        scene_scrollbar = ttk.Scrollbar(scene_list_frame)
-        scene_scrollbar.pack(side="right", fill="y")
-        self.scene_listbox = SceneList(scene_list_frame, self._on_scene_select,
-                                       yscrollcommand=scene_scrollbar.set, font=("Segoe UI", 10),
+        scene_list_frame = list_host(scene_panel)
+        self.scene_listbox = SceneList(scene_list_frame, self._on_scene_select, font=("Segoe UI", 11),
                                        bg=palette.FIELD, fg=palette.TEXT, bd=0, highlightthickness=0)
-        self.scene_listbox.pack(side="left", fill="both", expand=True)
-        scene_scrollbar.configure(command=self.scene_listbox.yview)
+        self.scene_listbox.pack(fill="both", expand=True, padx=(0, 6))
+        self.scene_listbox.scroll_indicator = ScrollIndicator(scene_list_frame, self.scene_listbox)
         scene_btn = ttk.Frame(scene_panel)
         scene_btn.pack(fill="x", pady=(8, 0))
         icons.button(scene_btn, "previous", "Previous scene", self._prev_scene).pack(side="left", padx=(0, 4))
@@ -5352,7 +5348,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         icons.button(scene_btn, "edit", "Edit scene", self._edit_scene).pack(side="right")
 
         # MEDIA (middle column): audio/video
-        deck_a = ttk.Frame(decks_container, padding=10)
+        deck_a = ttk.Frame(decks_container, padding=8, style="WorkspaceCard.TFrame")
         audio_head = ttk.Frame(deck_a)
         audio_head.pack(fill="x", pady=(0, 8))
         ttk.Label(audio_head, text="Audio / Video", style="CardTitle.TLabel").pack(side="left")
@@ -5365,32 +5361,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             ("settings", "Media tools", lambda: show_tools(self.audio_tools, self.tabs_a, self.tab_a_inout)),
         ))
 
-        tree_host_a, scrollbar_a = scrollable_tree_host(deck_a)
-        self.tree_a = ttk.Treeview(
-            tree_host_a, yscrollcommand=scrollbar_a.set,
-            columns=("checkbox", "auto", "idx", "kind", "name", "duration"),
-            show="headings",
-            selectmode="browse",
-        )
-        self.tree_a.heading("checkbox", text="☐")
-        self.tree_a.heading("auto", text="▶")
-        self.tree_a.heading("idx", text="#")
-        self.tree_a.heading("kind", text="Type")
-        self.tree_a.heading("name", text="File")
-        self.tree_a.heading("duration", text="Time")
-        self.tree_a.column("checkbox", width=0, minwidth=0, stretch=False, anchor="center")  # Hidden by default
-        self.tree_a.column("auto", width=30, minwidth=30, stretch=False, anchor="center")
-        self.tree_a.column("idx", width=30, minwidth=30, stretch=False, anchor="e")
-        self.tree_a.column("kind", width=55, minwidth=55, stretch=False)
-        self.tree_a.column("name", width=380, minwidth=120, stretch=True)
-        self.tree_a.column("duration", width=86, minwidth=78, stretch=False, anchor="e")
-        self.tree_a.configure(height=2)
-        self.tree_a.pack(side="left", fill="both", expand=True)
-        scrollbar_a.configure(command=self.tree_a.yview)
-        try:
-            self.tree_a.tag_configure("playing", background="#2e7d32", foreground="#ffffff")
-        except Exception:
-            pass
+        tree_host_a = list_host(deck_a)
+        self.tree_a = CueList(tree_host_a, icons)
+        self.tree_a.pack(fill="both", expand=True, padx=(0, 6))
         self.tree_a.bind("<<TreeviewSelect>>", lambda _e: self._on_deck_a_select())
         self.tree_a.bind("<Double-1>", lambda _e: self._play_deck_a())
         self.tree_a.bind("<Button-1>", self._on_tree_a_click)  # checkbox/auto toggles
@@ -5405,7 +5378,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         ttk.Label(deck_a, textvariable=self.var_total_duration_a, font=("Courier", 10, "bold"), anchor="e").pack(fill="x", padx=2, pady=(2, 0))
 
         # Waveform placeholder (Deck A)
-        self.wave_a_frame = ttk.LabelFrame(deck_a, text="Waveform", padding=2)
+        self.wave_a_frame = ttk.Frame(deck_a)
         self.wave_a_frame.pack(fill="x", pady=(4, 0))
         self.canvas_a = tk.Canvas(self.wave_a_frame, height=66, bg=palette.FIELD, highlightthickness=0, cursor="crosshair")
         self.canvas_a.pack(fill="x")
@@ -5555,7 +5528,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         ).pack(anchor="w", padx=10, pady=10)
 
         # VISUALS (right column): images/PPT
-        deck_b = ttk.Frame(decks_container, padding=10)
+        deck_b = ttk.Frame(decks_container, padding=8, style="WorkspaceCard.TFrame")
 
         def layout_workspace(event):
             if event.width < 680 or event.height < 240:
@@ -5588,32 +5561,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             ("settings", "Projection tools", lambda: show_tools(self.projection_tools, self.tabs_b, self.tab_b_ppt)),
         ))
 
-        tree_host_b, scrollbar_b = scrollable_tree_host(deck_b)
-        self.tree_b = ttk.Treeview(
-            tree_host_b, yscrollcommand=scrollbar_b.set,
-            columns=("checkbox", "auto", "idx", "kind", "name", "duration"),
-            show="headings",
-            selectmode="browse",
-        )
-        self.tree_b.heading("checkbox", text="☐")
-        self.tree_b.heading("auto", text="▶")
-        self.tree_b.heading("idx", text="#")
-        self.tree_b.heading("kind", text="Type")
-        self.tree_b.heading("name", text="File")
-        self.tree_b.heading("duration", text="Time")
-        self.tree_b.column("checkbox", width=0, minwidth=0, stretch=False, anchor="center")  # Hidden by default
-        self.tree_b.column("auto", width=30, minwidth=30, stretch=False, anchor="center")
-        self.tree_b.column("idx", width=30, minwidth=30, stretch=False, anchor="e")
-        self.tree_b.column("kind", width=55, minwidth=55, stretch=False)
-        self.tree_b.column("name", width=380, minwidth=120, stretch=True)
-        self.tree_b.column("duration", width=86, minwidth=78, stretch=False, anchor="e")
-        self.tree_b.configure(height=2)
-        self.tree_b.pack(side="left", fill="both", expand=True)
-        scrollbar_b.configure(command=self.tree_b.yview)
-        try:
-            self.tree_b.tag_configure("playing", background="#2e7d32", foreground="#ffffff")
-        except Exception:
-            pass
+        tree_host_b = list_host(deck_b)
+        self.tree_b = CueList(tree_host_b, icons)
+        self.tree_b.pack(fill="both", expand=True, padx=(0, 6))
         self.tree_b.bind("<<TreeviewSelect>>", lambda _e: self._on_deck_b_select())
         self.tree_b.bind("<Double-1>", lambda _e: self._play_deck_b())
         self.tree_b.bind("<Button-1>", self._on_tree_b_click)  # checkbox/auto toggles
@@ -5833,6 +5783,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._close_after_output = True
             self._set_busy("startup", "Closing projector output…")
             return
+        self._closing = True
         self._duration_stop.set()
         if self._duration_worker is not None:
             self._duration_jobs.put(None)
@@ -6243,6 +6194,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if cue.id in self._loud_req_inflight:
             return
         self._loud_req_inflight.add(cue.id)
+        self._set_busy("analysis", f"Analyzing loudness ({len(self._loud_req_inflight)})…")
 
         # Analyze full file loudness (independent of IN/OUT), then apply gain at playback.
 
@@ -6315,10 +6267,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     pass
 
             def _apply() -> None:
-                try:
-                    self._loud_req_inflight.discard(cue.id)
-                except Exception:
-                    pass
+                self._loud_req_inflight.discard(cue.id)
+                remaining = len(self._loud_req_inflight)
+                self._set_busy("analysis", f"Analyzing loudness ({remaining})…" if remaining else None)
                 if out:
                     try:
                         cue.loudness_i_lufs = float(out.get("input_i"))
@@ -7255,14 +7206,14 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             region = self.tree_a.identify_region(event.x, event.y)
         except Exception:
             return
-        if region != "cell":
+        if region not in ("cell", "tree"):
             return
 
         item = self.tree_a.identify_row(event.y)
         column = self.tree_a.identify_column(event.x)
 
-        # Auto-play toggle column (column #2; headings are: checkbox, auto, idx, kind, name, duration)
-        if column == "#2" and item:
+        # The left row icon toggles auto-play.
+        if self.tree_a.autoswitch_hit(event) and item:
             try:
                 idx = int(item)
                 if 0 <= idx < len(self._cues_a):
@@ -7296,14 +7247,14 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             region = self.tree_b.identify_region(event.x, event.y)
         except Exception:
             return
-        if region != "cell":
+        if region not in ("cell", "tree"):
             return
 
         item = self.tree_b.identify_row(event.y)
         column = self.tree_b.identify_column(event.x)
 
         # Auto-play toggle column (column #2; headings are: checkbox, auto, idx, kind, name, duration)
-        if column == "#2" and item:
+        if self.tree_b.autoswitch_hit(event) and item:
             try:
                 idx = int(item)
                 if 0 <= idx < len(self._cues_b):
@@ -8013,19 +7964,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return
         checkbox_on = bool(self._checkbox_mode_a) if deck == "A" else bool(self._checkbox_mode_b)
         w_checkbox = 30 if checkbox_on else 0
-        w_auto = 24
-        w_idx = 24
-        w_kind = 52
-        w_duration = 70
-        pad = 5
-        fixed = int(w_checkbox + w_auto + w_idx + w_kind + w_duration + pad)
+        w_duration = 68
+        fixed = int(w_checkbox + tree.column("#0", "width") + w_duration)
         w_name = max(40, int(total - fixed))
         try:
             tree.column("checkbox", width=w_checkbox, minwidth=(w_checkbox if checkbox_on else 0), stretch=False, anchor="center")
-            tree.column("auto", width=w_auto, minwidth=w_auto, stretch=False, anchor="center")
-            tree.column("idx", width=w_idx, minwidth=w_idx, stretch=False, anchor="e")
-            tree.column("kind", width=w_kind, minwidth=w_kind, stretch=False)
-            tree.column("duration", width=w_duration, minwidth=70, stretch=False, anchor="e")
+            tree.column("duration", width=w_duration, minwidth=62, stretch=False, anchor="e")
             tree.column("name", width=w_name, minwidth=40, stretch=True)
         except Exception:
             return
@@ -8306,8 +8250,6 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 canvas = self.canvas_a if deck == "A" else self.canvas_b
                 if canvas.find_withtag("waveform"):
                     self._update_waveform_markers(cue, canvas)
-                if self._selected_cue() is cue and self._current_duration is None:
-                    self._set_timeline(self._duration_cache[cue.path])
 
     def _set_timeline(self, duration: float | None) -> None:
         self._current_duration = duration
@@ -9509,6 +9451,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         delay_ms = 250
         try:
             self._drain_ui_tasks()
+            if self._closing:
+                return
             self._advance_ppt_loop()
             self._update_now_playing()
             self._update_vu_meters()
@@ -9560,7 +9504,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             elif self._paused_a is not None or self._paused_b is not None:
                 delay_ms = 80
         finally:
-            self.after(int(delay_ms), self._poll_playback)
+            if not self._closing:
+                self.after(int(delay_ms), self._poll_playback)
 
     def _drain_ui_tasks(self, max_items: int = 10) -> None:
         deadline = time.monotonic() + 0.008
@@ -9573,7 +9518,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 fn()
             except Exception as exc:
                 _swallow_exc(exc, note="background result")
-            if time.monotonic() >= deadline:
+            if self._closing or time.monotonic() >= deadline:
                 return
 
     def _update_tree_playing_highlight(self) -> None:

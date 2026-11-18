@@ -8,7 +8,7 @@ EDGE = "#2b3949"
 TEXT = "#ecf5ff"
 MUTED = "#a9bbcd"
 BUTTON = "#1c2938"
-SELECTED = "#1f4053"
+SELECTED = "#192f40"
 CYAN = "#59d8ff"
 MINT = "#57f3b9"
 AMBER = "#ffd27c"
@@ -38,7 +38,17 @@ def apply_windows_theme(app):
                     bordercolor=border, lightcolor=background, darkcolor=background,
                     troughcolor=field, font=("Segoe UI", 10))
     style.configure("Shell.TFrame", background=SHELL)
+    style.configure("WorkspaceCard.TFrame", background=PANEL, relief="solid", borderwidth=1)
+    style.layout("Cue.Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+    style.layout("Cue.Treeview.Item", [("Treeitem.padding", {"sticky": "nswe", "children": [
+        ("Treeitem.image", {"side": "left", "sticky": ""}),
+        ("Treeitem.text", {"side": "left", "sticky": ""}),
+    ]})])
+    style.configure("Cue.Treeview", rowheight=33, font=("Segoe UI", 11))
+    style.map("Cue.Treeview", background=[("selected", SELECTED)], foreground=[("selected", TEXT)])
     style.configure("Activity.TLabel", background=SHELL, foreground=CYAN, font=("Segoe UI", 9))
+    style.configure("Alert.TLabel", background=SHELL, foreground=CORAL, font=("Segoe UI", 9))
+    style.configure("AppTitle.TLabel", background=SHELL, font=("Segoe UI", 12, "bold"))
     style.configure("Activity.Horizontal.TProgressbar", background=CYAN, troughcolor=FIELD, thickness=4)
     style.configure("ShowTitle.TLabel", background=SHELL, font=("Segoe UI", 12, "bold"))
     style.configure("CardTitle.TLabel", font=("Segoe UI", 13, "bold"))
@@ -82,3 +92,24 @@ def apply_windows_theme(app):
     style.map("Deck.TNotebook.Tab",
               background=[("disabled", background), ("selected", selected), ("active", "#4a4e55")],
               foreground=[("disabled", disabled), ("selected", "#ffffff"), ("active", "#ffffff")])
+
+
+def dark_window_frame(app):
+    """Keep native Windows resize and window commands with matching dark chrome."""
+    from ctypes import WinDLL, byref, c_int, c_uint32, c_void_p, sizeof
+
+    ancestor = WinDLL("user32").GetAncestor
+    ancestor.argtypes = (c_void_p, c_uint32)
+    ancestor.restype = c_void_p
+    window = ancestor(app.winfo_id(), 2)  # GA_ROOT
+    if not window:
+        return
+    attribute = WinDLL("dwmapi").DwmSetWindowAttribute
+    attribute.argtypes = (c_void_p, c_uint32, c_void_p, c_uint32)
+    enabled = c_int(1)
+    if attribute(window, 20, byref(enabled), sizeof(enabled)):
+        attribute(window, 19, byref(enabled), sizeof(enabled))
+    for key, color in ((34, EDGE), (35, SHELL), (36, TEXT)):
+        r, g, b = bytes.fromhex(color[1:])
+        value = c_uint32(r | (g << 8) | (b << 16))
+        attribute(window, key, byref(value), sizeof(value))
