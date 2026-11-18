@@ -20,7 +20,7 @@ New-Item -ItemType Directory -Force build/windows-spec | Out-Null
 Run $Py @("-m", "PyInstaller", "--clean", "--noconfirm", "--windowed", "--noupx",
     "--name", "SP Show Control", "--icon", "$(Resolve-Path assets/logo.png)", "--specpath", "build/windows-spec",
     "--manifest", "$(Resolve-Path packaging/windows_controller.manifest)",
-    "--collect-data", "certifi", "--collect-all", "tkinterdnd2",
+    "--collect-data", "certifi", "--additional-hooks-dir", "$(Resolve-Path packaging/pyinstaller_hooks)",
     "--add-data", "$(Resolve-Path assets/logo.png);assets",
     "--add-data", "$(Resolve-Path operator.qml);.",
     "--add-data", "$(Resolve-Path build/windows-media);tools", "$(Resolve-Path player.py)")
