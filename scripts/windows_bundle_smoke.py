@@ -76,8 +76,9 @@ def smoke():
         profile.mkdir(exist_ok=True)
         (profile / "show_preset.json").write_text(json.dumps({
             "version": 3, "cues_a": [{"id": "waveform", "kind": "audio", "path": str(clip)}],
-            "cues_b": [], "scenes": [{"id": "rehearsal", "name": "Rehearsal",
-                                      "cue_ids_a": ["waveform"], "cue_ids_b": []}],
+            "cues_b": [{"id": "still", "kind": "image", "path": str(APP / "_internal/assets/logo.png")}],
+            "scenes": [{"id": "rehearsal", "name": "Rehearsal",
+                        "cue_ids_a": ["waveform"], "cue_ids_b": ["still"]}],
         }), encoding="utf-8")
         app = subprocess.Popen([exe], env=env, cwd=test)
         try:
@@ -148,6 +149,8 @@ def smoke():
             if output_hwnd:
                 win32gui.ShowWindow(output_hwnd, 9)
             subprocess.run([sys.executable, __file__, "output", str(clip)], check=True, timeout=40)
+            from windows_dialog_rehearsal import exercise_dialogs
+            exercise_dialogs(app, hwnd, Path(test), env)
         except Exception:
             def report_window(hwnd, _):
                 if win32process.GetWindowThreadProcessId(hwnd)[1] == app.pid:
@@ -164,8 +167,9 @@ def smoke():
         subprocess.run([sys.executable, Path(__file__).with_name("windows_quick_rehearsal.py"), test],
                        env=env, cwd=test, check=True, timeout=100)
         for test_script in ("test_ppt_media.py", "test_media_previews.py", "test_download_tools.py",
-                            "test_show_storage.py", "test_mpv_ipc.py"):
-            subprocess.run([sys.executable, Path(__file__).with_name(test_script)], env=env, check=True)
+                            "test_show_storage.py", "test_mpv_ipc.py", "test_playback_state.py",
+                            "test_operator_transport.py", "test_operator_dialogs.py", "test_operator_qml.py"):
+            subprocess.run([sys.executable, Path(__file__).with_name(test_script)], env=env, check=True, timeout=30)
         subprocess.run([sys.executable, Path(__file__).with_name("windows_show_rehearsal.py"), test],
                        env=env, cwd=test, check=True, timeout=120)
     print("PASS: portable GUI, FFmpeg/ffprobe/ffplay, Show Control IPC play/pause/resume and decoded mpv video")

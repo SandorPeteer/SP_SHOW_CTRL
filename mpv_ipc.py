@@ -491,9 +491,9 @@ class MpvIpcSession:
                     self._swallow_exc(last_seek_err, "mpv seek (enforce start) failed")
         if volume is not None:
             self.set_property("volume", _clamp_int(int(volume), 0, 100))
-        if af_lavfi:
-            # Best-effort; mpv accepts filter chains as strings.
-            self.set_property("af", str(af_lavfi))
+        # The persistent output carries properties across files. Explicitly
+        # clear a previous cue's normalization when this cue needs no filter.
+        self.set_property("af", str(af_lavfi) if af_lavfi else "")
 
     def _reader_loop_socket(self) -> None:
         f = getattr(self, "_sock_file", None)
@@ -505,7 +505,10 @@ class MpvIpcSession:
         except Exception as e:
             self._swallow_exc(e, "mpv ipc reader socket")
         finally:
-            self._playing = False
+            if getattr(self, "_sock_file", None) is f:
+                self._playing = False
+                with self._lock:
+                    self._telemetry.clear()
 
     def _reader_loop_pipe(self, pipe) -> None:
         try:
@@ -516,6 +519,8 @@ class MpvIpcSession:
         finally:
             if self._pipe is pipe:
                 self._playing = False
+                with self._lock:
+                    self._telemetry.clear()
 
     def _handle_ipc_line(self, line: str) -> None:
         s = str(line or "").strip()

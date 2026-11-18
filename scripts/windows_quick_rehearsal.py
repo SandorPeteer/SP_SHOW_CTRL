@@ -11,8 +11,9 @@ import time
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root))
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, Qt, QTimer
 from PySide6.QtQuick import QQuickWindow
+from PySide6.QtTest import QTest
 from quick_controller import run_quick
 
 
@@ -60,13 +61,16 @@ def rehearse(folder):
         swaps = []
         previous_live = ""
         previous_next = ""
+        modal_verified = False
+        saved_rows = None
+        event_ticks = []
         window.frameSwapped.connect(lambda: swaps.append(time.perf_counter()))
         resize_timer = QTimer(window)
         resize_timer.setTimerType(Qt.TimerType.PreciseTimer)
         resize_timer.setInterval(16)
 
         def poll():
-            nonlocal phase
+            nonlocal phase, modal_verified, saved_rows
             try:
                 if time.monotonic() - start > 45:
                     raise RuntimeError(f"Timed out in Qt rehearsal phase {phase}, {bridge.current!r}")
@@ -78,6 +82,12 @@ def rehearse(folder):
                     bridge.press("b_play", None)
                     phase = 1
                 if phase == 1 and bridge.revisions.get("live") and bridge.revisions.get("next") and state.get("cursor", -1) > 0:
+                    if not modal_verified:
+                        saved_rows = {key: list(rows) for key, rows in bridge.rows.items()}
+                        bridge.press("new", None)
+                        phase = 10
+                        QTimer.singleShot(50, poll)
+                        return
                     assert state.get("projectionClock", {}).get("label") == "● Live · Manual"
                     assert state["time"].startswith("−") and state["slidePosition"] == "01 / 03"
                     assert bridge.rows["projection"][1]["role"] == "next"
@@ -103,11 +113,23 @@ def rehearse(folder):
                                       f"{frame_count} swaps in {elapsed:.2f}s ({frame_count / elapsed:.1f}/s), "
                                       f"backend {window.rendererInterface().graphicsApi()}", flush=True)
                                 assert p95 < 16.667, p95
+                                gaps = [(b - a) * 1000 for a, b in zip(event_ticks, event_ticks[1:])]
+                                # Measure event delivery as well as the cheap resize() call.
+                                # A virtual GPU's swap rate is reported, not a laptop guarantee.
+                                assert max(gaps) < 750, gaps
+                                measured = {"environment": "virtual Windows desktop, source Qt operator with bundled mpv",
+                                            "resize_work_p95_ms": p95, "qt_event_gap_max_ms": max(gaps),
+                                            "qt_event_gap_p95_ms": sorted(gaps)[int(len(gaps) * .95)],
+                                            "swaps": frame_count, "seconds": elapsed,
+                                            "swaps_per_second": frame_count / elapsed,
+                                            "audio_clock_advanced": bridge.current.get("cursor", 0) > cursor_before}
+                                (root / "dist/windows-qt-responsiveness.json").write_text(json.dumps(measured, indent=2))
                                 assert bridge.current.get("cursor", 0) > cursor_before
                                 window.resize(980, 620)
                                 QTimer.singleShot(150, capture)
                                 return
                             started = time.perf_counter()
+                            event_ticks.append(started)
                             step = min(resize_frame, 75 - resize_frame)
                             window.resize(910 + step * 3, 555 + step * 2)
                             times.append((time.perf_counter() - started) * 1000)
@@ -125,13 +147,28 @@ def rehearse(folder):
                             previous_next = bridge.revisions.get("next")
                             if fullscreen:
                                 win32gui.ShowWindow(fullscreen, 9)
-                            bridge.press("slide_next", None)
+                            window.requestActivate()
+                            QTest.keyClick(window, Qt.Key.Key_PageDown)
                         except Exception as exc:
                             result.append(exc)
                             qt_app.quit()
 
                     resize_timer.timeout.connect(resize)
                     resize_timer.start()
+                if phase == 10 and state.get("dialog"):
+                    dialog = window.findChild(QObject, "operatorMessageDialog")
+                    assert dialog and dialog.property("visible") and dialog.property("modal")
+                    assert state["dialog"]["title"] == "New show"
+                    assert window.grabWindow().save(str(root / "dist/windows-qt-new-show-active-playback.png"))
+                    window.requestActivate()
+                    QTest.keyClick(window, Qt.Key.Key_Escape)
+                    phase = 11
+                elif phase == 11 and not state.get("dialog"):
+                    assert {key: [row["name"] for row in rows] for key, rows in bridge.rows.items()} == {
+                        key: [row["name"] for row in rows] for key, rows in saved_rows.items()}
+                    assert state.get("cursor", -1) > 0 and state.get("slides")
+                    modal_verified = True
+                    phase = 1
                 fraction = state.get("projectionClock", {}).get("fraction", -1)
                 if phase == 2 and state.get("slidePosition") == "02 / 03" and 0.1 < fraction < 1:
                     assert state["projectionClock"]["label"].startswith("● ")

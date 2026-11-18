@@ -1,3 +1,9 @@
+param(
+    [string]$CertificateThumbprint = "",
+    [string]$TimestampUrl = "",
+    [string]$SignToolPath = "",
+    [switch]$RequireSigned
+)
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path -Parent $PSScriptRoot)
 function Run([string]$Exe, [string[]]$Arguments) {
@@ -20,4 +26,6 @@ Run $Py @("-m", "PyInstaller", "--clean", "--noconfirm", "--windowed", "--noupx"
     "--add-data", "$(Resolve-Path build/windows-media);tools", "$(Resolve-Path player.py)")
 $App = "dist/SP Show Control"
 if (!(Test-Path "$App/SP Show Control.exe")) { throw "Missing built executable" }
+& "$PSScriptRoot/windows_signing.ps1" -AppDirectory $App -CertificateThumbprint $CertificateThumbprint `
+    -TimestampUrl $TimestampUrl -SignToolPath $SignToolPath -RequireSigned:$RequireSigned
 Write-Host "Built: $App/SP Show Control.exe"

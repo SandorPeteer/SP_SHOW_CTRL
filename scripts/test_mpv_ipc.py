@@ -48,6 +48,24 @@ class MpvIpcTests(unittest.TestCase):
                 self.session.loadfile("test.mp4")
         self.assertFalse(self.session._playing)
 
+    def test_each_cue_replaces_the_previous_audio_filter(self):
+        with patch.object(self.session, "command", return_value={"error": "success"}), \
+                patch.object(self.session, "set_property", return_value=True) as change:
+            self.session.loadfile("quiet.mp4", af_lavfi="lavfi=[volume=6dB]")
+            change.assert_any_call("af", "lavfi=[volume=6dB]")
+            change.reset_mock()
+            self.session.loadfile("normal.mp4")
+            change.assert_any_call("af", "")
+
+    def test_disconnected_clock_does_not_keep_stale_telemetry(self):
+        class BrokenPipe:
+            def lines(self):
+                yield json.dumps({"event": "property-change", "name": "time-pos", "data": 4.5})
+                raise BrokenPipeError("player connection ended")
+        pipe = self.session._pipe = BrokenPipe()
+        self.session._reader_loop_pipe(pipe)
+        self.assertEqual(self.session.observed("time-pos"), (None,))
+
 
 if __name__ == "__main__":
     unittest.main()

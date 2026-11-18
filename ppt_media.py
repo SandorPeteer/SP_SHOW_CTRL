@@ -230,7 +230,8 @@ class SlidePreparer:
         known = self.ready.get(path)
         if known is not None:
             try:
-                if _stamp(path) == known[0] and known[1][0].is_file():
+                if (_stamp(path) == known[0] and known[1]
+                        and all(slide.is_file() and slide.stat().st_size for slide in known[1])):
                     self.ui_queue.put(lambda: done(path, known[1], None))
                     return
             except OSError:

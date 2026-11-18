@@ -24,6 +24,12 @@ Windows (PowerShell):
 .\packaging\build_yt_dlr_windows.ps1
 ```
 
+A Show Control Windows build a `.venv_build_windows` környezetet használja; a külön yt-dlr app Qt6-függőségei a `.venv_build_windows_ytdlr` környezetbe kerülnek. Forrásból a Windows-verzió ugyanezzel a Show Control környezettel indítható a build után:
+```powershell
+.\.venv_build_windows\Scripts\python.exe player.py
+```
+Ez a környezet tartalmazza a `requirements.txt` mellett a buildben rögzített PySide6-Essentials és numpy függőséget is.
+
 Kimenet:
 - macOS: `dist/*.app`
 - Windows: `dist/*/*.exe`
@@ -46,6 +52,21 @@ A build ellenőrzi a letöltött médiacsomagok SHA-256 értékét. A Windows-pr
 ```powershell
 .\.venv_build_windows\Scripts\python.exe scripts\windows_bundle_smoke.py
 ```
+
+### Windows kiadói aláírás és Smart App Control
+
+A build alapból **aláíratlan fejlesztői csomag**. A `dist/windows-signatures.json` minden csomagolt EXE/DLL/PYD/COM fájl x64 fejlécét, SHA-256 értékét, Authenticode állapotát és kiadóját rögzíti; a CI ezt a képernyőképekkel együtt feltölti. Ez ellenőrzési jelentés, nem SAC-kompatibilitási igazolás.
+
+A már rendelkezésre álló, megbízható szolgáltatótól származó kiadói tanúsítvány explicit módon beköthető:
+```powershell
+.\packaging\build_windows.ps1 -CertificateThumbprint "<CurrentUser\My tanúsítvány SHA-1 azonosítója>" -TimestampUrl "<a szolgáltató RFC 3161 címe>"
+```
+Az aláírókulcs a Windows tanúsítványtárban marad; a szkript nem exportálja, nem telepít tanúsítványt, nem választ szolgáltatót, és nem módosít Windows-védelmet. A `-SignToolPath` a már telepített Windows SDK `signtool.exe` fájlját adhatja meg. Csak az aláíratlan fájlokat írja alá; a meglévő hibás aláírást nem írja felül. SHA-256 és időbélyeg után minden binárison `signtool verify /pa /all` fut, és hiba esetén megáll a build. Külső aláírási szolgáltatás eredményét külön is ellenőrizheted:
+```powershell
+.\packaging\windows_signing.ps1 -AppDirectory "dist/SP Show Control" -RequireSigned
+```
+
+Az [Microsoft SAC útmutatója](https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/code-signing-for-smart-app-control) megbízható szolgáltatótól származó tanúsítványt követel; önaláírás nem oldja meg ezt. A [teljes alkalmazáskódra vonatkozó útmutató](https://learn.microsoft.com/en-us/windows/security/book/application-security-application-and-driver-control) miatt az mpv, FFmpeg, Python/Qt DLL-ek és letöltőeszközök aláírása is számít, nem csak a fő EXE-é. A `yt-dlp`/Deno későbbi frissítése új futtatható fájlt hoz: a SHA-256 és próbaindítás nem helyettesít kiadói aláírást. A SAC melletti működés mindaddig **nincs megoldva**, amíg nincs hiteles aláírás és a teljes aktuális csomaggal, valamint a frissítővel végzett SAC-próba. A repóhoz továbbra sem választottunk alkalmazáslicencet vagy tanúsítványszolgáltatót.
 
 ### Runtime toolok / függőségek
 

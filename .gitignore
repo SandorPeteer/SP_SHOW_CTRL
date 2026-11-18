@@ -17,3 +17,4 @@ tools/ytdlp/
 .claude/
 
 .venv_build_windows/
+.venv_build_windows_ytdlr/

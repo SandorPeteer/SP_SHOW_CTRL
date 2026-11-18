@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtQuick.Window
+import QtQuick.Dialogs as NativeDialogs
 
 ApplicationWindow {
     id: screen
@@ -33,8 +34,109 @@ ApplicationWindow {
     function action(name) { operatorBridge.press(name, null) }
     function toggleWindow() { if (visibility === Window.Maximized) showNormal(); else showMaximized() }
 
-    Shortcut { sequence: StandardKey.Open; onActivated: screen.action("open") }
-    Shortcut { sequence: StandardKey.Save; onActivated: screen.action("save") }
+    property int shownDialog: 0
+    function answerDialog(value) {
+        operatorBridge.press("dialog_result", {"id": shownDialog, "value": value})
+    }
+    function presentDialog() {
+        const spec = screen.ui.dialog
+        if (!spec || spec.id === shownDialog) return
+        shownDialog = spec.id
+        screen.requestActivate()
+        if (spec.kind === "message") {
+            operatorMessageDialog.spec = spec
+            operatorMessageDialog.open()
+        } else if (spec.kind === "color") {
+            operatorColorDialog.title = spec.title
+            operatorColorDialog.selectedColor = spec.color
+            operatorColorDialog.open()
+        } else if (spec.kind === "folder") {
+            operatorFolderDialog.title = spec.title
+            operatorFolderDialog.currentFolder = spec.folder
+            operatorFolderDialog.open()
+        } else {
+            operatorFileDialog.title = spec.title
+            operatorFileDialog.fileMode = spec.kind === "save" ? NativeDialogs.FileDialog.SaveFile :
+                spec.multiple ? NativeDialogs.FileDialog.OpenFiles : NativeDialogs.FileDialog.OpenFile
+            operatorFileDialog.nameFilters = spec.filters
+            operatorFileDialog.currentFolder = spec.folder
+            operatorFileDialog.defaultSuffix = spec.suffix
+            if (spec.kind === "save") operatorFileDialog.selectedFile = spec.initial
+            operatorFileDialog.open()
+        }
+    }
+    Connections { target: operatorBridge; function onStateChanged() { screen.presentDialog() } }
+
+    Dialog {
+        id: operatorMessageDialog
+        objectName: "operatorMessageDialog"
+        property var spec: ({})
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(480, screen.width - 40)
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        title: spec.title || "Show Control"
+        padding: 20
+        background: Rectangle { radius: 8; color: screen.panel; border.color: screen.cyan }
+        header: Text { text: operatorMessageDialog.title; Accessible.name: text; color: screen.ink; font.pixelSize: 18; font.bold: true; padding: 20 }
+        contentItem: ColumnLayout {
+            spacing: 20
+            Text {
+                Layout.fillWidth: true
+                text: operatorMessageDialog.spec.message || ""
+                color: screen.ink; font.pixelSize: 14; wrapMode: Text.Wrap; textFormat: Text.PlainText
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                Repeater {
+                    model: operatorMessageDialog.spec.buttons || []
+                    KeyButton {
+                        required property var modelData
+                        required property int index
+                        objectName: "dialogButton_" + modelData.value
+                        label: modelData.label; showLabel: true
+                        focus: index === 0
+                        onClicked: { screen.answerDialog(modelData.value); operatorMessageDialog.close() }
+                    }
+                }
+            }
+        }
+        onRejected: screen.answerDialog(spec.cancel || "")
+        onClosed: screen.requestActivate()
+    }
+    NativeDialogs.FileDialog {
+        id: operatorFileDialog
+        objectName: "operatorFileDialog"
+        parentWindow: screen
+        modality: Qt.WindowModal
+        onAccepted: { operatorBridge.answerFiles(screen.shownDialog, selectedFiles); screen.requestActivate() }
+        onRejected: { screen.answerDialog(""); screen.requestActivate() }
+    }
+    NativeDialogs.FolderDialog {
+        id: operatorFolderDialog
+        objectName: "operatorFolderDialog"
+        parentWindow: screen
+        modality: Qt.WindowModal
+        onAccepted: { operatorBridge.answerFiles(screen.shownDialog, [selectedFolder]); screen.requestActivate() }
+        onRejected: { screen.answerDialog(""); screen.requestActivate() }
+    }
+    NativeDialogs.ColorDialog {
+        id: operatorColorDialog
+        objectName: "operatorColorDialog"
+        parentWindow: screen
+        modality: Qt.WindowModal
+        onAccepted: { screen.answerDialog(selectedColor.toString()); screen.requestActivate() }
+        onRejected: { screen.answerDialog(""); screen.requestActivate() }
+    }
+
+    Shortcut { sequences: [StandardKey.New]; onActivated: screen.action("new") }
+    Shortcut { sequences: [StandardKey.Open]; onActivated: screen.action("open") }
+    Shortcut { sequences: [StandardKey.Save]; onActivated: screen.action("save") }
+    Shortcut { sequence: "Ctrl+Shift+S"; onActivated: screen.action("save_as") }
+    Shortcut { sequence: "Ctrl+Shift+A"; onActivated: screen.action("a_add") }
+    Shortcut { sequence: "Ctrl+Shift+B"; onActivated: screen.action("b_add") }
     Shortcut { sequence: "PageUp"; enabled: !!screen.ui.slides; onActivated: operatorBridge.press("slide_key", -1) }
     Shortcut { sequence: "PageDown"; enabled: !!screen.ui.slides; onActivated: operatorBridge.press("slide_key", 1) }
     Shortcut { sequence: "Left"; enabled: !!screen.ui.slides; onActivated: operatorBridge.press("slide_key", -1) }
@@ -66,6 +168,7 @@ ApplicationWindow {
         property color base: "#1c2938"
         property color line: screen.edge
         text: label
+        Accessible.name: label
         hoverEnabled: true
         implicitWidth: showLabel ? labelText.implicitWidth + (symbol ? 40 : 23) : 28
         implicitHeight: 30
@@ -99,26 +202,17 @@ ApplicationWindow {
         property bool live
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 7
-            spacing: 5
+            anchors.margins: 5
+            spacing: 3
             RowLayout {
                 Layout.fillWidth: true
-                Glyph { width: 16; height: 16; symbol: live ? "screen" : "slides"; tone: live ? screen.mint : screen.violet }
                 Caption {
                     color: screen.ink
                     font.weight: Font.DemiBold
-                    text: live ? "On screen" : screen.ui.slides ? "Next slide" : "Preview"
+                    text: live ? "On screen" : "Next slide"
                     Layout.fillWidth: true
                 }
-                Rectangle {
-                    visible: live && !!screen.ui.projectionClock && screen.ui.projectionClock.fraction >= 0
-                    width: 49; height: 4; radius: 2; color: "#284256"
-                    Rectangle {
-                        width: parent.width * (screen.ui.projectionClock ? screen.ui.projectionClock.fraction : 0)
-                        height: parent.height; radius: 2; color: screen.mint
-                        Behavior on width { NumberAnimation { duration: 34 } }
-                    }
-                }
+                Caption { visible: live && !!screen.ui.slides; text: screen.ui.slidePosition || ""; color: screen.ink }
                 Caption {
                     visible: live && (!!operatorBridge.previews.live || !!(screen.ui.projectionClock && screen.ui.projectionClock.label))
                     color: screen.mint
@@ -138,11 +232,16 @@ ApplicationWindow {
                     cache: false
                     smooth: true
                 }
-            }
-            Caption {
-                Layout.fillWidth: true
-                text: live ? (screen.ui.liveCaption || "") : (screen.ui.nextCaption || "")
-                height: 17
+                Rectangle {
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                    height: 20; color: "#a0080e16"
+                    visible: previewCaption.text !== ""
+                    Caption {
+                        id: previewCaption
+                        anchors.fill: parent; anchors.leftMargin: 5; anchors.rightMargin: 5
+                        text: live ? (screen.ui.liveCaption || "") : (screen.ui.nextCaption || "")
+                    }
+                }
             }
         }
     }
@@ -150,11 +249,10 @@ ApplicationWindow {
     component WaveTile: Tile {
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 7
-            spacing: 5
+            anchors.margins: 5
+            spacing: 3
             RowLayout {
                 Layout.fillWidth: true
-                Glyph { width: 16; height: 16; symbol: "waveform"; tone: screen.cyan }
                 Caption { color: screen.ink; font.weight: Font.DemiBold; text: "Waveform"; Layout.fillWidth: true }
                 Caption { color: screen.cyan; font.pixelSize: 14; font.weight: Font.DemiBold; text: screen.ui.time || "—" }
                 Caption { text: screen.ui.duration || "" }
@@ -395,6 +493,12 @@ ApplicationWindow {
             KeyButton { symbol: "maximize"; label: "Maximize / restore"; base: screen.color; line: screen.color; onClicked: screen.toggleWindow() }
             KeyButton { symbol: "close"; label: "Close"; base: screen.color; line: screen.color; onClicked: screen.action("close") }
         }
+        Text {
+            visible: !!screen.ui.controllerError
+            Layout.fillWidth: true
+            text: screen.ui.controllerError || ""
+            color: screen.coral; wrapMode: Text.Wrap; font.pixelSize: 12; textFormat: Text.PlainText
+        }
         Item {
             id: workspace
             Layout.fillWidth: true
@@ -447,7 +551,6 @@ ApplicationWindow {
                     transport: RowLayout {
                         KeyButton { symbol: "show"; label: "Show"; showLabel: true; command: "b_play"; base: screen.mint; line: screen.mint; tone: "#07131d" }
                         KeyButton { symbol: "previous"; label: "Previous slide"; command: "slide_prev"; tone: screen.violet }
-                        Caption { text: screen.ui.slidePosition || "— / —"; color: screen.ink }
                         KeyButton { symbol: "next"; label: "Next slide"; command: "slide_next"; tone: screen.violet }
                         KeyButton { symbol: "stop"; label: "Clear projection"; command: "b_stop"; tone: screen.coral; base: "#331e2a"; line: "#754559" }
                         KeyButton { symbol: "repeat"; label: "Repeat projection"; command: "b_repeat"; tone: screen.ui.repeatB ? screen.violet : screen.ink }

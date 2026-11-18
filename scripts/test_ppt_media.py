@@ -79,6 +79,27 @@ class ConversionTests(unittest.TestCase):
             _open_copy(app, Path("slides.ppt"))
         self.assertEqual(app.AutomationSecurity, 2)
 
+    def test_ready_cache_revalidates_every_slide(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path, first, second = root / "deck.ppt", root / "0001.png", root / "0002.png"
+            path.write_bytes(b"presentation")
+            first.write_bytes(b"first slide")
+            second.write_bytes(b"second slide")
+            for damaged in ("missing", "empty"):
+                with self.subTest(damaged=damaged):
+                    ui = queue.Queue()
+                    prep = SlidePreparer(root, ui)
+                    prep.worker = object()
+                    prep.ready[path] = (_stamp(path), [first, second])
+                    if damaged == "missing":
+                        second.unlink()
+                    else:
+                        second.write_bytes(b"")
+                    prep.submit(path, print, None)
+                    self.assertTrue(ui.empty(), "A broken cached deck was returned as ready")
+                    self.assertIn(path, prep.pending)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1768,8 +1768,7 @@ class OutputRunner:
                     self._stop_at_sec = None
                     sess.stop()
                     playing = False
-                elif eof is True or (isinstance(pos, (int, float)) and isinstance(duration, (int, float))
-                                     and duration > 0.5 and pos >= duration - 0.05):
+                elif eof is True:
                     sess._playing = False
                     playing = False
                     self.last_exit_code = 0
@@ -1871,8 +1870,8 @@ class OutputRunner:
         if sess is None:
             return
         try:
-            sess.set_property("pause", True)
-            self._paused = True
+            if sess.set_property("pause", True):
+                self._paused = True
         except Exception as e:
             _swallow_exc(e, note="OutputRunner.pause set_property")
 
@@ -1886,8 +1885,8 @@ class OutputRunner:
         if sess is None:
             return
         try:
-            sess.set_property("pause", False)
-            self._paused = False
+            if sess.set_property("pause", False):
+                self._paused = False
         except Exception as e:
             _swallow_exc(e, note="OutputRunner.resume set_property")
 
@@ -1975,6 +1974,8 @@ class OutputRunner:
                 _swallow_exc(e, note="OutputRunner.play_at_for_deck image mute")
             self._stop_at_sec = None
             sess.loadfile(cue.path, start=0.0, end=None, volume=0, af_lavfi=None)
+            if not sess.set_property("pause", False):
+                raise RuntimeError("The projector did not acknowledge image playback")
             self._playing_cue = cue
             self._paused = False
             self.last_exit_code = None
@@ -2309,9 +2310,13 @@ class MediaRunner:
             return None
         if self._started_at_monotonic is None or self._playing_seek_sec is None:
             return None
-        if self._media_clock is not None:
+        if self.observe_clock and self._backend == "mpv" and sys.platform == "win32":
+            # While IPC connects or recovers, an unknown time is preferable to a
+            # countdown that advances independently of a stalled/paused player.
+            if self._media_clock is None:
+                return None
             pos, = self._media_clock.observed("time-pos")
-            return float(pos) if isinstance(pos, (int, float)) else self._playing_seek_sec
+            return float(pos) if isinstance(pos, (int, float)) else None
         elapsed = max(0.0, time.monotonic() - self._started_at_monotonic)
         return max(0.0, float(self._playing_seek_sec) + elapsed)
 
@@ -7515,6 +7520,32 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._play_visuals_by_index(int(start_idx), log_action="Deck B: Restored visual video")
             return
 
+    def _pause_media_at_clock(self, runner, cue, process, deadline) -> None:
+        # A click immediately after Play can precede the first mpv clock event.
+        # Wait without blocking either UI; never pause a replacement process.
+        current = runner.current_cue()
+        if runner._proc is not process or not runner.is_playing() or current is None or current.id != cue.id:
+            return
+        pos = runner.playback_position_sec()
+        unavailable = "The player has not reported its position. Playback is continuing; try Pause again."
+        if pos is None:
+            if time.monotonic() < deadline:
+                self.after(50, self._pause_media_at_clock, runner, cue, process, deadline)
+            else:
+                self._callback_notice = unavailable
+                self._render_activity()
+                self._log(unavailable)
+            return
+        if self._callback_notice == unavailable:
+            self._callback_notice = ""
+            self._render_activity()
+        self._set_paused_state_for_deck("A", (cue.id, float(pos)))
+        self._suppress_finish["A"] = "pause"
+        self._was_playing_a = True
+        runner.stop()
+        self._log(f"Deck A: Paused @ {_format_timecode(pos, with_ms=True)}")
+        self._update_transport_button_visuals()
+
     def _transport_play_pause(self, deck: str) -> None:
         if self._starting_up:
             return
@@ -7631,15 +7662,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     playing = runner.current_cue()
                     if playing is None or playing.kind != "audio":
                         return
-                    pos = runner.playback_position_sec()
-                    if pos is None:
-                        return
-                    self._set_paused_state_for_deck("A", (playing.id, float(pos)))
-                    self._suppress_finish["A"] = "pause"
-                    self._was_playing_a = True
-                    runner.stop()
-                    self._log(f"Deck A: Paused @ {_format_timecode(pos, with_ms=True)}")
-                    self._update_transport_button_visuals()
+                    self._pause_media_at_clock(runner, playing, runner._proc, time.monotonic() + 1.0)
                     return
             except Exception:
                 pass
@@ -7696,15 +7719,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 if runner.is_playing():
                     playing = runner.current_cue()
                     if playing is not None and playing.id == cue.id and playing.kind == "video":
-                        pos = runner.playback_position_sec()
-                        if pos is None:
-                            return
-                        self._set_paused_state_for_deck("A", (playing.id, float(pos)))
-                        self._suppress_finish["A"] = "pause"
-                        self._was_playing_a = True
-                        runner.stop()
-                        self._log(f"Deck A: Paused @ {_format_timecode(pos, with_ms=True)}")
-                        self._update_transport_button_visuals()
+                        self._pause_media_at_clock(runner, playing, runner._proc, time.monotonic() + 1.0)
                         return
             except Exception:
                 pass
@@ -7764,14 +7779,28 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 if playing is not None and playing.id == cue.id and playing.kind == "video":
                     if bool(getattr(out, "is_paused", lambda: False)()):
                         out.resume()  # type: ignore[attr-defined]
-                        self._log("Deck A: Resumed (video)")
-                        self._set_paused_state_for_deck("A", None)
+                        if out.is_paused():
+                            self._callback_notice = "Resume was not acknowledged by the player."
+                            self._render_activity()
+                        else:
+                            if self._callback_notice == "Resume was not acknowledged by the player.":
+                                self._callback_notice = ""
+                                self._render_activity()
+                            self._log("Deck A: Resumed (video)")
+                            self._set_paused_state_for_deck("A", None)
                     else:
                         pos = out.playback_position_sec()
-                        if pos is not None:
-                            self._set_paused_state_for_deck("A", (cue.id, float(pos)))
                         out.pause()  # type: ignore[attr-defined]
-                        self._log("Deck A: Paused (video)")
+                        if out.is_paused():
+                            if self._callback_notice == "Pause was not acknowledged by the player.":
+                                self._callback_notice = ""
+                                self._render_activity()
+                            if pos is not None:
+                                self._set_paused_state_for_deck("A", (cue.id, float(pos)))
+                            self._log("Deck A: Paused (video)")
+                        else:
+                            self._callback_notice = "Pause was not acknowledged by the player."
+                            self._render_activity()
                     self._update_transport_button_visuals()
                     return
         except Exception:
@@ -10543,6 +10572,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return
         if self._scenes and not messagebox.askyesno("New show", "Start a new show? Unsaved edits will be lost."):
             return
+        self._stop_deck_a()
+        self._stop_deck_b()
         if sys.platform == "win32":
             self._ppt_end()
         self._show_path = None
@@ -10567,6 +10598,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if not cues_a and not cues_b and "cues" in data:
             cues_a = [Cue.from_dict(x) for x in data["cues"]]
         scenes = [Scene.from_dict(x) for x in data.get("scenes", [])]
+        self._stop_deck_a()
+        self._stop_deck_b()
         if sys.platform == "win32":
             self._ppt_end()
         self.settings = settings
@@ -11076,6 +11109,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
     def _activate_scene(self):
         """Load the selected scene's cues into both decks"""
+        # Removal checks are row indices, and cannot follow a different scene.
+        self._checked_cues_a.clear()
+        self._checked_cues_b.clear()
+        self._checkbox_mode_a = self._checkbox_mode_b = False
+        self.tree_a.column("checkbox", width=0)
+        self.tree_b.column("checkbox", width=0)
+        self._selected_a = self._selected_b = -1
         if sys.platform == "win32":
             self._ppt_pending = None
         # Must have a valid scene selected
@@ -11159,6 +11199,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         del self._scenes[self._selected_scene_idx]
         self._selected_scene_idx = -1
         self._refresh_scene_list()
+        self._activate_scene()
         self._log(f"Removed scene: {scene.name}")
 
     def _move_scene(self, direction: int):

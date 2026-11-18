@@ -18,8 +18,11 @@ def controller_worker(connection):
     from player import App, _format_timecode, _resolve_fftool, _no_console_subprocess_kwargs
     from operator_ui import show_tools
     from spectral_waveform import SpectralOverview
+    from operator_dialogs import OperatorDialogs
 
     app = App(operator_worker=True)
+    dialogs = OperatorDialogs(app)
+    dialogs.install()
     spectrum = SpectralOverview()
     actions = {
         "open": app._open_show, "save": app._save_show, "save_as": app._save_show_as,
@@ -45,6 +48,7 @@ def controller_worker(connection):
     def send_snapshots():
         sent_state = None
         sent_frames = {}
+        last_sent = 0
         while not closing.is_set():
             try:
                 state, frames = outgoing.get(timeout=0.2)
@@ -61,14 +65,20 @@ def controller_worker(connection):
                     frame.save(encoded, "JPEG", quality=86)
                     changes[key] = encoded.getvalue()
                 sent_frames[key] = frame
-            if changes or state != sent_state:
+            if changes or state != sent_state or time.monotonic() - last_sent >= 1:
                 try:
                     connection.send((state, changes))
                 except (BrokenPipeError, EOFError, OSError):
                     return
                 sent_state = state
+                last_sent = time.monotonic()
 
     def run_action(name, value):
+        if name == "dialog_result":
+            dialogs.respond(value)
+            return
+        if dialogs.state and name != "window":
+            return
         if name in actions:
             actions[name]()
         elif name == "window":
@@ -165,6 +175,7 @@ def controller_worker(connection):
             if limit is not None:
                 countdown = "−" + _format_timecode(max(0, limit - playing_pos), with_ms=True)[:-2]
         state = {
+            "dialog": dialogs.state,
             "show": app.var_showfile.get(), "activity": app.var_activity.get(),
             "busy": bool(app._busy_jobs), "fullscreen": app.var_presentation_btn.get(),
             "scenes": [dict(name=scene.name, selected=i == app._selected_scene_idx,
@@ -187,6 +198,9 @@ def controller_worker(connection):
         return state, dict(app.output_monitor.frames)
 
     def tick():
+        # Schedule before dispatch: a synchronous model dialog runs a nested Tk
+        # loop, which must still receive its Qt answer and publish playback state.
+        app.after(33, tick)
         try:
             if connection.poll():
                 name, value = connection.recv()
@@ -205,7 +219,6 @@ def controller_worker(connection):
         except queue.Empty:
             pass
         outgoing.put_nowait(snapshot())
-        app.after(33, tick)
 
     threading.Thread(target=send_snapshots, daemon=True, name="operator-ui-sender").start()
     app.after(0, tick)
@@ -221,9 +234,10 @@ def run_quick(on_ready=None):
     from multiprocessing import get_context
     from PySide6.QtCore import QObject, Property, QSize, QTimer, QUrl, Signal, Slot, Qt
     from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPainterPath, QPen
-    from PySide6.QtQml import QQmlApplicationEngine
+    from PySide6.QtQml import QQmlApplicationEngine, QJSValue
     from PySide6.QtQuick import QQuickImageProvider
     from operator_ui import _ICON_PATHS
+    from operator_transport import OperatorTransport
 
     class PreviewImages(QQuickImageProvider):
         def __init__(self):
@@ -270,13 +284,16 @@ def run_quick(on_ready=None):
 
         def __init__(self, connection, previews):
             super().__init__()
-            self.connection = connection
+            self.connection = OperatorTransport(connection)
             self.preview_provider = previews
             self.current = {"activity": "Starting Show Control…", "busy": True, "fullscreen": "Fullscreen"}
             self.rows = {}
             self.revisions = {}
             self.generation = 0
             self.bars = []
+            self.last_received = time.monotonic()
+            self.failed = False
+            self.close_requested = False
 
         @Property("QVariantMap", notify=stateChanged)
         def state(self):
@@ -296,10 +313,38 @@ def run_quick(on_ready=None):
 
         @Slot(str, "QVariant")
         def press(self, name, value=None):
-            try:
-                self.connection.send((name, value))
-            except (OSError, EOFError):
-                qt_app.quit()
+            if isinstance(value, QJSValue):
+                value = value.toVariant()
+            if self.failed:
+                if name == "close":
+                    qt_app.quit()
+                return
+            if name == "close":
+                self.close_requested = True
+            elif name == "dialog_result" and self.current.get("dialog"):
+                # Closing is refused while a model dialog (including the
+                # saving-in-progress notice) is awaiting an answer.
+                self.close_requested = False
+            if not self.connection.send((name, value)):
+                self.controller_problem(self.connection.error or "The show controller connection was lost.",
+                                        fatal=self.connection.closed)
+
+        @Slot(int, "QVariantList")
+        def answerFiles(self, dialog_id, urls):
+            paths = [(url if isinstance(url, QUrl) else QUrl(str(url))).toLocalFile() for url in urls]
+            spec = self.current.get("dialog") or {}
+            value = paths if spec.get("multiple") else (paths[0] if paths else "")
+            self.press("dialog_result", {"id": dialog_id, "value": value})
+
+        def controller_problem(self, message, fatal=False):
+            import os
+            logs = Path(os.environ.get("APPDATA", str(Path.home()))) / "SP_Show_Control" / "logs"
+            self.failed = fatal
+            error = f"{message} Logs: {logs}"
+            if self.current.get("controllerError") != error:
+                self.current = dict(self.current, controllerError=error, busy=False,
+                                    activity="Controller stopped" if fatal else "Waiting for controller…")
+                self.stateChanged.emit()
 
         @Slot(str, "QVariantList")
         def drop(self, deck, urls):
@@ -307,20 +352,20 @@ def run_quick(on_ready=None):
             self.press(deck + "_drop", [path for path in paths if path])
 
         def receive(self):
-            try:
-                if not self.connection.poll():
-                    if not worker.is_alive():
+            received = self.connection.receive_latest()
+            if received is None:
+                if not worker.is_alive() or self.connection.error:
+                    if self.close_requested and (not worker.is_alive() or self.connection.closed):
                         qt_app.quit()
-                    return
-                state, changes = self.connection.recv()
-                for _ in range(4):
-                    if not self.connection.poll():
-                        break
-                    state, extra = self.connection.recv()
-                    changes.update(extra)
-            except (OSError, EOFError):
-                qt_app.quit()
+                    else:
+                        self.controller_problem(self.connection.error or "The show controller stopped unexpectedly. Close and reopen Show Control.",
+                                                fatal=self.connection.closed or not worker.is_alive())
+                elif time.monotonic() - self.last_received > 5:
+                    self.controller_problem("The show controller is not responding. Playback may still be running.")
                 return
+            state, changes = received
+            self.last_received = time.monotonic()
+            self.failed = False
             for key, data in changes.items():
                 self.generation += 1
                 self.preview_provider.images[key] = QImage.fromData(data)
@@ -365,10 +410,10 @@ def run_quick(on_ready=None):
         qt_app.exec()
     if worker.is_alive():
         bridge.press("close", None)
-    frontend.close()
     worker.join(8)
     if worker.is_alive():
         worker.terminate()
         worker.join(3)
+    bridge.connection.close()
     if not windows:
         raise RuntimeError("The operator window could not load.")
