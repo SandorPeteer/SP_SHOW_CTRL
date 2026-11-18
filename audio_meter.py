@@ -1,4 +1,4 @@
-"""Live mpv PCM meters: post user filters, with mpv software gain applied.
+"""Live mpv PCM meters: post filters/downmix, with mpv software gain applied.
 
 The pass-through astats filter measures the running decoder's channel RMS and
 sample peak. This is not a waveform estimate, true-peak meter or device-loopback.
@@ -9,20 +9,30 @@ silently guessed. The UI displays A/B independently, never a fictitious sum.
 Sources: https://mpv.io/manual/stable/#command-interface-af-metadata/<filter-label>
 https://ffmpeg.org/ffmpeg-filters.html#astats
 https://github.com/mpv-player/mpv/blob/v0.41.0/player/audio.c#L161-L170
+https://mpv.io/manual/stable/#audio-filters-format
 """
 import math
 
 
 METER_LABEL = "sp-meter"
+OUTPUT_FORMAT_LABEL = "sp-output"
 METER_PROPERTY = "af-metadata/" + METER_LABEL
 METER_FILTER = ("@" + METER_LABEL + ":lavfi=[astats=metadata=1:reset=1:"
                 "measure_perchannel=RMS_level+Peak_level:measure_overall=none]")
 METER_PROPERTIES = (METER_PROPERTY, "volume", "volume-gain", "mute", "pause",
-                    "core-idle", "replaygain", "replaygain-fallback")
+                    "core-idle", "replaygain", "replaygain-fallback",
+                    "audio-out-params", "af", "audio-device", "audio-channels")
 
 
-def metered_filters(filters=None):
-    return (str(filters) + "," if filters else "") + METER_FILTER
+def output_format_filter(channels=None):
+    # Use mpv's own autoconverter, with its configured downmix coefficients.
+    # The unconstrained form lets a new file/device negotiate its native layout.
+    return "@" + OUTPUT_FORMAT_LABEL + ":format" + ("=channels=" + str(channels) if channels else "")
+
+
+def metered_filters(filters=None, *, output_channels=None):
+    return ((str(filters) + "," if filters else "") +
+            output_format_filter(output_channels) + "," + METER_FILTER)
 
 
 def empty_levels():

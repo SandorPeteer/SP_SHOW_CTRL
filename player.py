@@ -368,7 +368,7 @@ except ImportError:
 CueKind = Literal["audio", "video", "ppt", "image"]
 
 APP_NAME = "S.P. Show Control"
-APP_VERSION = "2026.11.17 · előnézet"
+APP_VERSION = "2026.11.18"
 
 _APP_DIR = Path(__file__).resolve().parent
 _FFTOOLS_CACHE: dict[str, str] = {}
@@ -1965,13 +1965,8 @@ class OutputRunner:
             _swallow_exc(e, note="OutputRunner.play_at_for_deck set owner")
 
         if cue.kind == "image":
-            try:
-                try:
-                    sess.set_property_strict("mute", True)
-                except Exception:
-                    sess.set_property("mute", True)
-            except Exception as e:
-                _swallow_exc(e, note="OutputRunner.play_at_for_deck image mute")
+            if not sess.set_property_strict("mute", True):
+                raise RuntimeError("The projector did not acknowledge mute")
             self._stop_at_sec = None
             sess.loadfile(cue.path, start=0.0, end=None, volume=0, af_lavfi=None)
             if not sess.set_property("pause", False):
@@ -1983,14 +1978,9 @@ class OutputRunner:
 
         # VIDEO
         is_visuals = bool(str(deck) == "B")
-        try:
-            # VISUALS (deck B) videos are muted by default so they can play over Deck A music.
-            try:
-                sess.set_property_strict("mute", bool(is_visuals))
-            except Exception:
-                sess.set_property("mute", bool(is_visuals))
-        except Exception as e:
-            _swallow_exc(e, note="OutputRunner.play_at_for_deck video mute")
+        # Never replace media on an output whose silence was not acknowledged.
+        if not sess.set_property_strict("mute", True):
+            raise RuntimeError("The projector did not acknowledge mute")
         pos = max(0.0, float(position_sec))
         end_at = None
         if cue.stop_at_sec is not None and float(cue.stop_at_sec) > pos:
@@ -2007,15 +1997,11 @@ class OutputRunner:
         af = self._build_normalize_af(cue)
         self._stop_at_sec = float(end_at) if end_at is not None else None
         sess.loadfile(cue.path, start=float(pos), end=end_at, volume=_clamp_int(int(vol), 0, 100), af_lavfi=af)
-        try:
-            sess.set_property("pause", False)
-        except Exception as e:
-            _swallow_exc(e, note="OutputRunner.play_at_for_deck unpause")
+        if not sess.set_property("pause", False):
+            raise RuntimeError("The projector did not acknowledge playback")
         # Re-apply critical audio properties after load (some mpv builds can race during replace).
-        try:
-            sess.set_property_strict("mute", bool(is_visuals))
-        except Exception as e:
-            _swallow_exc(e, note="OutputRunner.play_at_for_deck reapply mute")
+        if not sess.set_property_strict("mute", bool(is_visuals)):
+            raise RuntimeError("The projector did not acknowledge the audio state")
         try:
             if not is_visuals:
                 sess.set_property_strict("volume", _clamp_int(int(vol), 0, 100))
@@ -2072,48 +2058,40 @@ class MediaRunner:
     def current_cue(self) -> Cue | None:
         return self._playing_cue
 
-    def stop(self) -> None:
-        self._media_clock = None
+    def stop(self) -> bool:
         proc = self._proc
-        backend = self._backend
+        if proc is not None and proc.poll() is None:
+            if self._backend == "ffplay":
+                try:
+                    if proc.stdin and not proc.stdin.closed:
+                        proc.stdin.write("q")
+                        proc.stdin.flush()
+                        proc.stdin.close()
+                        proc.wait(timeout=0.5)
+                except Exception as exc:
+                    _swallow_exc(exc, note="MediaRunner.stop ffplay quit")
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=1.0)
+                except Exception as exc:
+                    _swallow_exc(exc, note="MediaRunner.stop terminate")
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=1.0)
+                    except Exception as killed:
+                        _swallow_exc(killed, note="MediaRunner.stop kill")
+            if proc.poll() is None:
+                # Keep the live handle: callers must not assume silence or lose
+                # the only way to retry stopping a child that rejected shutdown.
+                return False
+        self._media_clock = None
         self._proc = None
         self._playing_cue = None
         self._started_at_monotonic = None
         self._playing_seek_sec = None
         self._backend = None
-        if not proc:
-            return
-
-        # Check if process is already dead
-        if proc.poll() is not None:
-            # Process already exited, nothing to do
-            return
-
-        # Try graceful quit first for ffplay via stdin.
-        if backend == "ffplay":
-            try:
-                if proc.stdin and not proc.stdin.closed:
-                    proc.stdin.write("q")
-                    proc.stdin.flush()
-                    proc.stdin.close()
-                    proc.wait(timeout=0.5)
-                    return
-            except (BrokenPipeError, OSError) as e:
-                _swallow_exc(e, note="MediaRunner.stop ffplay quit pipe")
-            except Exception as e:
-                _swallow_exc(e, note="MediaRunner.stop ffplay quit")
-
-        # If graceful quit failed, try terminate
-        try:
-            proc.terminate()
-            proc.wait(timeout=1.0)
-        except Exception as e:
-            _swallow_exc(e, note="MediaRunner.stop terminate")
-            # Last resort: kill
-            try:
-                proc.kill()
-            except Exception as e2:
-                _swallow_exc(e2, note="MediaRunner.stop kill")
+        return True
 
     def _spawn_player(self, backend: str, args: list[str]) -> subprocess.Popen:
         clock = None
@@ -3136,6 +3114,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._paused_pos_sec: float | None = None
         self._paused_a: tuple[str, float] | None = None
         self._paused_b: tuple[str, float] | None = None
+        self.audio_mix = False
+        self._last_audio_source: str | None = None
+        self._audio_auto_start = False
+        self._ppt_sound_preference = False
         self._suppress_finish: dict[str, str] = {}
         self._last_seek_time: float = 0.0
         self._last_seek_deck: str = ""
@@ -3697,6 +3679,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return
         if play:
             self._ppt_pending = cue
+            self._ppt_audio_explicit = not self._audio_auto_start
+            if self._ppt_audio_explicit:
+                self.var_ppt_sound.set(self._ppt_sound_preference)
         path = cue.path
         def progress(msg):
             if (self._ppt_pending and self._ppt_pending.path == path) or (not self._ppt_running and not self._ppt_pending):
@@ -3746,11 +3731,11 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return
         from ppt_media import read_timing
         self._ppt_seconds = read_timing(path, files)
-        self._show_mpv_slide(pending, files, 0)
+        self._show_mpv_slide(pending, files, 0, explicit=getattr(self, "_ppt_audio_explicit", True))
         if self._ppt_running and self._ppt_cue is pending:
             self._record_playback_origin("B", pending)
 
-    def _show_mpv_slide(self, cue, files, index):
+    def _show_mpv_slide(self, cue, files, index, *, explicit=False):
         if not 0 <= index < len(files):
             return
         slide = files[index]
@@ -3761,6 +3746,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             if self.settings.mpv_output_mode != "ipc" or not self.settings.mpv_persistent_output:
                 raise ValueError("A Settings ablakban válaszd az IPC módot és a folyamatos mpv-kimenetet.")
             media = Cue(id=cue.id, path=str(slide), kind="video" if slide.suffix == ".mp4" else "image")
+            if self.video_runner.owner_deck == "A":
+                if not self._pause_audio_for_presentation(include_media=False):
+                    return
+            if (slide.suffix == ".mp4" and self.var_ppt_sound.get()
+                    and not self.audio_mix and not self._pause_audio_for_presentation()):
+                self.var_ppt_sound.set(False)
+                return
             if not self._ppt_running:
                 self._capture_visuals_resume_state()
             self.video_runner.play_for_deck("B", media)
@@ -3772,7 +3764,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._ppt_slide_started = time.monotonic()
             self._active_runner = self.video_runner
             self._last_output_owner, self._last_output_cue_id = "B", cue.id
-            self._ppt_apply_sound()
+            self._ppt_apply_sound(explicit=explicit)
             self.var_ppt_status.set(f"{cue.display_name()} • {index + 1}/{len(files)}")
             self.var_slide_position.set(f"{index + 1:02d} / {len(files):02d}")
         except Exception as exc:
@@ -3808,13 +3800,30 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 return
         self._show_mpv_slide(self._ppt_cue, self._ppt_slides, (self._ppt_index + 1) % len(self._ppt_slides))
 
-    def _ppt_apply_sound(self):
+    def _ppt_apply_sound(self, *, explicit=True):
+        if explicit:
+            self._ppt_sound_preference = bool(self.var_ppt_sound.get())
         if self._ppt_running and self.video_runner.owner_deck == "B":
             sess = self.video_runner._sess
             if sess is not None:
                 audible = self.var_ppt_sound.get() and self._ppt_slides[self._ppt_index].suffix == ".mp4"
-                sess.set_property("volume", self.settings.startup_volume if audible else 0)
-                sess.set_property("mute", not audible)
+                if not audible:
+                    if not sess.set_property("mute", True):
+                        return self._audio_route_error("Presentation mute was not acknowledged; audio is still enabled.")
+                    return True
+                if audible and not self.audio_mix and not self._pause_audio_for_presentation():
+                    self.var_ppt_sound.set(False)
+                    return False
+                if not sess.set_property("volume", self.settings.startup_volume if audible else 0):
+                    self.var_ppt_sound.set(False)
+                    return self._audio_route_error("Presentation volume was not acknowledged; audio handoff was cancelled.")
+                if not sess.set_property("mute", not audible):
+                    self.var_ppt_sound.set(False)
+                    return self._audio_route_error("Presentation mute was not acknowledged; audio handoff was cancelled.")
+                if audible and explicit:
+                    self._last_audio_source = "B"
+                return True
+        return True
 
     def _clear_mpv_ppt(self):
         self._ppt_pending = None
@@ -7710,6 +7719,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             except Exception:
                 pass
 
+            if not self._prepare_audio_source("A"):
+                return
             paused = self._paused_state_for_deck("A")
             resume_pos = (float(paused[1]) if paused is not None and paused[0] == cue.id
                           and self._playback_scene_matches("A") else None)
@@ -7737,6 +7748,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     runner.play(cue)
                     self._log(f"Deck A: Playing {Path(cue.path).name}")
                 self._record_playback_origin("A", cue)
+                self._audio_source_started("A")
             except Exception as e:
                 self._log(f"Deck A play error: {e}")
                 try:
@@ -7770,6 +7782,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             except Exception:
                 pass
 
+            if not self._prepare_audio_source("A"):
+                return
             paused = self._paused_state_for_deck("A")
             resume_pos = (float(paused[1]) if paused is not None and paused[0] == cue.id
                           and self._playback_scene_matches("A") else None)
@@ -7800,6 +7814,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     else:
                         self._log(f"Deck A: Previewing video {Path(cue.path).name}")
                 self._record_playback_origin("A", cue)
+                self._audio_source_started("A")
             except Exception as e:
                 self._log(f"Deck A play error: {e}")
                 try:
@@ -7827,6 +7842,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 if (playing is not None and playing.id == cue.id and playing.kind == "video"
                         and self._playback_scene_matches("A")):
                     if bool(getattr(out, "is_paused", lambda: False)()):
+                        if not self._prepare_audio_source("A"):
+                            return
                         out.resume()  # type: ignore[attr-defined]
                         if out.is_paused():
                             self._callback_notice = "Resume was not acknowledged by the player."
@@ -7837,6 +7854,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                                 self._render_activity()
                             self._log("Deck A: Resumed (video)")
                             self._set_paused_state_for_deck("A", None)
+                            self._audio_source_started("A")
                     else:
                         pos = out.playback_position_sec()
                         out.pause()  # type: ignore[attr-defined]
@@ -7855,6 +7873,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception:
             pass
 
+        if not self._prepare_audio_source("A"):
+            return
         paused = self._paused_state_for_deck("A")
         resume_pos = (float(paused[1]) if paused is not None and paused[0] == cue.id
                       and self._playback_scene_matches("A") else None)
@@ -7881,6 +7901,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 out.play_for_deck("A", cue, volume_override=cue.volume_percent)  # type: ignore[attr-defined]
                 self._log(f"Deck A: Playing video {Path(cue.path).name}")
             self._record_playback_origin("A", cue)
+            self._audio_source_started("A")
         except Exception as e:
             self._log(f"Deck A play error: {e}")
             try:
@@ -9427,6 +9448,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception:
             pass
         self._playback_origin.clear()
+        self._set_paused_state_for_deck("A", None)
+        self._set_paused_state_for_deck("B", None)
+        self._reset_audio_routing()
         self._inhibit_auto_advance = False  # Reset inhibit flag after stop
         self._log("Stopped.")
 
@@ -10080,6 +10104,115 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             runner_b = None
         self._update_vu_for_deck("B", runner_b)
 
+    def _audio_route_error(self, message: str) -> bool:
+        self._callback_notice = message
+        self._render_activity()
+        self._log(message)
+        return False
+
+    def _pause_audio_for_presentation(self, *, include_media=True) -> bool:
+        """Silence A and retain a real engine resume point before unmuting B."""
+        if include_media and self.audio_runner.is_playing():
+            runner = self.audio_runner
+            cue, process = runner.current_cue(), runner._proc
+            clock = runner._media_clock
+            if cue is None or clock is None:
+                return self._audio_route_error("Audio position is not ready; presentation audio remains off.")
+            if not clock.set_property("pause", True):
+                return self._audio_route_error("Audio pause was not acknowledged; presentation audio remains off.")
+            pos = clock.get_property("time-pos")
+            if not isinstance(pos, (int, float)) or not math.isfinite(pos):
+                clock.set_property("pause", False)
+                return self._audio_route_error("Audio position is unavailable; presentation audio remains off.")
+            previous_suppression = self._suppress_finish.get("A")
+            self._suppress_finish["A"] = "pause"
+            self._was_playing_a = True
+            if runner.stop() is False or (process is not None and process.poll() is None):
+                if previous_suppression is None:
+                    self._suppress_finish.pop("A", None)
+                else:
+                    self._suppress_finish["A"] = previous_suppression
+                clock.set_property("pause", False)
+                return self._audio_route_error("Audio did not stop; presentation audio remains off.")
+            self._set_paused_state_for_deck("A", (cue.id, float(pos)))
+        out = self.video_runner
+        if out.owner_deck == "A" and out.is_playing():
+            cue = out.current_cue()
+            if not out.is_paused():
+                out.pause()
+            if not out.is_paused():
+                return self._audio_route_error("Video pause was not acknowledged; presentation audio remains off.")
+            pos = out._sess.get_property("time-pos") if out._sess is not None else None
+            if cue is None or not isinstance(pos, (int, float)) or not math.isfinite(pos):
+                return self._audio_route_error("Video position is unavailable; presentation audio remains off.")
+            self._set_paused_state_for_deck("A", (cue.id, float(pos)))
+        self._update_transport_button_visuals()
+        return True
+
+    def _prepare_audio_source(self, deck: str) -> bool:
+        if getattr(self, "audio_mix", False):
+            return True
+        if deck == "B":
+            return self._pause_audio_for_presentation()
+        return self._mute_presentation_for_audio()
+
+    def _mute_presentation_for_audio(self) -> bool:
+        out = self.video_runner
+        variable = getattr(self, "var_ppt_sound", None)
+        if out.owner_deck == "B" or (out.owner_deck != "A" and variable is not None and variable.get()):
+            sess = out._sess
+            needs_ack = sess.is_alive() if sess is not None else out.is_playing()
+            if needs_ack and (sess is None or not sess.set_property("mute", True)):
+                return self._audio_route_error("Presentation mute was not acknowledged; audio playback was cancelled.")
+        if variable is not None:
+            if variable.get():
+                self._ppt_sound_preference = True
+            variable.set(False)
+        return True
+
+    def _audio_source_started(self, deck: str) -> None:
+        if not getattr(self, "_audio_auto_start", False):
+            self._last_audio_source = deck
+
+    def _toggle_audio_mix(self) -> bool:
+        if not self.audio_mix:
+            self.audio_mix = True
+            return True
+        keep = self._last_audio_source or "A"
+        # Keep Mix enabled until the other source has actually acknowledged
+        # pause/mute. Changing a mode must never silently leave two live sources.
+        if keep == "B":
+            if not self._pause_audio_for_presentation():
+                return False
+        else:
+            if not self._mute_presentation_for_audio():
+                return False
+        self.audio_mix = False
+        return True
+
+    def _reset_audio_routing(self) -> None:
+        self.audio_mix = False
+        self._last_audio_source = None
+
+    def _active_audio_meter(self) -> dict:
+        """One acknowledged source normally; separate real channels in Mix."""
+        from audio_meter import empty_levels
+        if self.audio_mix:
+            return {"mixed": True, "decks": [dict(name=deck, **self._vu_snapshot(deck)) for deck in ("A", "B")]}
+        a = self._vu_snapshot("A")
+        b = self._vu_snapshot("B")
+        if a["active"]:
+            return dict(source="audio", label="Audio", **a)
+        if b["active"]:
+            return dict(source="presentation", label="Presentation", **b)
+        if not a["available"] and (self.audio_runner.is_playing() or
+                (self.video_runner.owner_deck == "A" and self.video_runner.is_playing() and not self.video_runner.is_paused())):
+            return dict(source="audio", label="Audio · meter unavailable", **a)
+        variable = getattr(self, "var_ppt_sound", None)
+        if not b["available"] and self.video_runner.owner_deck == "B" and self.video_runner.is_playing() and variable is not None and variable.get():
+            return dict(source="presentation", label="Presentation · meter unavailable", **b)
+        return dict(source=None, label="No audio", **empty_levels())
+
     def _vu_snapshot(self, deck: str) -> dict:
         """Real engine channel RMS/peak for Qt; legacy envelope meters stay separate."""
         from audio_meter import empty_levels
@@ -10627,9 +10760,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             if next_cue.auto_play:
                 self._log(f"Auto-playing next cue (Deck {deck}): {next_cue.display_name()}")
                 try:
+                    self._audio_auto_start = True
                     (self._play_deck_a if deck == "A" else self._play_deck_b)()
                 except Exception as exc:
                     self._log(f"Auto-play failed: {exc}")
+                finally:
+                    self._audio_auto_start = False
             else:
                 self._log(f"Ready on next cue (Deck {deck}): {next_cue.display_name()}")
             return
@@ -10662,6 +10798,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if sys.platform == "win32":
             self._ppt_end()
         self._playback_origin.clear()
+        self._reset_audio_routing()
         self._show_path = None
         self._loaded_preset_path = None
         self._scenes = []
@@ -10688,6 +10825,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._stop_deck_b()
         if sys.platform == "win32":
             self._ppt_end()
+        self._reset_audio_routing()
         self.settings = settings
         # Persistent settings are user-level and must survive preset/show loads.
         try:
@@ -10705,6 +10843,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self.var_loop_b.set("Repeat on" if self._loop_b_enabled else "Repeat off")
             if sys.platform == "win32":
                 self.var_ppt_sound.set(bool(playback.get("slide_audio")))
+                self._ppt_sound_preference = bool(self.var_ppt_sound.get())
                 self.var_ppt_interval.set(str(playback.get("slide_seconds", "5")))
 
         self._cues_a, self._cues_b = cues_a, cues_b
@@ -10951,7 +11090,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             "scenes": [scene.to_dict() for scene in self._scenes],
         })
         if sys.platform == "win32":
-            payload["playback"].update(slide_audio=self.var_ppt_sound.get(), slide_seconds=self.var_ppt_interval.get())
+            payload["playback"].update(slide_audio=self._ppt_sound_preference, slide_seconds=self.var_ppt_interval.get())
         prepared = ({source: ready[1][0].parent for source, ready in self._ppt_preparer.ready.items()}
                     if sys.platform == "win32" else {})
         self._saving_show = True

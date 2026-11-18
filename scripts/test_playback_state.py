@@ -73,6 +73,7 @@ class PlaybackStateTests(unittest.TestCase):
         app = SimpleNamespace(_starting_up=False, _selected_cue_for_deck=Mock(return_value=cue),
                               _clear_mpv_ppt=Mock(), video_runner=self.output, _log=Mock(),
                               _playback_scene_matches=Mock(return_value=True),
+                              _prepare_audio_source=Mock(return_value=True), _audio_source_started=Mock(),
                               _set_paused_state_for_deck=Mock(), _update_transport_button_visuals=Mock(),
                               _render_activity=Mock())
         with patch.object(self.output, "is_playing", return_value=True), \

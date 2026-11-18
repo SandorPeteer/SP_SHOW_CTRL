@@ -11,7 +11,9 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable
-from audio_meter import METER_PROPERTIES, METER_PROPERTY, levels_from_telemetry, metered_filters
+from audio_meter import (METER_FILTER, METER_LABEL, METER_PROPERTIES, METER_PROPERTY, OUTPUT_FORMAT_LABEL,
+                         empty_levels, levels_from_telemetry, metered_filters,
+                         output_format_filter)
 
 
 def _user_data_dir() -> Path:
@@ -36,7 +38,8 @@ def _clamp_int(value: int, lo: int, hi: int) -> int:
 
 
 _PLAYBACK_PROPERTIES = ("path", "time-pos", "duration", "eof-reached", *METER_PROPERTIES)
-_FILE_PROPERTIES = ("path", "time-pos", "duration", "eof-reached", METER_PROPERTY, "core-idle")
+_FILE_PROPERTIES = ("path", "time-pos", "duration", "eof-reached", METER_PROPERTY,
+                    "core-idle", "audio-out-params")
 
 
 class MpvIpcSession:
@@ -77,6 +80,14 @@ class MpvIpcSession:
         self._next_id: int = 1
         self._telemetry: dict[str, object] = {}
         self._clock_updated = 0.0
+        self._audio_filter_lock = threading.RLock()
+        self._meter_wake = threading.Event()
+        self._meter_stop = threading.Event()
+        self._meter_thread: threading.Thread | None = None
+        self._meter_generation = 0
+        self._meter_loading = False
+        self._meter_wait_clock = False
+        self._meter_ready_layout = None
         self._retry_after = 0.0
         self._playing: bool = False
         self._end_info: tuple[str | None, str | None] | None = None
@@ -289,12 +300,25 @@ class MpvIpcSession:
         self._reader_thread.start()
 
     def shutdown(self) -> None:
+        self._meter_stop.set()
+        self._meter_wake.set()
+        # Finish an in-flight filter update before replacing the IPC handles.
+        # Otherwise an old worker could send its remaining commands to the
+        # next process after start() reconnects this session.
+        with self._audio_filter_lock:
+            self._shutdown_connection()
+
+    def _shutdown_connection(self) -> None:
         proc = self._proc
         self._proc = None
         self._playing = False
         self._end_info = None
         with self._lock:
             self._telemetry.clear()
+            self._meter_ready_layout = None
+            self._meter_generation += 1
+            self._meter_loading = False
+            self._meter_wait_clock = False
             self._retry_after = 0.0
 
         try:
@@ -391,6 +415,25 @@ class MpvIpcSession:
             return None
 
     def set_property(self, name: str, value: object) -> bool:
+        if name in ("af", "audio-device", "audio-channels"):
+            # Serialize cue changes with the background layout adjustment.
+            with self._audio_filter_lock:
+                if name != "af" and self.observed(name)[0] != value:
+                    # Remove our constraint before mpv opens the newly chosen
+                    # output, so it negotiates from the source's real layout.
+                    filters = self.get_property("af") or []
+                    if any(isinstance(entry, dict) and entry.get("label") == OUTPUT_FORMAT_LABEL for entry in filters):
+                        self.command(["af", "add", output_format_filter()])
+                with self._lock:
+                    self._meter_ready_layout = None
+                success = self._set_property(name, value)
+                if name != "af":
+                    with self._lock:
+                        self._meter_wait_clock = True
+                return success
+        return self._set_property(name, value)
+
+    def _set_property(self, name: str, value: object) -> bool:
         try:
             resp = self.command(["set_property", str(name), value], timeout=0.6)
         except Exception as e:
@@ -427,13 +470,78 @@ class MpvIpcSession:
             response = self.command(["observe_property", observer, name], timeout=0.5)
             if not self._is_success(response):
                 raise RuntimeError(f"mpv could not observe {name}")
+        self._meter_stop.set()
+        self._meter_wake.set()
+        stop = self._meter_stop = threading.Event()
+        wake = self._meter_wake = threading.Event()
+        self._meter_thread = threading.Thread(target=self._meter_loop,
+                                              args=(stop, wake, self._proc),
+                                              name="mpv-output-meter", daemon=True)
+        self._meter_thread.start()
+        self._meter_wake.set()
+
+    def _meter_loop(self, stop, wake, proc) -> None:
+        # One coalesced update per format/filter change. No PCM polling and no
+        # synchronous command on the reader or UI snapshot thread.
+        while not stop.is_set():
+            wake.wait()
+            wake.clear()
+            if stop.is_set() or self._proc is not proc:
+                return
+            try:
+                with self._audio_filter_lock:
+                    if not stop.is_set() and self._proc is proc:
+                        self._configure_output_meter()
+            except Exception as exc:
+                self._swallow_exc(exc, "mpv output meter layout")
+
+    def _configure_output_meter(self) -> None:
+        with self._lock:
+            if self._meter_loading or self._meter_wait_clock:
+                return
+            generation = self._meter_generation
+        filters = self.get_property("af")
+        entries = [entry for entry in (filters or []) if isinstance(entry, dict)
+                   and entry.get("label") == OUTPUT_FORMAT_LABEL]
+        if not entries:
+            return
+        entry = entries[0]
+        output = self.get_property("audio-out-params")
+        if not isinstance(output, dict) or not output.get("channels"):
+            return
+        layout = str(output["channels"])
+        if entry.get("params", {}).get("channels") != layout:
+            with self._lock:
+                self._telemetry.pop(METER_PROPERTY, None)
+                self._meter_ready_layout = None
+            # Recreate astats as well: a reused lavfi metadata dictionary keeps
+            # old 3..6 channel keys after a 6→2 conversion. Until fresh metadata
+            # arrives the snapshot remains unavailable, never pre-downmix data.
+            response = self.command(["af", "remove", "@" + METER_LABEL])
+            if not self._is_success(response):
+                return
+            try:
+                response = self.command(["af", "add", output_format_filter(layout)])
+            finally:
+                meter_response = self.command(["af", "add", METER_FILTER])
+            if not self._is_success(response) or not self._is_success(meter_response):
+                return
+        with self._lock:
+            if generation == self._meter_generation:
+                self._telemetry["audio-out-params"] = output
+                self._meter_ready_layout = layout
 
     def audio_levels(self) -> dict:
         """Read the last event snapshot; never issues IPC on the UI thread."""
         with self._lock:
             values = dict(self._telemetry)
             current = time.monotonic() - self._clock_updated <= 1.0
-        return levels_from_telemetry(values, clock_current=current)
+            layout = self._meter_ready_layout
+        output = values.get("audio-out-params")
+        if not isinstance(output, dict) or layout != output.get("channels"):
+            return empty_levels()
+        levels = levels_from_telemetry(values, clock_current=current)
+        return levels if len(levels["channels"]) == output.get("channel-count") else empty_levels()
 
     def get_property(self, name: str) -> object | None:
         try:
@@ -470,13 +578,27 @@ class MpvIpcSession:
                 end_v = max(float(start) + 0.001, float(end_v))
             opts.append(f"end={end_v:.3f}")
         command = ["loadfile", str(path), "replace"]
-        if opts:
-            response = self.command([*command, -1, *opts], timeout=1.0)
-            if not self._is_success(response):
-                response = self.command(command, timeout=1.0)
-        else:
-            response = self.command(command, timeout=1.0)
+        with self._audio_filter_lock:
+            # Remove the previous AO constraint BEFORE opening the next cue;
+            # otherwise a stereo cue could force a later 5.1 cue to stereo.
+            with self._lock:
+                self._meter_loading = True
+                self._meter_ready_layout = None
+            try:
+                self.set_property("af", metered_filters(af_lavfi))
+                if opts:
+                    response = self.command([*command, -1, *opts], timeout=1.0)
+                    if not self._is_success(response):
+                        response = self.command(command, timeout=1.0)
+                else:
+                    response = self.command(command, timeout=1.0)
+            except Exception:
+                with self._lock:
+                    self._meter_loading = False
+                raise
         if not self._is_success(response):
+            with self._lock:
+                self._meter_loading = False
             raise RuntimeError(f"mpv rejected {Path(path).name}: {response.get('error')}")
 
         # Enforce IN (start) via an explicit seek; `start=` loadfile options are not reliable across mpv builds.
@@ -507,9 +629,6 @@ class MpvIpcSession:
                     self._swallow_exc(last_seek_err, "mpv seek (enforce start) failed")
         if volume is not None:
             self.set_property("volume", _clamp_int(int(volume), 0, 100))
-        # The persistent output carries properties across files. Explicitly
-        # clear a previous cue's normalization when this cue needs no filter.
-        self.set_property("af", metered_filters(af_lavfi))
 
     def _reader_loop_socket(self) -> None:
         f = getattr(self, "_sock_file", None)
@@ -573,6 +692,14 @@ class MpvIpcSession:
                     self._telemetry[name] = msg.get("data")
                     if name == "time-pos":
                         self._clock_updated = time.monotonic()
+                        if self._meter_wait_clock:
+                            self._meter_wait_clock = False
+                            self._meter_wake.set()
+                    if name == "af":
+                        self._meter_ready_layout = None
+                        self._telemetry.pop(METER_PROPERTY, None)
+                if name in ("af", "audio-out-params", "audio-device", "audio-channels"):
+                    self._meter_wake.set()
             return
         if ev == "start-file":
             with self._lock:
@@ -581,10 +708,24 @@ class MpvIpcSession:
                 for name in _FILE_PROPERTIES:
                     self._telemetry.pop(name, None)
                 self._clock_updated = 0.0
+                self._meter_ready_layout = None
+                self._meter_generation += 1
+                self._meter_loading = True
             self._end_info = None
             return
         if ev == "file-loaded":
             self._playing = True
+            self._meter_wake.set()
+            return
+        if ev == "playback-restart":
+            # file-loaded precedes AO negotiation. Only playback-restart means
+            # the new file's output buffers/format are ready (also when paused).
+            with self._lock:
+                self._meter_loading = False
+            self._meter_wake.set()
+            return
+        if ev == "audio-reconfig":
+            self._meter_wake.set()
             return
         if ev == "end-file":
             self._playing = False

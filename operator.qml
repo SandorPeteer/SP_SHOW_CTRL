@@ -205,18 +205,30 @@ ApplicationWindow {
 
     component PreviewTile: Tile {
         property bool live
+        objectName: live ? "livePreviewPanel" : "nextPreviewPanel"
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 5
+            anchors.margins: 3
             spacing: 3
             RowLayout {
                 objectName: live ? "livePreviewHeader" : "nextPreviewHeader"
+                Layout.preferredHeight: 22
+                Layout.minimumHeight: 22
                 Layout.fillWidth: true
                 Caption {
                     color: screen.ink
                     font.weight: Font.DemiBold
                     text: live ? "On screen" : "Next slide"
                     Layout.fillWidth: true
+                }
+                KeyButton {
+                    objectName: live ? "mixAudioButton" : "hiddenMixButton"
+                    visible: live
+                    label: "Mix"; showLabel: true; command: "mix_audio"
+                    implicitHeight: 22
+                    base: screen.ui.audioMix ? screen.amber : "#1c2938"
+                    tone: screen.ui.audioMix ? "#07131d" : screen.ink
+                    line: screen.ui.audioMix ? screen.amber : screen.edge
                 }
                 Caption { visible: live && !!screen.ui.slides; text: screen.ui.slidePosition || ""; color: screen.ink }
                 Caption {
@@ -226,104 +238,127 @@ ApplicationWindow {
                           ? screen.ui.projectionClock.label : "● Live"
                 }
             }
-            Rectangle {
-                color: "#080e16"
+            Item {
+                objectName: live ? "livePreviewSurface" : "nextPreviewSurface"
                 clip: true
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Image {
                     objectName: live ? "livePreview" : "nextPreview"
                     anchors.fill: parent
-                    anchors.rightMargin: live ? 68 : 0
                     source: (live ? operatorBridge.previews.live : operatorBridge.previews.next) || ""
                     fillMode: Image.PreserveAspectFit
                     cache: false
                     smooth: true
                 }
-                Rectangle {
+                Caption {
+                    id: previewCaption
                     anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                    anchors.rightMargin: live ? 68 : 0
-                    height: 20; color: "#a0080e16"
-                    visible: previewCaption.text !== ""
-                    Caption {
-                        id: previewCaption
-                        anchors.fill: parent; anchors.leftMargin: 5; anchors.rightMargin: 5
-                        text: live ? (screen.ui.liveCaption || "") : (screen.ui.nextCaption || "")
-                    }
+                    anchors.leftMargin: 5; anchors.rightMargin: 5; anchors.bottomMargin: 4
+                    text: live ? (screen.ui.liveCaption || "") : (screen.ui.nextCaption || "")
+                    visible: text !== ""; color: screen.ink
+                    style: Text.Outline; styleColor: screen.color
                 }
+
+            }
+        }
+    }
+
+    component AudioMeter: Item {
+        id: audioMeter
+        objectName: "audioMeterStrip"
+        readonly property var meter: screen.ui.vu || ({source: null, label: "No audio", active: false, available: false, channels: []})
+        readonly property bool mixed: !!screen.ui.audioMix
+        readonly property var sources: mixed ? (meter.decks || []) : [meter]
+        implicitHeight: mixed ? 56 : 44
+        Caption {
+            objectName: "activeAudioSource"
+            anchors.left: parent.left; anchors.right: meterTitle.left; anchors.rightMargin: 5
+            text: audioMeter.mixed ? "MIX" : audioMeter.meter.label || "No audio"
+            font.pixelSize: 9
+            color: audioMeter.mixed ? screen.amber : audioMeter.meter.source === "presentation" ? screen.violet : screen.cyan
+        }
+        Caption { id: meterTitle; anchors.right: parent.right; text: "VU · dBFS"; font.pixelSize: 9 }
+        Row {
+            id: meterArea
+            objectName: "activeAudioMeter"
+            anchors.top: parent.top; anchors.topMargin: 16
+            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+            spacing: 8
+            Repeater {
+                model: audioMeter.sources
                 Item {
-                    id: audioMeter
-                    visible: live
-                    anchors.top: parent.top; anchors.bottom: parent.bottom; anchors.right: parent.right
-                    width: 64
-                    readonly property var decks: screen.ui.vu && screen.ui.vu.decks ? screen.ui.vu.decks :
-                        [{name: "A", active: false, channels: []}, {name: "B", active: false, channels: []}]
-                    Caption { anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter; text: "VU · dBFS"; font.pixelSize: 9 }
-                    Row {
-                        anchors.top: parent.top; anchors.topMargin: 14
-                        anchors.bottom: parent.bottom; anchors.bottomMargin: 4
-                        spacing: 3
-                        Repeater {
-                            model: audioMeter.decks
-                            Item {
-                                id: meterDeck
-                                required property var modelData
-                                objectName: "vuDeck_" + (live ? "live_" : "next_") + modelData.name
-                                width: 21; height: parent.height
-                                Caption { anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter; text: meterDeck.modelData.name; font.pixelSize: 9; color: meterDeck.modelData.name === "A" ? screen.cyan : screen.violet }
-                                Row {
-                                    id: channelStrip
-                                    anchors.top: parent.top; anchors.topMargin: 15
-                                    anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter
-                                    readonly property int channelCount: meterDeck.modelData.channels.length || 2
-                                    spacing: Math.min(2, 4 / channelCount)
-                                    Repeater {
-                                        model: meterDeck.modelData.channels.length ? meterDeck.modelData.channels : [{level: 0, peak: 0}, {level: 0, peak: 0}]
-                                        Rectangle {
-                                            id: channelMeter
-                                            required property var modelData
-                                            required property int index
-                                            objectName: "vuChannel_" + index
-                                            width: Math.min(8, (meterDeck.width - channelStrip.spacing * (channelStrip.channelCount - 1)) / channelStrip.channelCount)
-                                            height: parent.height; radius: Math.min(2, width / 2); color: "#1c2b38"
-                                            Rectangle {
-                                                anchors.bottom: parent.bottom
-                                                width: parent.width
-                                                height: parent.height * Math.max(0, Math.min(1, channelMeter.modelData.level || 0))
-                                                color: channelMeter.modelData.level >= 0.96 ? screen.coral : channelMeter.modelData.level >= 0.80 ? screen.amber : screen.mint
-                                                Behavior on height { NumberAnimation { duration: 80 } }
-                                            }
-                                            Rectangle {
-                                                objectName: "vuPeak"
-                                                visible: meterDeck.modelData.active && meterDeck.modelData.available
-                                                width: parent.width; height: 2; color: screen.ink
-                                                y: (1 - Math.max(0, Math.min(1, channelMeter.modelData.peak || 0))) * (parent.height - height)
-                                            }
-                                        }
+                    id: sourceMeter
+                    required property var modelData
+                    required property int index
+                    objectName: "meterGroup_live_" + index
+                    width: (meterArea.width - meterArea.spacing * (audioMeter.sources.length - 1)) / Math.max(1, audioMeter.sources.length)
+                    height: parent.height
+                    Caption {
+                        visible: audioMeter.mixed
+                        anchors.top: parent.top; anchors.left: parent.left
+                        text: sourceMeter.modelData.name || ""; font.pixelSize: 9
+                        color: sourceMeter.modelData.name === "B" ? screen.violet : screen.cyan
+                    }
+                    Item {
+                        id: channelArea
+                        anchors.top: parent.top; anchors.topMargin: audioMeter.mixed ? 12 : 0
+                        anchors.left: parent.left; anchors.right: parent.right
+                        anchors.bottom: parent.bottom; anchors.bottomMargin: 10
+                        Column {
+                            id: channelStrip
+                            anchors.left: parent.left; anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            readonly property int channelCount: (sourceMeter.modelData.channels || []).length || 2
+                            spacing: Math.min(3, 4 / channelCount)
+                            Repeater {
+                                model: (sourceMeter.modelData.channels || []).length ? sourceMeter.modelData.channels : [{level: 0, peak: 0}, {level: 0, peak: 0}]
+                                Item {
+                                    id: channelMeter
+                                    required property var modelData
+                                    required property int index
+                                    objectName: "vuChannel_" + index
+                                    width: parent.width
+                                    height: Math.min(6, (channelArea.height - channelStrip.spacing * (channelStrip.channelCount - 1)) / channelStrip.channelCount)
+                                    Rectangle {
+                                        anchors.left: parent.left
+                                        height: parent.height
+                                        width: parent.width * Math.max(0, Math.min(1, channelMeter.modelData.level || 0))
+                                        color: channelMeter.modelData.level >= 0.96 ? screen.coral : channelMeter.modelData.level >= 0.80 ? screen.amber : screen.mint
+                                        Behavior on width { NumberAnimation { duration: 80 } }
+                                    }
+                                    Rectangle {
+                                        objectName: "vuPeak"
+                                        visible: sourceMeter.modelData.active && sourceMeter.modelData.available
+                                        height: parent.height; width: 2; color: screen.ink
+                                        x: Math.max(0, Math.min(1, channelMeter.modelData.peak || 0)) * (parent.width - width)
                                     }
                                 }
                             }
                         }
                     }
                     Repeater {
-                        model: [0, -12, -24, -36, -48]
+                        model: [-60, -30, 0]
                         Caption {
                             required property int modelData
-                            x: 47; y: 25 + (-modelData / 60) * (parent.height - 33)
+                            required property int index
+                            anchors.bottom: parent.bottom
+                            x: index === 0 ? 0 : index === 1 ? (sourceMeter.width - implicitWidth) / 2 : sourceMeter.width - implicitWidth
                             text: modelData; font.pixelSize: 8; color: screen.quiet
                         }
-                    }
-                    MouseArea {
-                        anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton
-                        ToolTip.visible: containsMouse
-                        ToolTip.text: "RMS / sample peak\n" + audioMeter.decks.map(function(deck) { return deck.name + ": " + (deck.db || "No audio signal") }).join("\n")
                     }
                 }
             }
         }
+        MouseArea {
+            anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton
+            ToolTip.visible: containsMouse
+            ToolTip.text: "RMS / sample peak\n" + audioMeter.sources.map(function(source) { return (source.label || source.name || "No audio") + ": " + (source.db || "No audio signal") }).join("\n")
+        }
     }
 
     component WaveTile: Tile {
+        objectName: "waveformPanel"
         ColumnLayout {
             anchors.fill: parent
             anchors.margins: 5
@@ -333,7 +368,6 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Caption { color: screen.ink; font.weight: Font.DemiBold; text: "Waveform"; Layout.fillWidth: true; Layout.minimumWidth: 0 }
                 Caption { color: screen.cyan; font.pixelSize: 14; font.weight: Font.DemiBold; text: screen.ui.time || "—" }
-                Caption { text: screen.ui.duration || "" }
             }
             Rectangle {
                 id: plot
@@ -342,7 +376,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 readonly property var bars: operatorBridge.waveform
-                AudioWaveform { anchors.fill: parent; samples: plot.bars }
+                AudioWaveform { objectName: "waveformEnvelope"; anchors.fill: parent; samples: plot.bars }
                 Rectangle {
                     objectName: "waveformPlayedShade"
                     width: screen.ui.cursor >= 0 ? Math.max(0, Math.min(1, screen.ui.cursor)) * parent.width : 0
@@ -396,7 +430,12 @@ ApplicationWindow {
                     }
                 }
             }
-            Caption { Layout.fillWidth: true; text: screen.ui.source || "" }
+            RowLayout {
+                Layout.fillWidth: true
+                Caption { Layout.fillWidth: true; Layout.minimumWidth: 0; text: screen.ui.source || "" }
+                Caption { text: screen.ui.duration || "" }
+            }
+            AudioMeter { Layout.fillWidth: true; Layout.preferredHeight: implicitHeight }
         }
     }
 
@@ -585,10 +624,10 @@ ApplicationWindow {
                 width: parent.width
                 height: Math.floor((workspace.height - 8) * 0.42)
                 readonly property real available: width - 16
-                readonly property real previewImageWidth: (available * 0.76 - 68) / 2
+                readonly property real previewImageWidth: available * 0.38
                 WaveTile { width: topRow.available * 0.24; height: topRow.height }
-                PreviewTile { x: topRow.available * 0.24 + 8; width: topRow.previewImageWidth + 68; height: topRow.height; live: true }
-                PreviewTile { x: topRow.available * 0.24 + topRow.previewImageWidth + 84; width: topRow.previewImageWidth; height: topRow.height; live: false }
+                PreviewTile { x: topRow.available * 0.24 + 8; width: topRow.previewImageWidth; height: topRow.height; live: true }
+                PreviewTile { x: topRow.available * 0.24 + topRow.previewImageWidth + 16; width: topRow.previewImageWidth; height: topRow.height; live: false }
             }
             Item {
                 id: lower

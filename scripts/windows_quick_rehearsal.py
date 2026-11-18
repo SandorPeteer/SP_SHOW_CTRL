@@ -76,10 +76,11 @@ def rehearse(folder):
                 if time.monotonic() - start > 45:
                     raise RuntimeError(f"Timed out in Qt rehearsal phase {phase}, {bridge.current!r}")
                 state = bridge.current
-                decks = {deck["name"]: deck for deck in state.get("vu", {}).get("decks", [])}
-                meter_a, meter_b = decks.get("A", {}), decks.get("B", {})
-                audible_a = meter_a.get("available") and any(channel["level"] > .01 for channel in meter_a.get("channels", []))
+                meter = state.get("vu", {})
+                audible_a = meter.get("source") == "audio" and meter.get("available") and any(
+                    channel["level"] > .01 for channel in meter.get("channels", []))
                 if phase == 0 and bridge.bars and len(bridge.rows.get("audio", [])) == 2:
+                    assert state.get("audioMix") is False, "A fresh show must use exclusive audio routing"
                     assert bridge.rows["audio"][1]["armed"] and bridge.rows["scenes"][1]["role"] == "next"
                     bridge.press("a_play", None)
                     bridge.press("b_select", 0)
@@ -178,21 +179,20 @@ def rehearse(folder):
                     assert state["projectionClock"]["label"].startswith("● ")
                     live, following = bridge.revisions.get("live"), bridge.revisions.get("next")
                     if live and following and live != previous_live and following != previous_next:
-                        assert audible_a and meter_a.get("active")
-                        assert meter_b.get("muted") and all(channel["level"] == 0 for channel in meter_b.get("channels", []))
-                        meter_evidence["playing_audio_muted_video"] = decks
+                        assert audible_a and meter.get("active") and meter.get("label") == "Audio"
+                        meter_evidence["active_audio_with_silent_presentation"] = meter
                         assert window.grabWindow().save(str(root / "dist/windows-qt-projection-timing.png"))
                         bridge.press("a_play", None)
                         phase = 20
-                if phase == 20 and not meter_a.get("active"):
-                    assert all(channel["level"] == 0 for channel in meter_a.get("channels", []))
-                    meter_evidence["paused_audio"] = meter_a
+                if phase == 20 and not meter.get("active"):
+                    assert all(channel["level"] == 0 for channel in meter.get("channels", []))
+                    meter_evidence["paused_audio"] = meter
                     bridge.press("a_play", None)
                     phase = 21
-                elif phase == 21 and audible_a and meter_a.get("active"):
-                    meter_evidence["resumed_audio"] = meter_a
+                elif phase == 21 and audible_a and meter.get("active"):
+                    meter_evidence["resumed_audio"] = meter
                     (root / "dist/windows-qt-vu-verification.json").write_text(json.dumps(meter_evidence, indent=2))
-                    print("PASS: decoded Deck A VU, muted video zero, audio pause zero and resume signal", flush=True)
+                    print("PASS: one active Audio VU with silent video, pause zero and manual resume signal", flush=True)
                     bridge.connection.close()
                     phase = 3
                 if phase == 3 and state.get("controllerError"):

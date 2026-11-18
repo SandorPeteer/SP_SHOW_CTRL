@@ -213,7 +213,9 @@ def exercise_dialogs(process, controller, folder, environment):
         time.sleep(0.2)
         assert observer.get_property("path").endswith("logo.png")
         check("New show Escape kept the running output and operator focus")
-        for code, title, shift in ((win32con.VK_OEM_COMMA, "Setup", False),
+        comma = win32api.VkKeyScan(",")
+        assert comma != -1, "Active Windows keyboard layout cannot produce comma"
+        for code, title, shift in ((comma & 0xff, "Setup", bool(comma & 0x100)),
                                    (ord("M"), "Media tools", True),
                                    (ord("P"), "Projection tools", True),
                                    (ord("E"), "Edit Scene: Rehearsal", False)):

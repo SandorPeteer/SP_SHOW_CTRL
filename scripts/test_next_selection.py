@@ -20,6 +20,7 @@ def controller():
                           _log=Mock(), _play_deck_a=Mock(), _play_deck_b=Mock(), _next_scene=Mock(),
                           _scenes=[], _selected_scene_idx=-1, _suppress_finish={}, _ppt_running=False,
                           _playback_origin={},
+                          _prepare_audio_source=Mock(return_value=True), _audio_source_started=Mock(),
                           _inhibit_auto_advance=False, _restore_last_visual_if_any=Mock(),
                           _resume_visuals_if_any=Mock(), _play_visuals_by_index=Mock())
     for name in ("_loop_enabled_for_deck", "_visuals_autoplay_indices", "_visuals_next_autoplay_index",

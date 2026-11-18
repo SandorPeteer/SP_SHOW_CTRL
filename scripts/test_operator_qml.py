@@ -107,10 +107,25 @@ class OperatorQmlTests(unittest.TestCase):
             QTest.qWait(100)
             live = window.findChild(QObject, "livePreview")
             following = window.findChild(QObject, "nextPreview")
-            self.assertGreater(live.width(), 280)
+            self.assertGreater(live.width(), 320)
             self.assertAlmostEqual(live.width(), following.width(), delta=0.01)
+            self.assertAlmostEqual(live.height(), following.height(), delta=0.01)
             self.assertAlmostEqual(live.property("paintedWidth"), following.property("paintedWidth"), delta=0.01)
             self.assertAlmostEqual(live.property("paintedWidth") / live.property("paintedHeight"), 16 / 9, delta=0.001)
+            live_panel = window.findChild(QObject, "livePreviewPanel")
+            next_panel = window.findChild(QObject, "nextPreviewPanel")
+            meter = window.findChild(QObject, "audioMeterStrip")
+            self.assertAlmostEqual(live_panel.width(), next_panel.width(), delta=0.01)
+            self.assertAlmostEqual(live_panel.height(), next_panel.height(), delta=0.01)
+            from PySide6.QtCore import QPointF
+            waveform = window.findChild(QObject, "waveformPanel")
+            envelope = window.findChild(QObject, "waveformEnvelope")
+            meter_position = meter.mapToItem(waveform, QPointF())
+            envelope_position = envelope.mapToItem(waveform, QPointF())
+            self.assertGreaterEqual(meter_position.x(), 0)
+            self.assertLessEqual(meter_position.x() + meter.width(), waveform.width())
+            self.assertGreaterEqual(meter_position.y(), envelope_position.y() + envelope.height())
+            self.assertLessEqual(meter_position.y() + meter.height(), waveform.height())
             for name in ("operatorHeader", "waveformHeader", "livePreviewHeader", "nextPreviewHeader", "cueHeader_a"):
                 header = window.findChild(QObject, name)
                 self.assertIsNotNone(header, name)
@@ -167,40 +182,78 @@ class OperatorQmlTests(unittest.TestCase):
         try:
             window = engine.rootObjects()[0]
             window.resize(900, 550)
-            for count in (2, 6, 8):
-                with self.subTest(channels=count):
-                    channel = {"level": 0.65, "peak": 0.8}
-                    bridge.current = {"vu": {"decks": [dict(name=name, active=True, available=True,
-                                        channels=[dict(channel) for _ in range(count)]) for name in ("A", "B")]}}
-                    bridge.stateChanged.emit()
-                    QTest.qWait(30)
-                    items = []
-                    pending = list(window.contentItem().childItems())
-                    while pending:
-                        item = pending.pop()
-                        items.append(item)
-                        pending.extend(item.childItems())
-                    for name in ("A", "B"):
-                        deck = next(item for item in items if item.objectName() == "vuDeck_live_" + name)
-                        bars = []
-                        for item in items:
-                            if not item.objectName().startswith("vuChannel_"):
-                                continue
-                            if item.parentItem().parentItem() is deck:
-                                bars.append(item)
-                        self.assertEqual(len(bars), count)
-                        right_edge = 0.0
-                        for bar in sorted(bars, key=lambda item: item.x()):
-                            x = bar.mapToItem(deck, QPointF()).x()
-                            self.assertGreaterEqual(x, right_edge - 0.01)
-                            self.assertLessEqual(x + bar.width(), deck.width() + 0.01)
-                            self.assertGreater(bar.width(), 0)
-                            if count == 2:
-                                self.assertEqual(bar.width(), 8)
-                            peak = next(item for item in bar.childItems() if item.objectName() == "vuPeak")
-                            self.assertGreaterEqual(peak.x(), 0)
-                            self.assertLessEqual(peak.x() + peak.width(), bar.width())
-                            right_edge = x + bar.width()
+            for source, label, mixed in (("audio", "Audio", False), ("presentation", "Presentation", False), ("mix", "MIX", True)):
+                for count in (2, 6, 8):
+                    with self.subTest(source=source, channels=count):
+                        meter = dict(source=source, label=label, active=True, available=True,
+                                     channels=[{"level": 0.65, "peak": 0.8} for _ in range(count)])
+                        bridge.current = {"audioMix": mixed, "vu": dict(mixed=True, decks=[dict(meter, name=name) for name in ("A", "B")]) if mixed else meter}
+                        bridge.stateChanged.emit()
+                        QTest.qWait(30)
+                        items = []
+                        pending = list(window.contentItem().childItems())
+                        while pending:
+                            item = pending.pop()
+                            items.append(item)
+                            pending.extend(item.childItems())
+                        area = next(item for item in items if item.objectName() == "activeAudioMeter")
+                        if not mixed:
+                            source_label = next(item for item in items if item.objectName() == "activeAudioSource")
+                            self.assertEqual(source_label.property("text"), label)
+                        groups = [item for item in items if item.objectName().startswith("meterGroup_live_")]
+                        self.assertEqual(len(groups), 2 if mixed else 1)
+                        for group in groups:
+                            group_x = group.mapToItem(area, QPointF()).x()
+                            self.assertGreaterEqual(group_x, 0)
+                            self.assertLessEqual(group_x + group.width(), area.width() + 0.01)
+                            bars = [item for item in items if item.objectName().startswith("vuChannel_")
+                                    and item.parentItem().parentItem().parentItem() is group]
+                            self.assertEqual(len(bars), count)
+                            bottom_edge = 0.0
+                            for bar in sorted(bars, key=lambda item: item.y()):
+                                position = bar.mapToItem(group, QPointF())
+                                self.assertGreaterEqual(position.x(), 0)
+                                self.assertLessEqual(position.x() + bar.width(), group.width() + 0.01)
+                                self.assertGreaterEqual(position.y(), bottom_edge - 0.01)
+                                self.assertLessEqual(position.y() + bar.height(), group.height() + 0.01)
+                                self.assertGreater(bar.height(), 0)
+                                if count == 2:
+                                    self.assertEqual(bar.height(), 6)
+                                peak = next(item for item in bar.childItems() if item.objectName() == "vuPeak")
+                                self.assertGreaterEqual(peak.x(), 0)
+                                self.assertLessEqual(peak.x() + peak.width(), bar.width())
+                                bottom_edge = position.y() + bar.height()
+        finally:
+            delete(engine)
+
+    def test_mix_button_waits_for_backend_and_fits_the_small_header(self):
+        from PySide6.QtCore import QMetaObject
+        from shiboken6 import delete
+        bridge = Bridge()
+        bridge.current = {"audioMix": False, "slides": True, "slidePosition": "01 / 99",
+                          "projectionClock": {"label": "● 1:23:45.67"}}
+        engine = QQmlApplicationEngine()
+        engine.addImageProvider("icon", EmptyImages())
+        engine.rootContext().setContextProperty("operatorBridge", bridge)
+        engine.load(QUrl.fromLocalFile(str(Path(__file__).resolve().parents[1] / "operator.qml")))
+        try:
+            window = engine.rootObjects()[0]
+            window.resize(900, 550)
+            QTest.qWait(30)
+            button = window.findChild(QObject, "mixAudioButton")
+            before = button.property("base")
+            self.assertTrue(QMetaObject.invokeMethod(button, "clicked"))
+            self.assertEqual(bridge.commands[-1], ("mix_audio", None))
+            self.assertEqual(button.property("base"), before)
+            bridge.current = dict(bridge.current, audioMix=True)
+            bridge.stateChanged.emit()
+            QTest.qWait(30)
+            self.assertEqual(button.property("base").name(), "#ffd27c")
+            header = window.findChild(QObject, "livePreviewHeader")
+            for item in header.childItems():
+                if item.isVisible():
+                    self.assertGreaterEqual(item.x(), -0.5)
+                    self.assertLessEqual(item.x() + item.width(), header.width() + 0.5)
         finally:
             delete(engine)
 

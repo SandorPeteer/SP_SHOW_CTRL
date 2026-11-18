@@ -27,6 +27,7 @@ def controller_worker(connection):
     actions = {
         "open": app._open_show, "save": app._save_show, "save_as": app._save_show_as,
         "new": app._new_show, "settings": app._open_global_setup,
+        "mix_audio": app._toggle_audio_mix,
         "fullscreen": app._toggle_output_fullscreen, "close": app._on_closing,
         "scene_add": app._add_scene, "scene_remove": app._remove_scene, "scene_edit": app._edit_scene,
         "scene_up": lambda: app._move_scene(-1), "scene_down": lambda: app._move_scene(1),
@@ -193,7 +194,7 @@ def controller_worker(connection):
             "audio": cue_rows("A", app._cues_a, app.tree_a, app._selected_a, app._checkbox_mode_a, app._checked_cues_a),
             "projection": cue_rows("B", app._cues_b, app.tree_b, app._selected_b, app._checkbox_mode_b, app._checked_cues_b),
             "waveform": bars or [], "waveLoading": bars is None, "time": countdown,
-            "vu": {"decks": [dict(name=deck, **app._vu_snapshot(deck)) for deck in ("A", "B")]},
+            "vu": app._active_audio_meter(), "audioMix": app.audio_mix,
             "duration": app.var_wave_duration.get(), "source": app.var_wave_source.get(),
             "selectedIsVideo": bool(selected and selected.kind == "video"),
             "audioOnly": bool(selected and selected.kind == "video" and selected.video_mode == "audio_only"),

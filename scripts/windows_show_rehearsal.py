@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root))
-from player import App, MpvIpcSession, get_monitors
+from player import App, get_monitors
 
 
 def controller_dpi(app):
@@ -46,10 +46,7 @@ def rehearse(folder):
     os.environ["SP_SHOW_CTRL_FFMPEG_DIR"] = str(tools / "ffmpeg")
     # CI has no physical sound card. Decode audio against the real-time null output.
     os.environ["MPV_HOME"] = str(folder)
-    name = "CI_AUDIO_" + str(os.getpid())
-    audio = MpvIpcSession(os.environ["SP_SHOW_CTRL_MPV"], name=name,
-                          second_screen_left=0, second_screen_top=0, fullscreen=False)
-    (folder / "mpv.conf").write_text(f"ao=null\ninput-ipc-server={audio.ipc_server}\n")
+    (folder / "mpv.conf").write_text("ao=null\n")
     music = folder / "iskolai próba.wav"
     clip = folder / "árvíz teszt.mp4"
     image = root / "assets/logo.png"
@@ -75,6 +72,14 @@ def rehearse(folder):
         "sha256": hashlib.sha256(loop_ppt.read_bytes()).hexdigest(),
         "slides": ["png"] * 4, "seconds": [0.4, 0.5, 0.4, 0.5]}))
     app = App()
+    # Use the production Qt-worker clock path even in this native Tk-layout
+    # rehearsal. Pause/resume creates a new player, so a fixed external pipe
+    # would become stale and would no longer prove the resumed position.
+    app.audio_runner.observe_clock = True
+
+    def audio_time():
+        clock = app.audio_runner._media_clock
+        return clock.get_property("time-pos") if clock is not None else None
     errors = []
     app.report_callback_exception = lambda error, value, tb: errors.append((value, tb))
     long_scene = "Grade 13D · Welcome, class photos and the full awards ceremony"
@@ -166,8 +171,7 @@ def rehearse(folder):
         print(f"PASS: monitor query and PPT import kept controller DPI and size {before_import}")
         app._selected_a = 0
         app._transport_play_pause("A")
-        audio._connect_ipc()
-        before = wait_for(lambda: audio.get_property("time-pos"), lambda v: isinstance(v, (int, float)) and v > 0)
+        before = wait_for(audio_time, lambda v: isinstance(v, (int, float)) and v > 0)
         for index in (0, 1, 0):
             app._selected_b = index
             app._transport_play_pause("B")
@@ -176,7 +180,7 @@ def rehearse(folder):
             wait_for(lambda: visual.get_property("path"), lambda v: v and Path(v) == expected)
             wait_for(lambda: visual.get_property("video-params"), bool)
             assert visual.get_property("mute") is True
-            before = wait_for(lambda: audio.get_property("time-pos"), lambda v: v and v > before)
+            before = wait_for(audio_time, lambda v: v and v > before)
         import win32gui
         import win32process
 
@@ -348,18 +352,87 @@ def rehearse(folder):
         app.btn_output_fullscreen.invoke()
         app._ppt_next_ui()
         assert_slide("0002.mp4")
+        assert app.audio_mix is False
+        takeover_position = audio_time()
         app.var_ppt_sound.set(True)
         app._ppt_apply_sound()
-        sounding = wait_for(lambda: app._vu_snapshot("B"),
+        paused = wait_for(lambda: pump(lambda: app._paused_state_for_deck("A")), bool)
+        assert paused[0] == app._cues_a[0].id
+        assert takeover_position - .1 <= paused[1] <= takeover_position + 2, (takeover_position, paused)
+        assert not app.audio_runner.is_playing()
+        sounding = wait_for(lambda: pump(lambda: app._vu_snapshot("B")),
                             lambda meter: meter["available"] and any(channel["level"] > .01 for channel in meter["channels"]))
         assert not sounding["muted"]
-        app.var_ppt_sound.set(False)
+        assert app._active_audio_meter()["source"] == "presentation"
+        wait_for(lambda: pump(lambda: visual.get_property("eof-reached")), bool)
+        assert app._paused_state_for_deck("A") == paused and not app.audio_runner.is_playing()
+        app._ppt_end()
+        wait_for(current_slide, lambda path: path and Path(path) == image)
+        assert app._paused_state_for_deck("A") == paused and not app.audio_runner.is_playing()
+        app._transport_play_pause("A")
+        resumed = wait_for(lambda: pump(audio_time), lambda value: isinstance(value, (int, float)))
+        assert paused[1] - .1 <= resumed <= paused[1] + 1.25, (paused, resumed)
+        assert visual.get_property("mute") is True and not app.var_ppt_sound.get()
+        wait_for(lambda: pump(lambda: app._active_audio_meter()),
+                 lambda meter: meter.get("source") == "audio" and meter["available"] and
+                 any(channel["level"] > .01 for channel in meter["channels"]))
+        routing_evidence = {"single_presentation": sounding,
+                            "audio_position_before_takeover": takeover_position,
+                            "audio_paused": paused, "first_manually_resumed_position": resumed,
+                            "video_eof_and_presentation_end_did_not_resume_audio": True}
+        print("PASS: presentation audio paused A at its engine position; EOF/End did not resume it; explicit A Play muted B and resumed")
+
+        # Re-enter the presentation and opt into mixing. Merely enabling Mix
+        # must not unmute/start anything; B starts sounding only on its explicit action.
+        app._selected_b = 2
+        app.btn_play_b.invoke()
+        assert_slide("0001.png")
+        app._ppt_next_ui()
+        assert_slide("0002.mp4")
+        app._toggle_audio_mix()
+        assert app.audio_mix and visual.get_property("mute") is True
+        assert app.audio_runner.is_playing()
+        app.var_ppt_sound.set(True)
         app._ppt_apply_sound()
-        muted = wait_for(lambda: app._vu_snapshot("B"),
-                        lambda meter: meter["muted"] and all(channel["level"] == 0 for channel in meter["channels"]))
-        (root / "dist/windows-slide-audio-meter.json").write_text(json.dumps({
-            "slide_audio_enabled": sounding, "slide_audio_muted": muted}, indent=2))
-        print("PASS: actual video-slide audio produced VU signal; slide mute returned it to zero")
+        mixed = wait_for(lambda: pump(app._active_audio_meter),
+                         lambda meter: meter.get("mixed") and len(meter.get("decks", [])) == 2 and
+                         all(deck["available"] and any(channel["level"] > .01 for channel in deck["channels"])
+                             for deck in meter["decks"]))
+        audio_start, video_start = audio_time(), visual.get_property("time-pos")
+        wait_for(lambda: pump(lambda: (audio_time(), visual.get_property("time-pos"))),
+                 lambda values: all(isinstance(value, (int, float)) for value in values) and
+                 values[0] > audio_start + .15 and values[1] > video_start + .15)
+        assert app.audio_runner.is_playing() and visual.get_property("mute") is False
+        assert app._last_audio_source == "B"
+        routing_evidence["explicit_mix_both_sources"] = mixed
+        app._toggle_audio_mix()
+        paused_mix = wait_for(lambda: pump(lambda: app._paused_state_for_deck("A")), bool)
+        assert not app.audio_mix and not app.audio_runner.is_playing()
+        assert visual.get_property("mute") is False
+        assert app._active_audio_meter()["source"] == "presentation"
+        app._ppt_end()
+        wait_for(current_slide, lambda path: path and Path(path) == image)
+        assert app._paused_state_for_deck("A") == paused_mix and not app.audio_runner.is_playing()
+        # With both sources stopped, neither toggling Mix on nor off may start A.
+        app._toggle_audio_mix()
+        assert app.audio_mix and not app.audio_runner.is_playing()
+        app._toggle_audio_mix()
+        assert not app.audio_mix and not app.audio_runner.is_playing()
+        assert app._paused_state_for_deck("A") == paused_mix
+        app._transport_play_pause("A")
+        wait_for(lambda: pump(audio_time), lambda value: isinstance(value, (int, float)) and value >= paused_mix[1] - .1)
+        assert visual.get_property("mute") is True and not app.var_ppt_sound.get()
+        routing_evidence["mix_off_kept_last_explicit_presentation"] = True
+        routing_evidence["mix_toggle_and_end_did_not_resume_audio"] = True
+        (root / "dist/windows-audio-routing.json").write_text(json.dumps(routing_evidence, indent=2))
+        print("PASS: explicit Mix advanced both real clocks/meters; Mix OFF kept the last source; toggle/End never auto-resumed A")
+
+        # Restore the silent video fixture for the remaining aspect/presenter tests.
+        app._selected_b = 2
+        app.btn_play_b.invoke()
+        assert_slide("0001.png")
+        app._ppt_next_ui()
+        assert_slide("0002.mp4")
         aspect = lambda: visual.get_property("video-aspect-override")
         source_aspect = aspect()
         from output_monitor import capture_output
@@ -388,9 +461,7 @@ def rehearse(folder):
         assert app.output_monitor.frames["next"] is None
         assert app.output_monitor.captions["next"].get() == "Last slide"
         print("PASS: output monitor and upcoming slide rendered without advancing or replacing projector media")
-        app.var_ppt_sound.set(True)
-        app._ppt_apply_sound()
-        assert visual.get_property("mute") is False
+        assert visual.get_property("mute") is True
         app.btn_output_fullscreen.invoke()
         visual.set_property("window-minimized", True)
         app.tree_b.focus_force()
@@ -415,9 +486,9 @@ def rehearse(folder):
         assert not app._ppt_running
         print("PASS: slide/image/video navigation and End retained the same fullscreen Windows HWND; stopped requests did not take the output")
         app._transport_stop("B")
-        wait_for(lambda: audio.get_property("time-pos"), lambda v: v and v > before)
+        wait_for(audio_time, lambda v: v and v > before)
         assert app.audio_runner.is_playing()
-        print("PASS: Deck A music advanced throughout Deck B image/video/image/stop, visuals muted")
+        print("PASS: manually resumed Deck A music advanced during silent Deck B image/video/image/stop")
         # The visible countdown must remain steady when a cue approaches its end.
         # Change only the display marker briefly; the real player keeps decoding.
         cue = app.audio_runner.current_cue()
@@ -470,9 +541,9 @@ def rehearse(folder):
         app._ppt_end()
         print("PASS: four slides repeated twice in order; loop OFF retained manual control; lookahead wrapped to the first slide")
         from windows_downloader_rehearsal import exercise_downloader
-        before = audio.get_property("time-pos")
+        before = audio_time()
         exercise_downloader(app, folder, tools)
-        assert audio.get_property("time-pos") > before
+        assert audio_time() > before
         assert app.audio_runner.is_playing()
         app.projection_tools.withdraw()
         # Save repeated cue positions independently while collecting one source file.
@@ -501,7 +572,6 @@ def rehearse(folder):
               else ascii(list(app._log_buffer)[-10:]), flush=True)
         raise
     finally:
-        audio.shutdown()
         app._on_closing()
 
 
