@@ -20,11 +20,14 @@ A vizsgálat a csomagolt Show Control belépési pontját követte a vezérlőfe
 - Az On screen és a Next slide teljes panelje és képterülete egyforma, a vízszintes VU a hullámforma alatt van. A belső keretek és hátterek megszűntek. Az Audio only kapcsoló közvetlenül az Audio/Video fejlécben van. A visszaszámláló a végéhez közel állandó borostyán jelzést kap; a hullámforma lejátszott szakaszának sötétítése megmarad.
 - A folyamatos hullámforma a dekódolt PCM tényleges pozitív/negatív kitéréseiből készül. Megőrzi a csendet, az egymáshoz viszonyított amplitúdókat és a rövid csúcsokat; frekvenciaszínezése külön FFT-elemzésből származik.
 - Alapmódban egyetlen hangforrás és egyetlen VU-kijelzés van. A prezentáció hangja A-t a valódi lejátszási pozíción szünetelteti; a dia vége nem folytatja A-t. Kézi A Play visszaigazolt B-némítás után indul.
+- A kézi A Play miatti átmeneti dianémítás megőrzi az operátor Slide audio beállítását. Új, kézzel indított prezentáció ezt visszaállítja; az automatikus dialéptetés nem veheti vissza magától a hangot.
 - Az explicit Mix kapcsoló önmagában nem indít el vagy folytat médiát. Mixben A/B külön mérője látható; ezek nem alkotnak összegzett master-mérőt. Mix OFF az utoljára kézzel indított forrást tartja meg, és csak sikeres pause/mute után vált alapmódra. A Mix nem mentett műsorbeállítás.
 
 ## A szintmérés jelentése
 
 A mérő az élő mpv dekóder szűrés és kimeneti csatorna-átalakítás utáni RMS- és sample-peak értékét mutatja, az mpv szoftveres hangerővel és némítással korrigálva. Nem true-peak és nem a hangkártya fizikai kimenetének visszamérése. Hiányzó vagy elavult telemetriából nem készül becsült érték. A csatornakiosztás változása és a lejátszó újraindítása alatt a mérő érvénytelen adatot nem publikál.
+
+A VU kitöltése közvetlenül követi az aktuális mérést. A telemetria által újraindított szélességanimáció korábban kisebb kitérést rajzolhatott; ezt folyamatos, 33 ms-onként változó adatokkal végzett mono/sztereó és normál/Mix regresszió ellenőrzi.
 
 Az ismert PCM-jellel végzett helyi próba a valódi mpv-kimenethez hasonlítja a szinteket. A 5.1→sztereó átalakítás normalizálás nélkül mintánként azonos; normalizálással float32 kimeneten szintén azonos, s16 kimeneten a megengedett és mért legnagyobb eltérés 1 LSB (1/32768, körülbelül −90,3 dBFS).
 
@@ -33,3 +36,11 @@ Az ismert PCM-jellel végzett helyi próba a valódi mpv-kimenethez hasonlítja 
 - A Tk kezelőszálon maradt néhány közvetlen kezelői művelet, például a fullscreen mód váltása és az mpv parancsok kiadása. Egy válaszkésés ezeknél továbbra is okozhat rövid megtorpanást.
 - A PowerPoint COM és a GPU-meghajtó belső működését a Show Control nem vezérli. A beragadt Office-hívás feltarthatja a további PPT-k előkészítését. Az előkészített kivetítés külön mpv-folyamatban fut.
 - A Windows CI valódi csomagolt EXE-t és mpv-kimenetet tesztel virtuális asztalon, előkészített PPT-médiával. A fizikai projektor, a PowerPoint-telepítés, a prezentáló és egy konkrét videó dekódolása külön hardveres próba.
+
+## Ellenőrzött Windows-csomag — 2026.11.18
+
+A `f28d6fe` alkalmazáskód [Windows-próbája](https://github.com/SandorPeteer/SP_SHOW_CTRL/actions/runs/44239775379) minden ellenőrzési kapun átment. A csomagolt EXE valódi Windows-billentyűkkel végrehajtott próbája 31 ellenőrzést rögzített: az eszközablakok tulajdonosa, fókusza és méretezése; Új/Megtartás/Mégse; Megnyitás/Mentés másként/Hozzáadás; hordozható mentés és újraindítás utáni visszatöltés. A fájlablak bezárásakor korábban elvesző következő fájlparancs most egyszer, a lezárás után fut le. Lejátszási vagy törlési parancs nem kerül ilyen késleltetett sorba.
+
+A külön Qt- és mpv-próba igazolta a megjelenő hullámformát és VU-t, a szünet/folytatást, a kézi hangváltást, a két valós lejátszóórával futó Mixet, a diahang-beállítás visszaállítását, a képarányokat és a lapozóbillentyűket. A képernyőképek vizuális ellenőrzése megtörtént. A virtuális gép hangkártya nélkül, explicit null hangkimenettel tesztel; ez nem fizikai hangpróba.
+
+A végső aláírásjegyzék 264 binárist tartalmaz: 227 érvényesen aláírt, 37 aláíratlan. A csomag nem teljesen kiadói aláírású; a Smart App Control megfelelőség nincs megoldva. Windows-biztonsági beállítást nem módosítottunk.
