@@ -106,6 +106,8 @@ def controller_worker(connection):
             app._seek_projection(value)
         elif name == "b_still":
             app._set_standby_cue(value)
+        elif name == "b_interval":
+            app._set_ppt_interval(value)
         elif name == "scene":
             if 0 <= value < len(app._scenes):
                 app.scene_listbox.select(value)
@@ -147,6 +149,10 @@ def controller_worker(connection):
     def cue_rows(deck, cues, tree, selected, checkbox, checked):
         return [dict(id=cue.id, name=cue.display_name(), kind=cue.kind, armed=cue.auto_play,
                      standby=deck == "B" and cue.id == app._standby_cue_id,
+                     intervalSeconds=app._ppt_interval_for_cue(cue) if cue.kind == "ppt" else None,
+                     intervalCustom=cue.kind == "ppt" and cue.ppt_interval_sec is not None,
+                     intervalActive=bool(cue.kind == "ppt" and app._ppt_running and app._ppt_cue
+                                         and app._ppt_cue.id == cue.id and app._loop_b_enabled),
                      selected=index == selected, role=tree.emphasis.get(str(index), ""),
                      detail=tree.set(str(index), "duration") if tree.exists(str(index)) else "",
                      checkbox=checkbox, checked=index in checked)

@@ -328,6 +328,77 @@ class OperatorQmlTests(unittest.TestCase):
         finally:
             delete(engine)
 
+    def test_ppt_interval_editor_numeric_entry_cancel_and_truthful_row_badge(self):
+        from operator_models import OperatorRows
+        from PySide6.QtCore import QPointF
+        from shiboken6 import delete
+        bridge = Bridge()
+        model = OperatorRows(bridge)
+        row_data = dict(id="slides", name="Presentation", kind="ppt", selected=False, role="", standby=True,
+                        intervalSeconds=5.0, intervalCustom=False, intervalActive=False)
+        model.set_rows([row_data])
+        bridge.models = {"projection": model}
+        engine = QQmlApplicationEngine()
+        engine.addImageProvider("icon", EmptyImages())
+        engine.rootContext().setContextProperty("operatorBridge", bridge)
+        engine.load(QUrl.fromLocalFile(str(Path(__file__).resolve().parents[1] / "operator.qml")))
+        try:
+            window = engine.rootObjects()[0]
+            window.resize(900, 550)
+            window.requestActivate()
+            self.assertTrue(QTest.qWaitForWindowActive(window, 1000))
+            QTest.qWait(30)
+            view = window.findChild(QObject, "cueList_b")
+            content = view.property("contentItem")
+            row = next(item for item in content.childItems() if item.objectName() == "cueRow_b_slides")
+            badge = row.findChild(QObject, "pptIntervalBadge_slides")
+            self.assertEqual(badge.property("text"), "Slide timing")
+            def click(item, button=Qt.MouseButton.LeftButton):
+                point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2)).toPoint()
+                QTest.mouseClick(window, button, Qt.KeyboardModifier.NoModifier, point)
+                QTest.qWait(20)
+            def open_editor():
+                click(row, Qt.MouseButton.RightButton)
+                item = window.findChild(QObject, "pptIntervalAction")
+                self.assertTrue(item.isVisible())
+                click(item)
+                self.assertTrue(window.findChild(QObject, "pptIntervalDialog").property("visible"))
+            def type_text(value):
+                QTest.keyClick(window, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+                for char in value:
+                    QTest.keyClick(window, ord(char))
+                QTest.qWait(20)
+            open_editor()
+            field = window.findChild(QObject, "pptIntervalInput")
+            save = window.findChild(QObject, "pptIntervalSave")
+            self.assertEqual(field.property("text"), "5")
+            type_text("3601")
+            self.assertFalse(save.isEnabled())
+            type_text("0.4")
+            self.assertFalse(save.isEnabled())
+            type_text("7.5")
+            self.assertEqual(field.property("text"), "7.5")
+            self.assertTrue(save.isEnabled())
+            click(window.findChild(QObject, "pptIntervalCancel"))
+            self.assertEqual(bridge.commands, [])
+            self.assertEqual(badge.property("text"), "Slide timing")
+            open_editor()
+            type_text("7.5")
+            click(save)
+            self.assertEqual(bridge.commands, [("b_interval", {"cueId": "slides", "seconds": 7.5})])
+            self.assertEqual(badge.property("text"), "Slide timing")  # Backend owns the effective setting.
+            for custom, active, expected in ((True, False, "7.5 s"), (True, True, "↻ 7.5 s"),
+                                            (False, True, "↻ Slide timing")):
+                model.set_rows([dict(row_data, intervalSeconds=7.5, intervalCustom=custom, intervalActive=active)])
+                QTest.qWait(20)
+                self.assertEqual(badge.property("text"), expected)
+                self.assertEqual(badge.property("color").name(), "#c3a3ff" if active else "#a9bbcd")
+                position = badge.mapToItem(row, QPointF())
+                self.assertGreaterEqual(position.x(), 0)
+                self.assertLessEqual(position.x() + badge.width(), row.width())
+        finally:
+            delete(engine)
+
     def test_projection_still_context_menu_keeps_selection_and_dispatches_cue_id(self):
         from operator_models import OperatorRows
         from PySide6.QtCore import QPointF
@@ -511,7 +582,12 @@ class OperatorQmlTests(unittest.TestCase):
             self.assertIsNotNone(button)
             self.assertTrue(button.isVisible())
             self.assertTrue(button.isEnabled())  # Available before any cue is loaded.
-            for enabled, mixed in ((False, False), (True, False), (True, True), (False, True)):
+            title = window.findChild(QObject, "cueTitle_b")
+            for enabled, mixed, large_font in ((False, False, False), (True, False, False),
+                    (True, True, False), (False, True, False), (False, False, True), (True, True, True)):
+                font = title.property("font")
+                font.setPixelSize(28 if large_font else 12)
+                title.setProperty("font", font)
                 bridge.current = {"projectionSound": enabled, "audioMix": mixed}
                 bridge.stateChanged.emit()
                 QTest.qWait(20)
@@ -525,13 +601,21 @@ class OperatorQmlTests(unittest.TestCase):
                 self.assertEqual(button.property("label"), expected_label)
                 self.assertEqual(button.property("base"), before)
                 header = window.findChild(QObject, "cueHeader_b")
-                edge = 0
-                for item in sorted((item for item in header.childItems() if item.isVisible() and item.width() > 0), key=lambda item: item.x()):
-                    self.assertGreaterEqual(item.x(), edge - 0.5)
-                    self.assertLessEqual(item.x() + item.width(), header.width() + 0.5)
-                    edge = item.x() + item.width()
-                title = window.findChild(QObject, "cueTitle_b")
+                from PySide6.QtCore import QRectF
+                rectangles = []
+                for item in (item for item in header.childItems() if item.isVisible() and item.width() > 0):
+                    position = item.mapToItem(header, QPointF())
+                    rectangle = QRectF(position.x(), position.y(), item.width(), item.height())
+                    self.assertGreaterEqual(rectangle.left(), -0.5)
+                    self.assertGreaterEqual(rectangle.top(), -0.5)
+                    self.assertLessEqual(rectangle.right(), header.width() + 0.5)
+                    self.assertLessEqual(rectangle.bottom(), header.height() + 0.5)
+                    self.assertFalse(any(rectangle.adjusted(0.25, 0.25, -0.25, -0.25).intersects(other) for other in rectangles))
+                    rectangles.append(rectangle)
                 self.assertGreaterEqual(title.width(), title.implicitWidth() - 0.5)
+                if large_font:
+                    self.assertGreaterEqual(title.implicitWidth(), 120)
+                    self.assertTrue(header.property("stacked"))
         finally:
             delete(engine)
 

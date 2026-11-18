@@ -1514,6 +1514,13 @@ class Settings:
         return s
 
 
+def _valid_ppt_interval(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    seconds = float(value)
+    return seconds if math.isfinite(seconds) and .5 <= seconds <= 3600 else None
+
+
 @dataclass
 class Cue:
     id: str
@@ -1533,6 +1540,7 @@ class Cue:
     true_peak_db: float | None = None
     auto_play: bool = False  # Auto-play / include in playlist
     media_name: str = ""
+    ppt_interval_sec: float | None = None  # None preserves exported/legacy slide timing.
 
     def display_name(self) -> str:
         return self.media_name or Path(self.path).name
@@ -1556,6 +1564,7 @@ class Cue:
             "true_peak_db": self.true_peak_db,
             "auto_play": self.auto_play,
             "media_name": self.media_name,
+            "ppt_interval_sec": self.ppt_interval_sec,
         }
 
     @staticmethod
@@ -1606,6 +1615,7 @@ class Cue:
             true_peak_db=(None if tp is None else float(tp)),
             auto_play=bool(data.get("auto_play", False)),
             media_name=str(data.get("media_name") or ""),
+            ppt_interval_sec=_valid_ppt_interval(data.get("ppt_interval_sec")),
         )
 
 
@@ -3156,6 +3166,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._ppt_index = 0
         self._ppt_seconds = []
         self._ppt_slide_started = 0.0
+        self._ppt_default_interval_sec = 5.0
         # One projection-audio permission for both direct videos and PPT media.
         self.var_ppt_sound = tk.BooleanVar(value=False)
         if sys.platform == "win32":
@@ -3163,6 +3174,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._ppt_preparer = SlidePreparer(_user_data_dir() / "ppt-media-v1", self._ui_tasks)
             self.var_ppt_status = tk.StringVar(value="")
             self.var_ppt_interval = tk.StringVar(value="5")
+            self.var_ppt_interval_target = tk.StringVar(value="Default slide time (s)")
         self._disp_apply_after_id: str | None = None
         self._wave_req_seq: dict[str, int] = {"A": 0, "B": 0}
         self._wave_req_cue_id: dict[str, str | None] = {"A": None, "B": None}
@@ -3773,13 +3785,68 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self.var_ppt_status.set(f"Projection error: {exc}")
             self._log(self.var_ppt_status.get())
 
+    def _ppt_interval_for_cue(self, cue) -> float:
+        explicit = _valid_ppt_interval(getattr(cue, "ppt_interval_sec", None))
+        if explicit is not None:
+            return explicit
+        return _valid_ppt_interval(getattr(self, "_ppt_default_interval_sec", 5.0)) or 5.0
+
+    def _set_ppt_interval(self, value) -> bool:
+        if not isinstance(value, dict):
+            return False
+        seconds = _valid_ppt_interval(value.get("seconds"))
+        cue = next((cue for cue in self._all_cues_b
+                    if cue.id == value.get("cueId") and cue.kind == "ppt"), None)
+        if seconds is None or cue is None:
+            return False
+        cue.ppt_interval_sec = seconds
+        if self._selected_cue_for_deck("B") is cue:
+            self._sync_ppt_interval_control(cue)
+        return True
+
+    def _sync_ppt_interval_control(self, cue) -> None:
+        variable = getattr(self, "var_ppt_interval", None)
+        if variable is None:
+            return
+        cue = cue if cue is not None and cue.kind == "ppt" else None
+        seconds = self._ppt_interval_for_cue(cue)
+        self._ppt_interval_synced = (cue.id if cue else None, seconds)
+        variable.set(f"{seconds:g}")
+        label = getattr(self, "var_ppt_interval_target", None)
+        if label is not None:
+            label.set("This presentation (s)" if cue else "Default slide time (s)")
+
+    def _commit_ppt_interval(self, _event=None) -> bool:
+        cue = self._selected_cue_for_deck("B")
+        cue = cue if cue is not None and cue.kind == "ppt" else None
+        try:
+            seconds = _valid_ppt_interval(float(self.var_ppt_interval.get().replace(",", ".")))
+        except (ValueError, TypeError):
+            seconds = None
+        if seconds is None:
+            self._sync_ppt_interval_control(cue)
+            return False
+        synced = getattr(self, "_ppt_interval_synced", None)
+        cue_id = cue.id if cue else None
+        if synced is not None and synced[0] != cue_id:
+            self._sync_ppt_interval_control(cue)
+            return False  # A late editor event cannot write into a replacement selection.
+        if synced == (cue_id, seconds) and getattr(_event, "keysym", None) != "Return":
+            return True  # Merely visiting Tools must preserve exported/legacy timing.
+        if cue is not None:
+            return self._set_ppt_interval({"cueId": cue.id, "seconds": seconds})
+        self._ppt_default_interval_sec = seconds
+        self._sync_ppt_interval_control(None)
+        return True
+
     def _ppt_still_duration(self):
+        cue = getattr(self, "_ppt_cue", None)
+        explicit = _valid_ppt_interval(getattr(cue, "ppt_interval_sec", None))
+        if explicit is not None:
+            return explicit
         seconds = self._ppt_seconds[self._ppt_index]
         if seconds is None:
-            try:
-                seconds = float(self.var_ppt_interval.get().replace(",", "."))
-            except ValueError:
-                seconds = 5.0
+            seconds = self._ppt_interval_for_cue(cue)
         return seconds if math.isfinite(seconds) and seconds > 0 else 5.0
 
     def _advance_ppt_loop(self):
@@ -3868,15 +3935,23 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return False
         position = timeline["start"] + max(0.0, min(1.0, float(fraction))) * (timeline["end"] - timeline["start"])
         notice = "Projection seek was not acknowledged by the player."
+        sess = self.video_runner._sess
+        if (position < timeline["end"]
+                and sess.observed("path", "eof-reached", "pause") == (timeline["path"], True, False)
+                and self.var_ppt_sound.get()):
+            # EOF Sound on only arms a preference. A seek that restarts the
+            # decoder must acknowledge the audio handoff before leaving EOF.
+            if not self._apply_projection_sound(explicit=True, resuming=True):
+                return False
         # In-place seek preserves the existing decoder, pause, audio and Mix state.
-        if not self.video_runner._sess.set_property("time-pos", position):
+        if not sess.set_property("time-pos", position):
             return self._audio_route_error(notice)
         if self._callback_notice == notice:
             self._callback_notice = ""
             self._render_activity()
         return True
 
-    def _apply_projection_sound(self, *, explicit=True) -> bool:
+    def _apply_projection_sound(self, *, explicit=True, resuming=False) -> bool:
         """Apply the shared B audio permission without restarting its picture."""
         enabled = bool(self.var_ppt_sound.get())
         out = self.video_runner
@@ -3885,7 +3960,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             sess = out._sess
             if sess is None:
                 return self._audio_route_error("Projection audio is unavailable; the sound setting was not applied.")
-            if (enabled and cue.kind == "video"
+            if (enabled and not resuming and cue.kind == "video"
                     and sess.observed("path", "eof-reached") == (cue.path, True)):
                 # Arm the next start without taking sound from A for a held
                 # final frame. EOF from a replaced/loading file is irrelevant.
@@ -5850,9 +5925,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             ppt_options.pack(fill="x", pady=(4, 0))
             ttk.Checkbutton(ppt_options, text="Projection audio", variable=self.var_ppt_sound,
                             command=self._ppt_apply_sound).pack(side="left")
-            ttk.Spinbox(ppt_options, from_=0.5, to=3600, increment=0.5, width=7,
-                        textvariable=self.var_ppt_interval).pack(side="right")
-            ttk.Label(ppt_options, text="Default slide time (s)").pack(side="right", padx=(4, 4))
+            interval = ttk.Spinbox(ppt_options, from_=0.5, to=3600, increment=0.5, width=7,
+                                   textvariable=self.var_ppt_interval, command=self._commit_ppt_interval)
+            interval.pack(side="right")
+            interval.bind("<Return>", self._commit_ppt_interval)
+            interval.bind("<FocusOut>", self._commit_ppt_interval)
+            ttk.Label(ppt_options, textvariable=self.var_ppt_interval_target).pack(side="right", padx=(4, 4))
 
         # Download tab (Deck B) - yt-dlp integration
         dl_b = ttk.Frame(self.tab_b_download, padding=12)
@@ -6060,6 +6138,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
     def _on_deck_b_select(self):
         sel = self.tree_b.selection()
         self._selected_b = int(sel[0]) if sel else -1
+        self._sync_ppt_interval_control(self._selected_cue_for_deck("B"))
         if self._selected_b >= 0:
             cue = self._cues_b[self._selected_b]
             try:
@@ -11034,6 +11113,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.video_runner.settings = self.settings
         self.var_output_aspect.set(self.settings.output_aspect)
         playback = data.get("playback")
+        self._ppt_default_interval_sec = 5.0
         if isinstance(playback, dict):
             self._loop_a_enabled = bool(playback.get("repeat_audio"))
             self._loop_b_enabled = bool(playback.get("repeat_projection"))
@@ -11041,8 +11121,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self.var_loop_b.set("Repeat on" if self._loop_b_enabled else "Repeat off")
             self.var_ppt_sound.set(bool(playback.get("slide_audio")))
             self._ppt_sound_preference = bool(self.var_ppt_sound.get())
-            if sys.platform == "win32":
-                self.var_ppt_interval.set(str(playback.get("slide_seconds", "5")))
+            try:
+                legacy_interval = float(playback.get("slide_seconds", "5"))
+            except (TypeError, ValueError):
+                legacy_interval = 5.0
+            self._ppt_default_interval_sec = _valid_ppt_interval(legacy_interval) or 5.0
+        if sys.platform == "win32":
+            self.var_ppt_interval.set(f"{self._ppt_default_interval_sec:g}")
 
         self._cues_a, self._cues_b = cues_a, cues_b
 
@@ -11295,7 +11380,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             "scenes": [scene.to_dict() for scene in self._scenes],
         })
         if sys.platform == "win32":
-            payload["playback"].update(slide_seconds=self.var_ppt_interval.get())
+            payload["playback"].update(slide_seconds=f"{getattr(self, '_ppt_default_interval_sec', 5.0):g}")
         prepared = ({source: ready[1][0].parent for source, ready in self._ppt_preparer.ready.items()}
                     if sys.platform == "win32" else {})
         self._saving_show = True
@@ -11546,6 +11631,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.tree_a.column("checkbox", width=0)
         self.tree_b.column("checkbox", width=0)
         self._selected_a = self._selected_b = -1
+        if getattr(self, "var_ppt_interval", None) is not None:
+            self._sync_ppt_interval_control(None)
         if sys.platform == "win32":
             self._ppt_pending = None
         # Must have a valid scene selected

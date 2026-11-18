@@ -41,7 +41,7 @@ def visual_items(item):
         yield from visual_items(child)
 
 
-def click_item(window, item, *, fraction=None):
+def click_item(window, item, *, fraction=None, right=False):
     assert item.isVisible() and item.isEnabled(), item.objectName()
     x = item.width() / 2
     if fraction is not None:
@@ -49,7 +49,8 @@ def click_item(window, item, *, fraction=None):
         x = item.property("leftPadding") + handle.width() / 2 + fraction * (item.property("availableWidth") - handle.width())
     point = item.mapToScene(QPointF(x, item.height() / 2)).toPoint()
     assert 0 <= point.x() < window.width() and 0 <= point.y() < window.height(), point
-    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    QTest.mouseClick(window, Qt.MouseButton.RightButton if right else Qt.MouseButton.LeftButton,
+                     Qt.KeyboardModifier.NoModifier, point)
 
 
 def rehearse(folder):
@@ -123,7 +124,7 @@ def rehearse(folder):
         resize_timer.setTimerType(Qt.TimerType.PreciseTimer)
         resize_timer.setInterval(16)
 
-        def click_control(*, name=None, command=None, row=None, fraction=None):
+        def click_control(*, name=None, command=None, row=None, fraction=None, right=False):
             hwnd = int(window.winId())
             if win32gui.GetForegroundWindow() != hwnd or not window.isActive():
                 win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
@@ -141,10 +142,10 @@ def rehearse(folder):
                             (command is not None and item.property("command") == command))]
                 assert len(matches) == 1, (name, command, len(matches))
                 item = matches[0]
-            click_item(window, item, fraction=fraction)
+            click_item(window, item, fraction=fraction, right=right)
             routing_evidence["actions"].append({"phase": phase, "control": name or command or f"B row {row}",
                                                 "foreground": hwnd, "qt_active": window.isActive(),
-                                                "fraction": fraction})
+                                                "fraction": fraction, "right_click": right})
             return True
 
         def has_signal(value):
@@ -363,25 +364,25 @@ def rehearse(folder):
                 elif phase == 25 and state.get("repeatB"):
                     if click_control(name="projectionSoundButton"):
                         phase = 26
-                elif phase == 26 and state.get("projectionSound") and meter.get("source") == "presentation" and has_signal(meter) and state.get("play") == "Play" and 0 <= direct_fraction < 1:
+                elif phase == 26 and state.get("projectionSound") and meter.get("source") == "presentation" and has_signal(meter) and state.get("play") == "Resume" and 0 <= direct_fraction < 1:
                     check_transport(state, False, True, "single_video_takeover")
                     mark_clock(state)
                     routing_evidence["single_b_takeover"] = {"meter": meter, **checkpoint}
                     phase = 27
                 elif phase == 27 and time.monotonic() - checkpoint["at"] >= .5 and 0 <= direct_fraction < 1:
                     clocks_advanced(state, audio=False)
-                    assert state.get("play") == "Play" and has_signal(meter)
+                    assert state.get("play") == "Resume" and has_signal(meter)
                     if click_control(name="mixAudioButton"):
                         phase = 28
                 elif phase == 28 and state.get("audioMix") and meter.get("mixed") and 0 <= direct_fraction < 1:
                     a, b = meter["decks"]
                     assert a["name"] == "A" and b["name"] == "B"
-                    assert is_silent(a) and has_signal(b) and state.get("play") == "Play"
+                    assert is_silent(a) and has_signal(b) and state.get("play") == "Resume"
                     mark_clock(state)
                     phase = 29
                 elif phase == 29 and time.monotonic() - checkpoint["at"] >= .5 and 0 <= direct_fraction < 1:
                     a, b = meter["decks"]
-                    assert is_silent(a) and has_signal(b) and state.get("play") == "Play"
+                    assert is_silent(a) and has_signal(b) and state.get("play") == "Resume"
                     clocks_advanced(state, audio=False)
                     routing_evidence["mix_on_did_not_resume_audio"] = {"meter": meter, "cursor": state["cursor"]}
                     if click_control(command="a_play"):
@@ -461,17 +462,53 @@ def rehearse(folder):
                     # This explicit Sound on makes B the last requested source.
                     if click_control(name="mixAudioButton"):
                         phase = 35
-                elif phase == 35 and state.get("audioMix") is False and meter.get("source") == "presentation" and has_signal(meter) and state.get("play") == "Play" and 0 <= direct_fraction < 1:
+                elif phase == 35 and state.get("audioMix") is False and meter.get("source") == "presentation" and has_signal(meter) and state.get("play") == "Resume" and 0 <= direct_fraction < 1:
                     check_transport(state, False, True, "mix_off_video_remains_playing")
                     mark_clock(state)
                     phase = 36
                 elif phase == 36 and time.monotonic() - checkpoint["at"] >= .5 and 0 <= direct_fraction < 1:
-                    assert state.get("projectionSound") and has_signal(meter) and state.get("play") == "Play"
+                    assert state.get("projectionSound") and has_signal(meter) and state.get("play") == "Resume"
                     clocks_advanced(state, audio=False)
                     routing_evidence["mix_off_kept_last_explicit_b"] = {"meter": meter, "a": state["cursor"], "b": direct_fraction}
                     assert window.grabWindow().save(str(root / "dist/windows-qt-direct-video-single.png"))
                     (root / "dist/windows-qt-direct-video-audio.json").write_text(json.dumps(routing_evidence, indent=2))
                     print("PASS: direct video Sound on/off, exclusive handoff, explicit Mix clocks/meters and last-source Mix off", flush=True)
+                    phase = 40
+                elif phase == 40 and click_control(row=0, right=True):
+                    phase = 41
+                elif phase == 41:
+                    menu = window.findChild(QObject, "projectionStillMenu")
+                    if menu is not None and menu.property("visible"):
+                        QTest.keyClick(window, Qt.Key.Key_Down)
+                        QTest.keyClick(window, Qt.Key.Key_Down)
+                        QTest.keyClick(window, Qt.Key.Key_Return)
+                        phase = 42
+                elif phase == 42:
+                    dialog = window.findChild(QObject, "pptIntervalDialog")
+                    if dialog is not None and dialog.property("visible") and click_control(name="pptIntervalInput"):
+                        QTest.keyClick(window, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+                        for key in (Qt.Key.Key_7, Qt.Key.Key_Period, Qt.Key.Key_5):
+                            QTest.keyClick(window, key)
+                        phase = 43
+                elif phase == 43 and click_control(name="pptIntervalSave"):
+                    phase = 44
+                elif phase == 44 and bridge.rows["projection"][0].get("intervalSeconds") == 7.5:
+                    ppt_row, video_row = bridge.rows["projection"]
+                    assert ppt_row["intervalCustom"] and not ppt_row["intervalActive"]
+                    assert video_row["selected"] and not ppt_row["selected"]
+                    check_transport(state, False, True, "ppt_interval_edit_kept_video_playing")
+                    assert state["projectionSound"] and not state["audioMix"]
+                    mark_clock(state)
+                    phase = 45
+                elif phase == 45 and time.monotonic() - checkpoint["at"] >= .5:
+                    clocks_advanced(state, audio=False)
+                    routing_evidence["ppt_interval_edit"] = {
+                        "seconds": bridge.rows["projection"][0]["intervalSeconds"],
+                        "current_video_unchanged": True, "ready_selection_unchanged": True,
+                        "input": "right-click PPT row, Down twice, Enter, type 7.5, Save"}
+                    (root / "dist/windows-qt-direct-video-audio.json").write_text(json.dumps(routing_evidence, indent=2))
+                    assert window.grabWindow().save(str(root / "dist/windows-qt-ppt-interval.png"))
+                    print("PASS: PPT interval edited through its actual Qt context menu and saved to its row without interrupting video", flush=True)
                     bridge.connection.close()
                     phase = 3
                 if phase == 3 and state.get("controllerError"):

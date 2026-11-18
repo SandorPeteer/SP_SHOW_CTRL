@@ -203,7 +203,7 @@ def smoke():
                             "test_show_storage.py", "test_mpv_ipc.py", "test_playback_state.py",
                             "test_operator_transport.py", "test_operator_dialogs.py", "test_operator_tool_focus.py", "test_operator_qml.py",
                             "test_operator_models.py", "test_tool_layout.py", "test_next_selection.py",
-                            "test_audio_routing.py", "test_standby_media.py"):
+                            "test_audio_routing.py", "test_standby_media.py", "test_ppt_interval.py"):
             run_stage(failures, test_script, subprocess.run,
                       [sys.executable, Path(__file__).with_name(test_script)], env=env, check=True, timeout=30)
         run_stage(failures, "real PCM audio meter", subprocess.run,

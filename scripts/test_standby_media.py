@@ -262,6 +262,7 @@ class StandbyMediaTests(unittest.TestCase):
         app._set_standby_cue("B2")
         app._add_scene = app._update_showfile_label = app._reset_audio_routing = Mock()
         app._stop_deck_a = Mock()
+        app._ppt_end = Mock()  # Windows New show explicitly closes the slide presenter.
         app._scenes = []
         App._new_show(app)
         self.assertIsNone(app._standby_cue_id)

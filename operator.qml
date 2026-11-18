@@ -158,6 +158,8 @@ ApplicationWindow {
         parent: Overlay.overlay
         property string targetCueId: ""
         property bool marked: false
+        property bool targetIsPpt: false
+        property real targetInterval: 5
         width: 180
         background: Rectangle { color: screen.panel; radius: 5; border.color: screen.edge }
         MenuItem {
@@ -170,6 +172,61 @@ ApplicationWindow {
             contentItem: Text { text: stillAction.text; color: screen.ink; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
             background: Rectangle { color: stillAction.highlighted ? "#193747" : "transparent"; radius: 4 }
         }
+        MenuItem {
+            id: intervalAction
+            objectName: "pptIntervalAction"
+            visible: projectionStillMenu.targetIsPpt
+            height: visible ? implicitHeight : 0
+            text: "Slide interval…"
+            implicitHeight: 34
+            onTriggered: {
+                pptIntervalDialog.targetCueId = projectionStillMenu.targetCueId
+                pptIntervalInput.text = String(projectionStillMenu.targetInterval)
+                pptIntervalDialog.open()
+            }
+            contentItem: Text { text: intervalAction.text; color: screen.ink; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+            background: Rectangle { color: intervalAction.highlighted ? "#193747" : "transparent"; radius: 4 }
+        }
+    }
+
+    Dialog {
+        id: pptIntervalDialog
+        objectName: "pptIntervalDialog"
+        property string targetCueId: ""
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(360, screen.width - 40)
+        modal: true; focus: true
+        title: "Slide interval"
+        padding: 20
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { radius: 8; color: screen.panel; border.color: screen.cyan }
+        header: Text { text: pptIntervalDialog.title; Accessible.name: text; color: screen.ink; font.pixelSize: 18; font.bold: true; padding: 20 }
+        contentItem: ColumnLayout {
+            spacing: 12
+            Caption { Layout.fillWidth: true; text: "Seconds between slides (0.5–3600)"; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            TextField {
+                id: pptIntervalInput
+                objectName: "pptIntervalInput"
+                Accessible.name: "Seconds between slides"
+                Layout.fillWidth: true
+                implicitHeight: 36
+                selectByMouse: true
+                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                color: screen.ink; font.pixelSize: 16
+                selectedTextColor: "#07131d"; selectionColor: screen.cyan
+                background: Rectangle { radius: 4; color: screen.field; border.color: pptIntervalInput.activeFocus ? screen.cyan : screen.edge }
+                validator: DoubleValidator { bottom: 0.5; top: 3600; decimals: 3; locale: "C"; notation: DoubleValidator.StandardNotation }
+                Keys.onReturnPressed: if (acceptableInput) pptIntervalDialog.accept()
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                KeyButton { objectName: "pptIntervalCancel"; label: "Cancel"; showLabel: true; onClicked: pptIntervalDialog.reject() }
+                KeyButton { objectName: "pptIntervalSave"; label: "Save"; showLabel: true; enabled: pptIntervalInput.acceptableInput; base: enabled ? screen.cyan : screen.field; tone: enabled ? "#07131d" : screen.quiet; onClicked: pptIntervalDialog.accept() }
+            }
+        }
+        onOpened: { pptIntervalInput.forceActiveFocus(); pptIntervalInput.selectAll() }
+        onAccepted: operatorBridge.press("b_interval", {cueId: targetCueId, seconds: Number(pptIntervalInput.text)})
     }
 
     component Glyph: Image {
@@ -476,35 +533,61 @@ ApplicationWindow {
             anchors.fill: parent
             anchors.margins: 7
             spacing: 7
-            RowLayout {
+            GridLayout {
+                id: cueHeader
                 objectName: "cueHeader_" + card.deck
                 Layout.fillWidth: true
-                Caption { objectName: "cueTitle_" + card.deck; text: heading; color: screen.ink; font.weight: Font.DemiBold; Layout.fillWidth: true; Layout.minimumWidth: 0 }
-                KeyButton {
-                    objectName: "audioOnlyButton"
-                    visible: card.deck === "a" && !!screen.ui.selectedIsVideo
-                    label: "Audio only"; showLabel: true; command: "a_audio_only"
-                    implicitHeight: 25
-                    base: screen.ui.audioOnly ? screen.cyan : "#1c2938"
-                    tone: screen.ui.audioOnly ? "#07131d" : screen.ink
-                    line: screen.ui.audioOnly ? screen.cyan : screen.edge
+                columns: 3; columnSpacing: 5; rowSpacing: 5
+                readonly property bool stacked: cueTitle.implicitWidth + headerToggles.implicitWidth + headerEdits.implicitWidth + 10 > width
+                Caption {
+                    id: cueTitle
+                    objectName: "cueTitle_" + card.deck
+                    text: heading; color: screen.ink; font.weight: Font.DemiBold
+                    Layout.row: 0; Layout.column: 0
+                    Layout.fillWidth: true; Layout.minimumWidth: implicitWidth
                 }
-                KeyButton {
-                    objectName: card.deck === "b" ? "projectionSoundButton" : ""
-                    visible: card.deck === "b"
-                    label: screen.ui.projectionSound ? "Sound on" : "Sound off"
-                    showLabel: true; command: "b_sound"
-                    implicitHeight: 25
-                    base: screen.ui.projectionSound ? screen.violet : "#1c2938"
-                    tone: screen.ui.projectionSound ? "#07131d" : screen.ink
-                    line: screen.ui.projectionSound ? screen.violet : screen.edge
-                }
-                Repeater {
-                    model: card.editButtons
+                Row {
+                    id: headerToggles
+                    Layout.row: 0; Layout.column: 1
+                    spacing: 5
+                    visible: audioOnlyToggle.visible || projectionSoundToggle.visible
                     KeyButton {
-                        required property var modelData
-                        symbol: modelData[0]; label: modelData[1]; command: modelData[2]
-                        implicitWidth: 25; implicitHeight: 25
+                        id: audioOnlyToggle
+                        objectName: "audioOnlyButton"
+                        visible: card.deck === "a" && !!screen.ui.selectedIsVideo
+                        label: "Audio only"; showLabel: true; command: "a_audio_only"
+                        implicitHeight: 25
+                        base: screen.ui.audioOnly ? screen.cyan : "#1c2938"
+                        tone: screen.ui.audioOnly ? "#07131d" : screen.ink
+                        line: screen.ui.audioOnly ? screen.cyan : screen.edge
+                    }
+                    KeyButton {
+                        id: projectionSoundToggle
+                        objectName: card.deck === "b" ? "projectionSoundButton" : ""
+                        visible: card.deck === "b"
+                        label: screen.ui.projectionSound ? "Sound on" : "Sound off"
+                        showLabel: true; command: "b_sound"
+                        implicitHeight: 25
+                        base: screen.ui.projectionSound ? screen.violet : "#1c2938"
+                        tone: screen.ui.projectionSound ? "#07131d" : screen.ink
+                        line: screen.ui.projectionSound ? screen.violet : screen.edge
+                    }
+                }
+                Row {
+                    id: headerEdits
+                    objectName: "cueHeaderEdits_" + card.deck
+                    Layout.row: cueHeader.stacked ? 1 : 0
+                    Layout.column: cueHeader.stacked ? 0 : 2
+                    Layout.columnSpan: cueHeader.stacked ? 3 : 1
+                    Layout.alignment: Qt.AlignRight
+                    spacing: 5
+                    Repeater {
+                        model: card.editButtons
+                        KeyButton {
+                            required property var modelData
+                            symbol: modelData[0]; label: modelData[1]; command: modelData[2]
+                            implicitWidth: 25; implicitHeight: 25
+                        }
                     }
                 }
             }
@@ -547,6 +630,8 @@ ApplicationWindow {
                                 if (mouse.button === Qt.RightButton) {
                                     projectionStillMenu.targetCueId = row.modelData.id || ""
                                     projectionStillMenu.marked = !!row.modelData.standby
+                                    projectionStillMenu.targetIsPpt = row.modelData.kind === "ppt"
+                                    projectionStillMenu.targetInterval = Number(row.modelData.intervalSeconds) || 5
                                     const position = row.mapToItem(projectionStillMenu.parent, mouse.x, mouse.y)
                                     projectionStillMenu.x = position.x
                                     projectionStillMenu.y = position.y
@@ -606,6 +691,13 @@ ApplicationWindow {
                                 Layout.preferredWidth: 38; Layout.preferredHeight: 17
                                 radius: 3; color: "#2b2541"
                                 Caption { anchors.centerIn: parent; text: "STILL"; color: screen.violet; font.pixelSize: 9; font.weight: Font.DemiBold }
+                            }
+                            Caption {
+                                objectName: "pptIntervalBadge_" + (row.modelData.id || row.index)
+                                visible: card.deck === "b" && row.modelData.kind === "ppt"
+                                text: (row.modelData.intervalActive ? "↻ " : "") + (row.modelData.intervalCustom ? String(Math.round(Number(row.modelData.intervalSeconds || 5) * 1000) / 1000) + " s" : "Slide timing")
+                                color: row.modelData.intervalActive ? screen.violet : screen.quiet
+                                font.pixelSize: 11
                             }
                             Caption { visible: card.deck !== "scene"; text: row.modelData.detail || "" }
                         }

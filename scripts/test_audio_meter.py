@@ -346,6 +346,101 @@ class AudioMeterTests(unittest.TestCase):
             self.assertTrue(a.audio_levels()["active"])
             self.assertEqual((app._transport_is_active("A"), app._transport_is_active("B")), (True, True))
 
+    def test_eof_sound_armed_seek_applies_handoff_before_restarting(self):
+        from types import MethodType
+        from unittest.mock import patch
+        from scripts.test_audio_routing import AudioRoutingTests
+        from player import App, Cue, MediaRunner, OutputRunner, Settings
+        ffmpeg = (str(root / "dist/SP Show Control/_internal/tools/ffmpeg/ffmpeg.exe")
+                  if sys.platform == "win32" else shutil.which("ffmpeg"))
+        clip = self.folder / "eof-seek.mp4"
+        subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i",
+                        "color=c=blue:size=160x90:rate=10:duration=3", "-f", "lavfi", "-i",
+                        "sine=frequency=440:duration=3", "-c:v", "mpeg4", "-c:a", "aac",
+                        "-shortest", str(clip)], check=True, timeout=10, **process_options)
+        cases = ((False, True, False, False), (True, True, False, False),
+                 (False, False, False, False), (False, True, True, False),
+                 (False, True, False, True))
+        for mix, sound, paused, reject_unmute in cases:
+            with self.subTest(mix=mix, sound=sound, paused=paused, reject_unmute=reject_unmute):
+                fixture = AudioRoutingTests()
+                fixture.setUp()
+                app = fixture.app
+                app._ppt_running, app._ppt_slides = False, []
+                app.audio_mix = mix
+                app.var_ppt_sound.set(False)
+                app._ppt_sound_preference = False
+                fixture.cue.path = str(self.source)
+                for name in ("_projection_timeline", "_seek_projection"):
+                    setattr(app, name, MethodType(getattr(App, name), app))
+                with ExitStack() as stack:
+                    a = stack.enter_context(self.player())
+                    b = stack.enter_context(self.player(source=clip, muted=True))
+                    runner = app.audio_runner = MediaRunner(Settings())
+                    runner._proc, runner._media_clock = a._proc, a
+                    runner._playing_cue, runner._backend = fixture.cue, "mpv"
+                    output = app.video_runner = OutputRunner(Settings())
+                    output._sess = b
+                    cue = Cue(id="projection", path=str(clip), kind="video", volume_percent=65)
+                    with patch.object(output, "ensure_window", return_value=True):
+                        output.play_for_deck("B", cue)
+                    wait_for(lambda: b.observed("path", "time-pos"),
+                             lambda value: value[0] == str(clip) and isinstance(value[1], (int, float)))
+                    self.assertTrue(b.set_property("time-pos", 2.7))
+                    wait_for(lambda: b.observed("eof-reached")[0], lambda value: value is True)
+                    if paused:
+                        self.assertTrue(b.set_property("pause", True))
+                        wait_for(lambda: b.observed("pause")[0], lambda value: value is True)
+                    if sound:
+                        self.assertTrue(app._toggle_projection_sound())
+                    self.assertTrue(runner.is_playing(), "Arming EOF sound must leave A playing")
+                    self.assertTrue(b.get_property("mute"), "Arming EOF sound must leave the held frame silent")
+                    before_a, before_b = a.get_property("time-pos"), b.get_property("time-pos")
+                    process_b = b._proc
+                    real_set = b.set_property
+                    writes = []
+                    def acknowledged_set(name, value):
+                        if name == "mute" and value is False and not mix:
+                            self.assertFalse(runner.is_playing(), "A must stop before B can unmute")
+                        if name == "time-pos" and sound and not paused:
+                            self.assertFalse(b.get_property("mute"), "Audio handoff must precede the restarting seek")
+                        writes.append((name, value))
+                        return False if reject_unmute and name == "mute" and value is False else real_set(name, value)
+                    with patch.object(b, "set_property", side_effect=acknowledged_set):
+                        result = app._seek_projection(dict(cueId=cue.id, path=str(clip), fraction=.5))
+                    self.assertIs(b._proc, process_b, "Seeking must keep the existing decoder")
+                    if reject_unmute:
+                        self.assertFalse(result)
+                        self.assertTrue(app._callback_notice)
+                        self.assertFalse(any(name == "time-pos" for name, _ in writes))
+                        self.assertEqual(b.get_property("time-pos"), before_b)
+                        self.assertTrue(b.get_property("eof-reached"))
+                        self.assertTrue(b.get_property("mute"))
+                        continue
+                    self.assertTrue(result)
+                    wait_for(lambda: b.get_property("time-pos"), lambda value: 1.5 <= value < 2.5)
+                    self.assertEqual(b.get_property("pause"), paused)
+                    self.assertEqual(app.var_ppt_sound.get(), sound)
+                    audible = sound and not paused
+                    self.assertEqual(b.get_property("mute"), not audible)
+                    if audible:
+                        wait_for(b.audio_levels, lambda value: value["active"] and
+                                 any(channel["level"] > .01 for channel in value["channels"]))
+                    else:
+                        self.assertFalse(b.audio_levels()["active"])
+                    if audible and not mix:
+                        self.assertFalse(runner.is_playing())
+                        self.assertEqual(app._paused_a[0], fixture.cue.id)
+                        self.assertGreaterEqual(app._paused_a[1], before_a)
+                    else:
+                        wait_for(lambda: a.get_property("time-pos"), lambda value: value > before_a + .1)
+                        self.assertTrue(runner.is_playing())
+                        self.assertIsNone(app._paused_a)
+                    if paused:
+                        held = b.get_property("time-pos")
+                        time.sleep(.12)
+                        self.assertEqual(b.get_property("time-pos"), held)
+
     def test_real_media_runner_attached_clock_drives_play_highlight(self):
         from types import SimpleNamespace
         from unittest.mock import patch

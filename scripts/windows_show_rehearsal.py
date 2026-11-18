@@ -572,12 +572,32 @@ def rehearse(folder):
             app.update()
             time.sleep(0.02)
         assert app._ppt_index == 0, "Loop OFF must retain manual slide control"
+        interval_cue = app._cues_b[3]
+        legacy_interval = app._ppt_interval_for_cue(None)
+        assert app._set_ppt_interval({"cueId": interval_cue.id, "seconds": .75})
+        assert app._ppt_still_duration() == .75 and app._ppt_cue is interval_cue
+        current_slide_path = visual.get_property("path")
+        app.tree_b.selection_set("2")
+        app._on_deck_b_select()
+        app.var_ppt_interval.set("1.25")
+        assert app._commit_ppt_interval()
+        assert app._cues_b[2].ppt_interval_sec == 1.25
+        assert app._ppt_cue is interval_cue and app._ppt_still_duration() == .75
+        assert visual.get_property("path") == current_slide_path and app._ppt_index == 0
+        assert not app._loop_b_enabled, "Editing a selected PPT interval must not start/enable the running PPT"
+        app.tree_b.selection_set("3")
+        app._on_deck_b_select()
         app._toggle_loop("B")
         order = [app._ppt_index]
+        transition_times = []
+        previous_transition = app._ppt_slide_started
         deadline = time.monotonic() + 10
         while len(order) < 9 and time.monotonic() < deadline:
             app.update()
             if app._ppt_index != order[-1]:
+                now = time.monotonic()
+                transition_times.append(now - previous_transition)
+                previous_transition = now
                 order.append(app._ppt_index)
                 if app._ppt_index == 3:
                     app.after_cancel(app._monitor_after_id)
@@ -586,6 +606,13 @@ def rehearse(folder):
                     assert Path(next_path).name == "0001.png"
             time.sleep(0.03)
         assert order == [0, 1, 2, 3, 0, 1, 2, 3, 0], order
+        assert all(seconds >= .70 for seconds in transition_times), transition_times
+        assert app._ppt_seconds == [0.4, 0.5, 0.4, 0.5], "Per-PPT editing must preserve exported timings"
+        (root / "dist/windows-ppt-interval.json").write_text(json.dumps({
+            "cue_id": interval_cue.id, "configured_seconds": .75,
+            "actual_transition_seconds": transition_times, "slide_order": order,
+            "exported_timing_preserved": app._ppt_seconds,
+            "editing_other_selected_ppt_kept_running_ppt_unchanged": True}, indent=2))
         assert visual.get_property("fullscreen") is True and output_hwnd() == hwnd
         app._toggle_loop("B")
         paused_index = app._ppt_index
@@ -684,15 +711,33 @@ def rehearse(folder):
         finish_video()
         wait_for(lambda: pump(lambda: visual.get_property("eof-reached")), bool)
         eof_position = visual.get_property("time-pos")
-        hold = time.monotonic() + 0.7
-        while time.monotonic() < hold:
+        previous_position = eof_position
+        stable_since = time.monotonic()
+        deadline = stable_since + 2
+        eof_samples = []
+        while time.monotonic() < deadline:
             pump(lambda: None)
             assert visual.get_property("eof-reached") is True
             assert Path(visual.get_property("path")).samefile(clip)
-            assert abs(visual.get_property("time-pos") - eof_position) < 0.05
+            position = visual.get_property("time-pos")
+            assert position >= previous_position - .001, (previous_position, position)
+            # Windows may first report the final decoded frame (3.9), then
+            # the precise EOF time (4.0). This is forward settling, not replay.
+            if abs(position - eof_position) >= .05:
+                eof_position = position
+                stable_since = time.monotonic()
+            previous_position = position
+            eof_samples.append(position)
             assert ready_context() == ready
             assert app._paused_state_for_deck("A") == still_paused and not app.audio_runner.is_playing()
+            if time.monotonic() - stable_since >= .7:
+                break
             time.sleep(0.05)
+        assert time.monotonic() - stable_since >= .7, eof_samples
+        (root / "dist/windows-still-eof-hold.json").write_text(json.dumps({
+            "positions": eof_samples, "continuous_eof_and_same_path": True,
+            "settled_seconds": time.monotonic() - stable_since,
+            "ready_selection_unchanged": True, "audio_stayed_paused": True}, indent=2))
         assert not app._loop_b_enabled and not app.var_ppt_sound.get()
         print("PASS: video Still obeyed Repeat OFF, held its final frame after real EOF, and never resumed paused music")
         tree.delete(*(f"still-scroll-{i}" for i in range(40)))
@@ -714,13 +759,20 @@ def rehearse(folder):
         app._all_cues_a.append(duplicate)
         app._scenes[0].cue_ids_a.append(duplicate.id)
         app._scenes.append(Scene(id="second", name="Grade 13C", cue_ids_a=[duplicate.id], cue_ids_b=["B1"]))
+        select_projection(2)
         app.var_ppt_interval.set("8")
+        assert app._commit_ppt_interval()
+        edited_interval_id = app._cues_b[2].id
         app.btn_save_show.invoke()
         wait_for(lambda: (app.update(), app._saving_show)[1], lambda busy: not busy)
         assert json.loads(showfile.read_text(encoding="utf-8"))["playback"]["standby_cue_id"] == "B1"
         assert app._auto_open_last_show()
         assert app._show_path.samefile(showfile) and len(app._scenes) == 2
         assert app._standby_cue_id == "B1" and app._standby_cue().kind == "image"
+        assert app._ppt_interval_for_cue(None) == legacy_interval
+        assert next(cue for cue in app._all_cues_b if cue.id == interval_cue.id).ppt_interval_sec == .75
+        assert next(cue for cue in app._all_cues_b if cue.id == edited_interval_id).ppt_interval_sec == 8
+        select_projection(2)
         assert app.var_ppt_interval.get() == "8"
         assert app._scenes[0].cue_ids_a == ["A1", "A2"] and app._scenes[1].cue_ids_a == ["A2"]
         first, second = app._cues_a
