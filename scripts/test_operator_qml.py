@@ -156,6 +156,54 @@ class OperatorQmlTests(unittest.TestCase):
         finally:
             delete(engine)
 
+    def test_meter_channels_fit_without_overlap_for_stereo_51_and_71(self):
+        from PySide6.QtCore import QPointF
+        from shiboken6 import delete
+        bridge = Bridge()
+        engine = QQmlApplicationEngine()
+        engine.addImageProvider("icon", EmptyImages())
+        engine.rootContext().setContextProperty("operatorBridge", bridge)
+        engine.load(QUrl.fromLocalFile(str(Path(__file__).resolve().parents[1] / "operator.qml")))
+        try:
+            window = engine.rootObjects()[0]
+            window.resize(900, 550)
+            for count in (2, 6, 8):
+                with self.subTest(channels=count):
+                    channel = {"level": 0.65, "peak": 0.8}
+                    bridge.current = {"vu": {"decks": [dict(name=name, active=True, available=True,
+                                        channels=[dict(channel) for _ in range(count)]) for name in ("A", "B")]}}
+                    bridge.stateChanged.emit()
+                    QTest.qWait(30)
+                    items = []
+                    pending = list(window.contentItem().childItems())
+                    while pending:
+                        item = pending.pop()
+                        items.append(item)
+                        pending.extend(item.childItems())
+                    for name in ("A", "B"):
+                        deck = next(item for item in items if item.objectName() == "vuDeck_live_" + name)
+                        bars = []
+                        for item in items:
+                            if not item.objectName().startswith("vuChannel_"):
+                                continue
+                            if item.parentItem().parentItem() is deck:
+                                bars.append(item)
+                        self.assertEqual(len(bars), count)
+                        right_edge = 0.0
+                        for bar in sorted(bars, key=lambda item: item.x()):
+                            x = bar.mapToItem(deck, QPointF()).x()
+                            self.assertGreaterEqual(x, right_edge - 0.01)
+                            self.assertLessEqual(x + bar.width(), deck.width() + 0.01)
+                            self.assertGreater(bar.width(), 0)
+                            if count == 2:
+                                self.assertEqual(bar.width(), 8)
+                            peak = next(item for item in bar.childItems() if item.objectName() == "vuPeak")
+                            self.assertGreaterEqual(peak.x(), 0)
+                            self.assertLessEqual(peak.x() + peak.width(), bar.width())
+                            right_edge = x + bar.width()
+        finally:
+            delete(engine)
+
     def test_confirmation_is_owned_modal_and_escape_keeps_show(self):
         bridge = Bridge()
         engine = QQmlApplicationEngine()

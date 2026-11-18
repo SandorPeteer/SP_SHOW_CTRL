@@ -15,30 +15,28 @@ def check_output():
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from mpv_ipc import MpvIpcSession
 
-    session = MpvIpcSession(str(APP / "_internal/tools/mpv/mpv.exe"), name="OUTPUT",
+    session = MpvIpcSession(str(APP / "_internal/tools/mpv/mpv.exe"), name="BUNDLE_SMOKE_" + str(os.getpid()),
                             second_screen_left=0, second_screen_top=0, fullscreen=False)
-    deadline = time.monotonic() + 20
-    while True:
-        try:
-            session._connect_ipc()
-            break
-        except (RuntimeError, OSError):
-            if time.monotonic() >= deadline:
-                raise
-    print("Show Control IPC connected", flush=True)
-    assert session.get_property("mpv-version"), "No response on the application IPC channel"
-    session.loadfile(sys.argv[2])
-    for _ in range(50):
-        if session.get_property("video-params"):
-            break
-        time.sleep(0.1)
-    else:
-        raise RuntimeError("Timed out decoding test video")
-    for paused in (True, False):
-        assert session.set_property("pause", paused)
-        assert session.get_property("pause") is paused
-    session.stop()
-    session.shutdown()
+    try:
+        # Own a separate player and pipe; never load/stop media in the frozen
+        # operator's OUTPUT session behind its show model's back.
+        session.start()
+        print("Isolated Show Control IPC connected", flush=True)
+        assert session.get_property("mpv-version"), "No response on the test IPC channel"
+        session.set_property("mute", True)
+        session.loadfile(sys.argv[2])
+        for _ in range(50):
+            if session.get_property("video-params"):
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("Timed out decoding test video")
+        for paused in (True, False):
+            assert session.set_property("pause", paused)
+            assert session.get_property("pause") is paused
+        session.stop()
+    finally:
+        session.shutdown()
 
 
 def smoke():
@@ -153,7 +151,8 @@ def smoke():
             frame.save(APP.parent / "windows-controller-preview.png")
             if output_hwnd:
                 win32gui.ShowWindow(output_hwnd, 9)
-            subprocess.run([sys.executable, __file__, "output", str(clip)], check=True, timeout=40)
+            subprocess.run([sys.executable, str(Path(__file__).resolve()), "output", str(clip)],
+                           env=env, cwd=test, check=True, timeout=40)
             from windows_dialog_rehearsal import exercise_dialogs
             exercise_dialogs(app, hwnd, Path(test), env)
         except Exception:

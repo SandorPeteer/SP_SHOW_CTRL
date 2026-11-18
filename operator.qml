@@ -268,18 +268,24 @@ ApplicationWindow {
                             Item {
                                 id: meterDeck
                                 required property var modelData
+                                objectName: "vuDeck_" + (live ? "live_" : "next_") + modelData.name
                                 width: 21; height: parent.height
                                 Caption { anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter; text: meterDeck.modelData.name; font.pixelSize: 9; color: meterDeck.modelData.name === "A" ? screen.cyan : screen.violet }
                                 Row {
+                                    id: channelStrip
                                     anchors.top: parent.top; anchors.topMargin: 15
                                     anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter
-                                    spacing: 2
+                                    readonly property int channelCount: meterDeck.modelData.channels.length || 2
+                                    spacing: Math.min(2, 4 / channelCount)
                                     Repeater {
                                         model: meterDeck.modelData.channels.length ? meterDeck.modelData.channels : [{level: 0, peak: 0}, {level: 0, peak: 0}]
                                         Rectangle {
                                             id: channelMeter
                                             required property var modelData
-                                            width: 8; height: parent.height; radius: 2; color: "#1c2b38"
+                                            required property int index
+                                            objectName: "vuChannel_" + index
+                                            width: Math.min(8, (meterDeck.width - channelStrip.spacing * (channelStrip.channelCount - 1)) / channelStrip.channelCount)
+                                            height: parent.height; radius: Math.min(2, width / 2); color: "#1c2b38"
                                             Rectangle {
                                                 anchors.bottom: parent.bottom
                                                 width: parent.width
@@ -288,8 +294,9 @@ ApplicationWindow {
                                                 Behavior on height { NumberAnimation { duration: 80 } }
                                             }
                                             Rectangle {
+                                                objectName: "vuPeak"
                                                 visible: meterDeck.modelData.active && meterDeck.modelData.available
-                                                x: -1; width: parent.width + 2; height: 2; color: screen.ink
+                                                width: parent.width; height: 2; color: screen.ink
                                                 y: (1 - Math.max(0, Math.min(1, channelMeter.modelData.peak || 0))) * (parent.height - height)
                                             }
                                         }

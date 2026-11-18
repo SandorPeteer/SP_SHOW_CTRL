@@ -50,6 +50,11 @@ def exercise_dialogs(process, controller, folder, environment):
         win32gui.SetForegroundWindow(controller)
         wait(win32gui.GetForegroundWindow, lambda hwnd: hwnd == controller)
 
+    def click(x, y):
+        win32api.SetCursorPos((round(x), round(y)))
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+
     def capture(name):
         frame = ImageGrab.grab(bbox=win32gui.GetWindowRect(controller))
         frame.save(root / f"dist/windows-dialog-{name}.png")
@@ -176,13 +181,25 @@ def exercise_dialogs(process, controller, folder, environment):
     restarted = None
     try:
         activate()
-        # Select Show via the actual lower-right transport button in the QML layout.
+        # Scene activation selects A0 only. Select the visible first projection
+        # row before Show; otherwise the production handler correctly does nothing.
         left, top, right, bottom = win32gui.GetWindowRect(controller)
-        x = left + round((right - left - 36) * 0.58 + 65)
-        y = bottom - 32
-        win32api.SetCursorPos((x, y))
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        from ctypes import c_uint, c_void_p, windll
+        get_dpi = windll.user32.GetDpiForWindow
+        get_dpi.argtypes = (c_void_p,)
+        get_dpi.restype = c_uint
+        scale = get_dpi(controller) / 96
+        first_row_y = top + 112 * scale + int((bottom - top - 66 * scale) * .42)
+        click(left + (right - left) * .8, first_row_y)
+        # Verify that a real row became selected before invoking transport.
+        sample_x = round(left + (right - left) * .9)
+        sample_y = round(first_row_y)
+        selected_colors = {(25, 55, 71), (43, 37, 65)}  # selected / explicitly queued
+        selected = wait(lambda: ImageGrab.grab(bbox=(sample_x, sample_y, sample_x + 1, sample_y + 1)).convert("RGB").getpixel((0, 0)),
+                        lambda color: color in selected_colors)
+        capture("projection-row-selected")
+        check("Selected B0 through the actual projection row before Show", row_color=selected)
+        click(left + (right - left - 36 * scale) * .58 + 65 * scale, bottom - 32 * scale)
         from mpv_ipc import MpvIpcSession
         observer = MpvIpcSession(str(app_path.parent / "_internal/tools/mpv/mpv.exe"),
             name="OUTPUT", second_screen_left=0, second_screen_top=0, fullscreen=False)
