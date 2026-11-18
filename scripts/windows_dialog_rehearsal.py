@@ -3,7 +3,10 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 def exercise_dialogs(process, controller, folder, environment):
@@ -107,6 +110,49 @@ def exercise_dialogs(process, controller, folder, environment):
         wait(win32gui.GetForegroundWindow, lambda hwnd: hwnd == controller)
         time.sleep(0.3)
 
+    def tool_window(code, title, *, shift=False):
+        activate()
+        key(code, win32con.VK_CONTROL, *([win32con.VK_SHIFT] if shift else []))
+        def find():
+            found = []
+            def visit(hwnd, _):
+                if (win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd) == title
+                        and win32gui.GetAncestor(hwnd, win32con.GA_ROOTOWNER) == controller):
+                    found.append(hwnd)
+            win32gui.EnumWindows(visit, None)
+            return found[0] if found else None
+        tool = wait(find)
+        wait(win32gui.GetForegroundWindow, lambda hwnd: hwnd == tool)
+        assert win32api.MonitorFromWindow(tool, 2) == win32api.MonitorFromWindow(controller, 2)
+        work = win32api.GetMonitorInfo(win32api.MonitorFromWindow(controller, 2))["Work"]
+        name = title.lower().replace(" ", "-").replace(":", "")
+        measurements = []
+        for enlarged in (False, True):
+            if enlarged:
+                left, top, right, bottom = win32gui.GetWindowRect(tool)
+                width = min(right - left + 120, work[2] - work[0] - 40)
+                height = min(bottom - top + 80, work[3] - work[1] - 40)
+                win32gui.SetWindowPos(tool, 0, work[0] + 20, work[1] + 20, width, height,
+                                      win32con.SWP_NOZORDER)
+            time.sleep(0.25)
+            bounds = win32gui.GetWindowRect(tool)
+            assert bounds[0] >= work[0] and bounds[1] >= work[1]
+            assert bounds[2] <= work[2] and bounds[3] <= work[3], (title, bounds, work)
+            image = ImageGrab.grab(bbox=bounds).convert("RGB")
+            # Sample the client area. Native titlebar rendering is OS-controlled.
+            sample = image.crop((10, min(40, image.height // 5), image.width - 10, image.height - 10))
+            dark = sum(count for count, color in sample.getcolors(sample.width * sample.height)
+                       if max(color) < 140) / (sample.width * sample.height)
+            assert dark > 0.6, (title, "Expected unified dark tool surface", dark)
+            image.save(root / f"dist/windows-tool-{name}{'-resized' if enlarged else ''}.png")
+            measurements.append(dict(bounds=bounds, dark_fraction=dark))
+        key(win32con.VK_ESCAPE)
+        wait(lambda: not win32gui.IsWindowVisible(tool))
+        wait(win32gui.GetForegroundWindow, lambda hwnd: hwnd == controller)
+        assert observer.get_property("path").endswith("logo.png")
+        check(title + " owned/focused/dark/resizable; Escape returned focus with output intact",
+              measurements=measurements)
+
     def save_to(path):
         choose_file(ord("S"), "Save show as", path, shift=True)
         wait(path.is_file, timeout=25)
@@ -150,6 +196,11 @@ def exercise_dialogs(process, controller, folder, environment):
         time.sleep(0.2)
         assert observer.get_property("path").endswith("logo.png")
         check("New show Escape kept the running output and operator focus")
+        for code, title, shift in ((win32con.VK_OEM_COMMA, "Setup", False),
+                                   (ord("M"), "Media tools", True),
+                                   (ord("P"), "Projection tools", True),
+                                   (ord("E"), "Edit Scene: Rehearsal", False)):
+            tool_window(code, title, shift=shift)
         for code, title, shift in ((ord("O"), "Open show", False),
                                    (ord("S"), "Save show as", True),
                                    (ord("A"), "Add Media", True),

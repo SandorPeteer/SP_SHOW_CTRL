@@ -2146,9 +2146,7 @@ class MediaRunner:
             def watch_clock():
                 try:
                     clock._connect_ipc()
-                    response = clock.command(["observe_property", 1, "time-pos"], timeout=1)
-                    if response.get("error") != "success":
-                        raise RuntimeError(response.get("error", "Unable to observe mpv time"))
+                    clock.observe_playback()
                     proc.wait()
                 except Exception as exc:
                     _swallow_exc(exc, note="media clock")
@@ -2531,8 +2529,8 @@ class MediaRunner:
             _swallow_exc(e, note="build_mpv_args normalize")
         if audio_filter:
             filters.append(audio_filter)
-        if filters:
-            args.append("--af=lavfi=[" + ",".join(filters) + "]")
+        from audio_meter import metered_filters
+        args.append("--af=" + metered_filters("lavfi=[" + ",".join(filters) + "]" if filters else None))
 
         args.append(cue.path)
         return args
@@ -3109,6 +3107,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._was_playing_b = False
         self._last_output_owner: str | None = None
         self._last_output_cue_id: str | None = None
+        self._playback_origin: dict[str, tuple[str | None, str]] = {}
         self._last_visual_cue_id: str | None = None
         self._ppt_running: bool = False
         self._inhibit_auto_advance = False
@@ -3748,6 +3747,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         from ppt_media import read_timing
         self._ppt_seconds = read_timing(path, files)
         self._show_mpv_slide(pending, files, 0)
+        if self._ppt_running and self._ppt_cue is pending:
+            self._record_playback_origin("B", pending)
 
     def _show_mpv_slide(self, cue, files, index):
         if not 0 <= index < len(files):
@@ -4690,11 +4691,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._global_setup_win = win
         win.title("Setup")
         try:
-            win.configure(bg="#2b2b2b")
+            win.configure(bg=palette.PANEL)
         except Exception:
             pass
         try:
-            win.geometry("820x480")
+            win.geometry(f"{palette.pixels(self, 800)}x{palette.pixels(self, 560)}")
+            win.minsize(palette.pixels(self, 720), palette.pixels(self, 520))
         except Exception:
             pass
 
@@ -4718,9 +4720,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 pass
 
         win.protocol("WM_DELETE_WINDOW", _on_close)
+        win.bind("<Escape>", lambda _event: _on_close())
 
-        outer = tk.Frame(win, bg="#2b2b2b", bd=0, highlightthickness=0)
-        outer.pack(fill="both", expand=True, padx=10, pady=10)
+        outer = ttk.Frame(win, padding=16)
+        outer.pack(fill="both", expand=True)
+        ttk.Label(outer, text="Show settings", style="ToolTitle.TLabel").pack(anchor="w")
+        ttk.Label(outer, text="Output, sound and diagnostics", style="ToolHint.TLabel").pack(anchor="w", pady=(4, 16))
 
         nb = ttk.Notebook(outer, style="Deck.TNotebook")
         try:
@@ -4741,12 +4746,17 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         # Display settings
         disp = ttk.Frame(tab_display, padding=12)
         disp.pack(fill="x", anchor="n")
-        ttk.Label(disp, text="Second screen position (px):").grid(row=0, column=0, sticky="w")
-        ttk.Entry(disp, textvariable=self.var_left, width=7).grid(row=0, column=1, sticky="w", padx=(8, 0))
-        ttk.Label(disp, text=",").grid(row=0, column=2, sticky="w", padx=(6, 0))
-        ttk.Entry(disp, textvariable=self.var_top, width=7).grid(row=0, column=3, sticky="w", padx=(6, 0))
-        ttk.Button(disp, text="🔍 Detect Screens", command=self._detect_screens).grid(row=0, column=4, sticky="w", padx=(14, 0))
-        disp.columnconfigure(5, weight=1)
+        disp.columnconfigure(1, weight=1)
+        ttk.Label(disp, text="Output position").grid(row=0, column=0, sticky="w", padx=(0, 20))
+        position_row = ttk.Frame(disp)
+        position_row.grid(row=0, column=1, sticky="ew")
+        ttk.Label(position_row, text="X").pack(side="left", padx=(0, 6))
+        ttk.Entry(position_row, textvariable=self.var_left, width=8).pack(side="left")
+        ttk.Label(position_row, text="Y").pack(side="left", padx=(12, 6))
+        ttk.Entry(position_row, textvariable=self.var_top, width=8).pack(side="left")
+        ttk.Button(position_row, text="Detect screens", command=self._detect_screens).pack(side="right")
+        engine_tools = ttk.Frame(disp)
+        engine_tools.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(20, 0))
 
         # Playback engine selector (mpv recommended). Auto chooses mpv if available, else ffplay.
         var_engine = tk.StringVar(value=str(getattr(self.settings, "playback_engine", "auto") or "auto"))
@@ -4765,27 +4775,29 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
         var_engine.trace_add("write", _apply_engine)
         ttk.Label(disp, text="Playback engine:").grid(row=1, column=0, sticky="w", pady=(10, 0))
-        cb = ttk.Combobox(disp, textvariable=var_engine, values=("auto", "mpv", "ffplay"), state="readonly", width=10)
-        cb.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
+        cb = ttk.Combobox(disp, textvariable=var_engine, values=("auto", "mpv", "ffplay"), state="readonly", width=18)
+        cb.grid(row=1, column=1, sticky="w", pady=(12, 0))
         try:
             cb.configure(takefocus=0)
         except Exception:
             pass
-        ttk.Button(disp, text="Install mpv…", command=self._install_mpv_prompt).grid(
-            row=1, column=2, sticky="w", padx=(14, 0), pady=(10, 0)
+        ttk.Button(engine_tools, text="Install mpv…", command=self._install_mpv_prompt).grid(
+            row=0, column=0, sticky="ew", padx=(0, 8), pady=4
         )
-        ttk.Button(disp, text="Select mpv.exe…", command=self._select_mpv_exe).grid(
-            row=1, column=3, sticky="w", padx=(10, 0), pady=(10, 0)
+        ttk.Button(engine_tools, text="Select mpv.exe…", command=self._select_mpv_exe).grid(
+            row=0, column=1, sticky="ew", padx=(0, 8), pady=4
         )
-        ttk.Button(disp, text="Open mpv tools", command=self._open_mpv_tools_folder).grid(
-            row=1, column=4, sticky="w", padx=(10, 0), pady=(10, 0)
+        ttk.Button(engine_tools, text="Open mpv tools", command=self._open_mpv_tools_folder).grid(
+            row=0, column=2, sticky="ew", pady=4
         )
-        ttk.Button(disp, text="Test mpv IPC", command=self._test_mpv_ipc).grid(
-            row=1, column=5, sticky="w", padx=(10, 0), pady=(10, 0)
+        ttk.Button(engine_tools, text="Test connection", command=self._test_mpv_ipc).grid(
+            row=1, column=0, sticky="ew", padx=(0, 8), pady=4
         )
-        ttk.Button(disp, text="Open logs", command=self._open_logs_folder).grid(
-            row=2, column=4, sticky="w", padx=(10, 0), pady=(10, 0)
+        ttk.Button(engine_tools, text="Open logs", command=self._open_logs_folder).grid(
+            row=1, column=1, sticky="ew", padx=(0, 8), pady=4
         )
+        for column in range(3):
+            engine_tools.columnconfigure(column, weight=1, uniform="engine_tools")
 
         # mpv hwdec: default to a safe value on Windows to avoid driver hangs.
         var_hwdec = tk.StringVar(value=_effective_mpv_hwdec(self.settings))
@@ -4813,9 +4825,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 pass
 
         var_hwdec.trace_add("write", _apply_hwdec)
-        ttk.Label(disp, text="mpv hwdec:").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        cb_hw = ttk.Combobox(disp, textvariable=var_hwdec, values=("no", "auto-safe", "auto"), state="readonly", width=10)
-        cb_hw.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
+        ttk.Label(disp, text="Hardware decoding").grid(row=2, column=0, sticky="w", pady=(12, 0))
+        cb_hw = ttk.Combobox(disp, textvariable=var_hwdec, values=("no", "auto-safe", "auto"), state="readonly", width=18)
+        cb_hw.grid(row=2, column=1, sticky="w", pady=(12, 0))
         try:
             cb_hw.configure(takefocus=0)
         except Exception:
@@ -4851,9 +4863,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 pass
 
         var_out_mode.trace_add("write", _apply_out_mode)
-        ttk.Label(disp, text="mpv output:").grid(row=3, column=0, sticky="w", pady=(8, 0))
-        cb_out = ttk.Combobox(disp, textvariable=var_out_mode, values=("ipc", "spawn"), state="readonly", width=10)
-        cb_out.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
+        ttk.Label(disp, text="Output mode").grid(row=3, column=0, sticky="w", pady=(12, 0))
+        cb_out = ttk.Combobox(disp, textvariable=var_out_mode, values=("ipc", "spawn"), state="readonly", width=18)
+        cb_out.grid(row=3, column=1, sticky="w", pady=(12, 0))
         try:
             cb_out.configure(takefocus=0)
         except Exception:
@@ -4878,12 +4890,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             disp,
             text="Keep mpv output window open (2nd screen)",
             variable=var_mpv_persist,
-        ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(16, 0))
 
         ttk.Separator(tab_display, orient="horizontal").pack(fill="x", pady=(6, 0))
         ttk.Label(
             tab_display,
             text="Applies to video playback target on the second screen. Use 'Detect Screens' to auto-detect iPad or external displays.",
+            wraplength=640, style="ToolHint.TLabel",
             padding=(12, 8),
         ).pack(anchor="w")
 
@@ -5260,6 +5273,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         about_btns = ttk.Frame(about_wrap)
         about_btns.pack(fill="x", pady=(10, 0))
         ttk.Button(about_btns, text="Copy", command=_copy_about).pack(side="left")
+        palette.prepare_tool_window(win)
 
     def _copy_selected_path(self) -> None:
         cue = self._selected_cue()
@@ -5513,16 +5527,16 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             button.pack(side="left", padx=(0, 4))
 
         # Tabs under playback block (Deck A)
-        self.tab_a_setup = tk.Frame(self.tabs_a, bg="#2b2b2b")
-        self.tab_a_inout = tk.Frame(self.tabs_a, bg="#2b2b2b")
-        self.tab_a_more = tk.Frame(self.tabs_a, bg="#2b2b2b")
+        self.tab_a_setup = tk.Frame(self.tabs_a, bg=palette.PANEL)
+        self.tab_a_inout = tk.Frame(self.tabs_a, bg=palette.PANEL)
+        self.tab_a_more = tk.Frame(self.tabs_a, bg=palette.PANEL)
         self.tabs_a.add(self.tab_a_setup, text="Options")
         self.tabs_a.add(self.tab_a_inout, text="IN/OUT")
         self.tabs_a.add(self.tab_a_more, text="Playback")
         ttk.Label(self.tab_a_more, textvariable=self.var_total_duration_a).pack(anchor="w", padx=10, pady=(12, 0))
 
         # Setup tab (Deck A) - per-cue target
-        setup_a = ttk.Frame(self.tab_a_setup, padding=6)
+        setup_a = ttk.Frame(self.tab_a_setup, padding=12)
         setup_a.pack(fill="x")
         setup_a_vol_row = ttk.Frame(setup_a)
         setup_a_vol_row.pack(fill="x")
@@ -5560,13 +5574,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.var_video_mode_a.trace_add("write", lambda *_: self._apply_target_setting("A"))
 
         # IN/OUT tab (Deck A)
-        inout_a = ttk.Frame(self.tab_a_inout, padding=6)
+        inout_a = ttk.Frame(self.tab_a_inout, padding=12)
         inout_a.pack(fill="x")
         mark_a = ttk.Frame(inout_a)
         mark_a.pack(fill="x")
         mark_a.columnconfigure(0, weight=1, uniform="inout_a")
         mark_a.columnconfigure(1, weight=1, uniform="inout_a")
-        in_frame_a = ttk.LabelFrame(mark_a, text="IN", padding=2)
+        in_frame_a = ttk.LabelFrame(mark_a, text="IN", padding=8)
         in_frame_a.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         self.var_in_a = tk.StringVar(value="0:00.000")
         in_row_a = ttk.Frame(in_frame_a)
@@ -5574,7 +5588,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         in_row_a.columnconfigure(0, weight=1)
         in_row_a.columnconfigure(1, weight=0)
         in_row_a.columnconfigure(2, weight=0)
-        entry_in_a = ttk.Entry(in_row_a, textvariable=self.var_in_a)
+        entry_in_a = ttk.Entry(in_row_a, textvariable=self.var_in_a, width=12)
         entry_in_a.grid(row=0, column=0, sticky="ew")
         ttk.Button(in_row_a, text="−", width=3, command=lambda: self._nudge_in("A", -0.05)).grid(row=0, column=1, sticky="e", padx=(6, 2))
         ttk.Button(in_row_a, text="+", width=3, command=lambda: self._nudge_in("A", 0.05)).grid(row=0, column=2, sticky="e", padx=(0, 2))
@@ -5587,7 +5601,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         entry_in_a.bind("<Button-4>", lambda e: self._nudge_in_event("A", +1, e))
         entry_in_a.bind("<Button-5>", lambda e: self._nudge_in_event("A", -1, e))
 
-        out_frame_a = ttk.LabelFrame(mark_a, text="OUT", padding=2)
+        out_frame_a = ttk.LabelFrame(mark_a, text="OUT", padding=8)
         out_frame_a.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         self.var_out_a = tk.StringVar(value="—")
         out_row_a = ttk.Frame(out_frame_a)
@@ -5595,7 +5609,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         out_row_a.columnconfigure(0, weight=1)
         out_row_a.columnconfigure(1, weight=0)
         out_row_a.columnconfigure(2, weight=0)
-        entry_out_a = ttk.Entry(out_row_a, textvariable=self.var_out_a)
+        entry_out_a = ttk.Entry(out_row_a, textvariable=self.var_out_a, width=12)
         entry_out_a.grid(row=0, column=0, sticky="ew")
         ttk.Button(out_row_a, text="−", width=3, command=lambda: self._nudge_out("A", -0.05)).grid(row=0, column=1, sticky="e", padx=(6, 2))
         ttk.Button(out_row_a, text="+", width=3, command=lambda: self._nudge_out("A", 0.05)).grid(row=0, column=2, sticky="e", padx=(0, 2))
@@ -5681,10 +5695,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             widget.grid(row=0, column=column, sticky="nsew", padx=(0, 3))
 
         # Tabs under VISUALS controls (Deck B)
-        self.tab_b_setup = tk.Frame(self.tabs_b, bg="#2b2b2b")
-        self.tab_b_playlist = tk.Frame(self.tabs_b, bg="#2b2b2b")
-        self.tab_b_ppt = tk.Frame(self.tabs_b, bg="#2b2b2b")
-        self.tab_b_download = tk.Frame(self.tabs_b, bg="#2b2b2b")
+        self.tab_b_setup = tk.Frame(self.tabs_b, bg=palette.PANEL)
+        self.tab_b_playlist = tk.Frame(self.tabs_b, bg=palette.PANEL)
+        self.tab_b_ppt = tk.Frame(self.tabs_b, bg=palette.PANEL)
+        self.tab_b_download = tk.Frame(self.tabs_b, bg=palette.PANEL)
         self.tabs_b.add(self.tab_b_setup, text="Options")
         self.tabs_b.add(self.tab_b_playlist, text="Playlist")
         self.tabs_b.add(self.tab_b_ppt, text="Slides")
@@ -5692,7 +5706,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.tabs_b.select(self.tab_b_ppt)
 
         # Setup tab (Deck B) - per-cue options
-        setup_b = ttk.Frame(self.tab_b_setup, padding=6)
+        setup_b = ttk.Frame(self.tab_b_setup, padding=12)
         setup_b.pack(fill="x")
         self.var_autoplay_b = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -5711,7 +5725,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.cb_output_aspect.bind("<<ComboboxSelected>>", self._apply_output_aspect)
 
         # Playlist tab (Deck B) - multi-item auto-play behavior
-        playlist_b = ttk.Frame(self.tab_b_playlist, padding=6)
+        playlist_b = ttk.Frame(self.tab_b_playlist, padding=12)
         playlist_b.pack(fill="x")
         self.var_visuals_playlist_info = tk.StringVar(value="Auto-play videos: 0")
         ttk.Label(playlist_b, textvariable=self.var_visuals_playlist_info).pack(anchor="w")
@@ -5722,10 +5736,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         ttk.Button(playlist_btns, text="Clear playlist", command=self._visuals_clear_autoplay_flags).pack(side="left", padx=(8, 0))
 
         # PPT tab (Deck B)
-        ppt_tab = ttk.Frame(self.tab_b_ppt, padding=6)
+        ppt_tab = ttk.Frame(self.tab_b_ppt, padding=12)
         ppt_tab.pack(fill="x")
         if sys.platform == "win32":
-            ttk.Label(ppt_tab, textvariable=self.var_ppt_status, wraplength=360).pack(fill="x", pady=(0, 4))
+            ttk.Label(ppt_tab, textvariable=self.var_ppt_status, wraplength=540).pack(fill="x", pady=(0, 4))
         ppt_tools = ttk.Frame(ppt_tab)
         ppt_tools.pack(fill="x", pady=(4, 0))
         if sys.platform == "win32":
@@ -5738,40 +5752,40 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             ppt_options.pack(fill="x", pady=(4, 0))
             ttk.Checkbutton(ppt_options, text="Slide audio", variable=self.var_ppt_sound,
                             command=self._ppt_apply_sound).pack(side="left")
-            ttk.Spinbox(ppt_options, from_=0.5, to=3600, increment=0.5, width=4,
+            ttk.Spinbox(ppt_options, from_=0.5, to=3600, increment=0.5, width=7,
                         textvariable=self.var_ppt_interval).pack(side="right")
             ttk.Label(ppt_options, text="Default slide time (s)").pack(side="right", padx=(4, 4))
 
         # Download tab (Deck B) - yt-dlp integration
-        dl_b = ttk.Frame(self.tab_b_download, padding=6)
+        dl_b = ttk.Frame(self.tab_b_download, padding=12)
         dl_b.pack(fill="x")
 
         self.var_download_dir = tk.StringVar(value=str(getattr(self.settings, "downloads_dir", "") or ""))
         dl_path_row = ttk.Frame(dl_b)
         dl_path_row.pack(fill="x")
-        ttk.Label(dl_path_row, text="Folder").pack(side="left")
+        ttk.Label(dl_path_row, text="Folder", width=10).pack(side="left")
         ttk.Entry(dl_path_row, textvariable=self.var_download_dir).pack(side="left", fill="x", expand=True, padx=(8, 6))
         ttk.Button(dl_path_row, text="Browse…", command=self._browse_download_dir).pack(side="left")
         self.var_download_dir.trace_add("write", lambda *_: self._apply_downloads_dir_setting())
 
         dl_url_row = ttk.Frame(dl_b)
-        dl_url_row.pack(fill="x", pady=(2, 0))
-        ttk.Label(dl_url_row, text="Video URL").pack(side="left")
+        dl_url_row.pack(fill="x", pady=(12, 0))
+        ttk.Label(dl_url_row, text="Video URL", width=10).pack(side="left")
         self.var_ytdlp_url = tk.StringVar(value="")
         self.entry_ytdlp_url = ttk.Entry(dl_url_row, textvariable=self.var_ytdlp_url)
         self.entry_ytdlp_url.pack(side="left", fill="x", expand=True, padx=(8, 6))
         ttk.Button(dl_url_row, text="Clear", command=lambda: self.var_ytdlp_url.set(""), width=7).pack(side="left")
 
         dl_mode_row = ttk.Frame(dl_b)
-        dl_mode_row.pack(fill="x", pady=(2, 0))
+        dl_mode_row.pack(fill="x", pady=(12, 0))
         self.var_ytdlp_mode = tk.StringVar(value="av")
-        ttk.Label(dl_mode_row, text="Format").pack(side="left")
+        ttk.Label(dl_mode_row, text="Format", width=10).pack(side="left")
         ttk.Radiobutton(dl_mode_row, text="Audio", value="audio", variable=self.var_ytdlp_mode).pack(side="left", padx=(8, 0))
         ttk.Radiobutton(dl_mode_row, text="Video", value="video", variable=self.var_ytdlp_mode).pack(side="left", padx=(8, 0))
         ttk.Radiobutton(dl_mode_row, text="Video + audio", value="av", variable=self.var_ytdlp_mode).pack(side="left", padx=(8, 0))
 
         dl_btn_row = ttk.Frame(dl_b)
-        dl_btn_row.pack(fill="x", pady=(2, 0))
+        dl_btn_row.pack(fill="x", pady=(12, 0))
         self.btn_ytdlp_download = ttk.Button(dl_btn_row, text="Download", command=self._start_ytdlp_download)
         self.btn_ytdlp_download.pack(side="left")
         self.btn_ytdlp_cancel = ttk.Button(dl_btn_row, text="Cancel", command=self._cancel_ytdlp_download, state="disabled")
@@ -5783,7 +5797,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
 
         self.var_ytdlp_status = tk.StringVar(value="")
-        ttk.Label(dl_b, textvariable=self.var_ytdlp_status, wraplength=310, padding=(0, 2, 0, 0)).pack(anchor="w")
+        ttk.Label(dl_b, textvariable=self.var_ytdlp_status, wraplength=540, padding=(0, 2, 0, 0)).pack(anchor="w")
 
         # Default states for per-cue setup controls (no selection yet).
         self._sync_target_setting_controls("A", None)
@@ -5839,6 +5853,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 next_caption = "Last slide"
         else:
             cue = self._selected_cue_for_deck("B")
+            current = self.video_runner.current_cue()
+            if current is not None and self.video_runner.owner_deck == "B" and self.video_runner.is_playing():
+                following = self._next_cue_index("B", current.id)
+                cue = self._cues_b[following] if following is not None else None
             if cue and cue.kind == "ppt" and sys.platform == "win32":
                 ready = self._ppt_preparer.ready.get(cue.path)
                 if ready:
@@ -7458,6 +7476,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             "cue_id": str(cue.id),
             "kind": str(cue.kind),
             "playlist": bool(playlist),
+            "origin": self._playback_origin.get("B"),
         }
 
     def _resume_visuals_if_any(self) -> None:
@@ -7467,6 +7486,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         st = getattr(self, "_resume_visuals_state", None)
         if not st:
             return
+
+        def restore_origin():
+            origin = st.get("origin")
+            if origin is None:
+                self._playback_origin.pop("B", None)
+            else:
+                self._playback_origin["B"] = origin
         self._resume_visuals_state = None
         cue_id = str(st.get("cue_id") or "")
         kind = str(st.get("kind") or "")
@@ -7493,6 +7519,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             try:
                 self.video_runner.play_for_deck("B", cue)  # type: ignore[attr-defined]
                 self._active_runner = self.video_runner
+                restore_origin()
                 self._log(f"Deck B: Restored image {Path(cue.path).name}")
             except Exception:
                 pass
@@ -7514,11 +7541,26 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             if start_idx is None or start_idx not in ids:
                 start_idx = int(ids[0])
             self._play_visuals_by_index(int(start_idx), log_action="Deck B: Restored visuals playlist")
+            restore_origin()
             return
 
         if start_idx is not None:
             self._play_visuals_by_index(int(start_idx), log_action="Deck B: Restored visual video")
+            restore_origin()
             return
+
+    def _current_scene_id(self) -> str | None:
+        if 0 <= self._selected_scene_idx < len(self._scenes):
+            return self._scenes[self._selected_scene_idx].id
+        return None
+
+    def _record_playback_origin(self, deck: str, cue: Cue) -> None:
+        self._playback_origin[deck] = (self._current_scene_id(), cue.id)
+
+    def _playback_scene_matches(self, deck: str, cue_id: str | None = None) -> bool:
+        origin = self._playback_origin.get(deck)
+        return origin is None or (origin[0] == self._current_scene_id()
+                                  and (cue_id is None or origin[1] == cue_id))
 
     def _pause_media_at_clock(self, runner, cue, process, deadline) -> None:
         # A click immediately after Play can precede the first mpv clock event.
@@ -7642,6 +7684,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                             sess.set_property("loop-file", ("inf" if loop_file else "no"))
                     except Exception:
                         pass
+                self._record_playback_origin("B", cue)
                 try:
                     self._last_output_owner = "B"
                     self._last_output_cue_id = str(cue.id)
@@ -7660,15 +7703,16 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             try:
                 if runner.is_playing():
                     playing = runner.current_cue()
-                    if playing is None or playing.kind != "audio":
+                    if (playing is not None and playing.id == cue.id and playing.kind == "audio"
+                            and self._playback_scene_matches("A")):
+                        self._pause_media_at_clock(runner, playing, runner._proc, time.monotonic() + 1.0)
                         return
-                    self._pause_media_at_clock(runner, playing, runner._proc, time.monotonic() + 1.0)
-                    return
             except Exception:
                 pass
 
             paused = self._paused_state_for_deck("A")
-            resume_pos = float(paused[1]) if paused is not None and paused[0] == cue.id else None
+            resume_pos = (float(paused[1]) if paused is not None and paused[0] == cue.id
+                          and self._playback_scene_matches("A") else None)
             if resume_pos is None:
                 self._set_paused_state_for_deck("A", None)
 
@@ -7692,6 +7736,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 else:
                     runner.play(cue)
                     self._log(f"Deck A: Playing {Path(cue.path).name}")
+                self._record_playback_origin("A", cue)
             except Exception as e:
                 self._log(f"Deck A play error: {e}")
                 try:
@@ -7718,14 +7763,16 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             try:
                 if runner.is_playing():
                     playing = runner.current_cue()
-                    if playing is not None and playing.id == cue.id and playing.kind == "video":
+                    if (playing is not None and playing.id == cue.id and playing.kind == "video"
+                            and self._playback_scene_matches("A")):
                         self._pause_media_at_clock(runner, playing, runner._proc, time.monotonic() + 1.0)
                         return
             except Exception:
                 pass
 
             paused = self._paused_state_for_deck("A")
-            resume_pos = float(paused[1]) if paused is not None and paused[0] == cue.id else None
+            resume_pos = (float(paused[1]) if paused is not None and paused[0] == cue.id
+                          and self._playback_scene_matches("A") else None)
             if resume_pos is None:
                 self._set_paused_state_for_deck("A", None)
 
@@ -7752,6 +7799,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                         self._log(f"Deck A: Playing audio-only (from video) {Path(cue.path).name}")
                     else:
                         self._log(f"Deck A: Previewing video {Path(cue.path).name}")
+                self._record_playback_origin("A", cue)
             except Exception as e:
                 self._log(f"Deck A play error: {e}")
                 try:
@@ -7776,7 +7824,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         try:
             if getattr(out, "owner_deck", None) == "A" and out.is_playing():
                 playing = out.current_cue()
-                if playing is not None and playing.id == cue.id and playing.kind == "video":
+                if (playing is not None and playing.id == cue.id and playing.kind == "video"
+                        and self._playback_scene_matches("A")):
                     if bool(getattr(out, "is_paused", lambda: False)()):
                         out.resume()  # type: ignore[attr-defined]
                         if out.is_paused():
@@ -7807,7 +7856,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             pass
 
         paused = self._paused_state_for_deck("A")
-        resume_pos = float(paused[1]) if paused is not None and paused[0] == cue.id else None
+        resume_pos = (float(paused[1]) if paused is not None and paused[0] == cue.id
+                      and self._playback_scene_matches("A") else None)
         if resume_pos is None:
             self._set_paused_state_for_deck("A", None)
 
@@ -7830,6 +7880,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             else:
                 out.play_for_deck("A", cue, volume_override=cue.volume_percent)  # type: ignore[attr-defined]
                 self._log(f"Deck A: Playing video {Path(cue.path).name}")
+            self._record_playback_origin("A", cue)
         except Exception as e:
             self._log(f"Deck A play error: {e}")
             try:
@@ -7840,6 +7891,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._update_transport_button_visuals()
 
     def _transport_stop(self, deck: str) -> None:
+        self._playback_origin.pop(deck, None)
         self._set_paused_state_for_deck(deck, None)
 
         if deck == "A":
@@ -7977,21 +8029,24 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return int(ids[0])
         return None
 
-    def _play_visuals_by_index(self, idx: int, *, log_action: str | None = None) -> None:
+    def _play_visuals_by_index(self, idx: int, *, log_action: str | None = None, preserve_ready=False) -> None:
         try:
             idx_i = int(idx)
         except Exception:
             return
         if not (0 <= idx_i < len(self._cues_b or [])):
             return
+        ready = self._selected_b
         try:
             self._selected_b = idx_i
-            self.tree_b.selection_set(str(idx_i))
-            self.tree_b.see(str(idx_i))
+            if not preserve_ready:
+                self.tree_b.selection_set(str(idx_i))
+                self.tree_b.see(str(idx_i))
         except Exception:
             pass
         try:
-            self._on_deck_b_select()
+            if not preserve_ready:
+                self._on_deck_b_select()
         except Exception:
             pass
         try:
@@ -8003,6 +8058,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._transport_play_pause("B")
         except Exception:
             pass
+        finally:
+            if preserve_ready:
+                self._selected_b = ready
 
     def _update_visuals_playlist_info(self) -> None:
         var = getattr(self, "var_visuals_playlist_info", None)
@@ -8143,6 +8201,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     pass
         except Exception:
             return
+
+    def _toggle_audio_only(self) -> None:
+        cue = self._selected_cue_for_deck("A")
+        if cue is None or cue.kind != "video":
+            return
+        mode = "output" if cue.video_mode == "audio_only" else "audio_only"
+        self.var_video_mode_a.set(_video_mode_to_label(mode))
 
     def _apply_target_setting(self, deck: str) -> None:
         try:
@@ -9266,6 +9331,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             was_playing = runner.is_playing()
             self._inhibit_auto_advance = bool(was_playing)
             runner.play(cue)
+            self._record_playback_origin("B" if runner is self.video_runner else "A", cue)
             self._inhibit_auto_advance = False
             if cue.kind == "ppt":
                 self._log(f"PPT started: {cue.display_name()}")
@@ -9360,6 +9426,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self.video_runner.stop()
         except Exception:
             pass
+        self._playback_origin.clear()
         self._inhibit_auto_advance = False  # Reset inhibit flag after stop
         self._log("Stopped.")
 
@@ -9640,6 +9707,25 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             if self._closing or time.monotonic() >= deadline:
                 return
 
+    def _next_cue_index(self, deck: str, from_cue_id: str | None) -> int | None:
+        """Resolve ready selection without a second, potentially stale queue."""
+        cues = self._cues_a if deck == "A" else self._cues_b
+        selected = self._selected_a if deck == "A" else self._selected_b
+        current = next((i for i, cue in enumerate(cues) if cue.id == from_cue_id), None)
+        if from_cue_id is not None and current is None:
+            return None  # A previous scene's completion must not start this scene.
+        if 0 <= selected < len(cues) and selected != current:
+            return selected
+        if current is None:
+            return None
+        cue = cues[current]
+        repeat = self._loop_enabled_for_deck(deck)
+        if deck == "B" and cue.kind == "video" and cue.auto_play:
+            return self._visuals_next_autoplay_index(cue.id, wrap=repeat)
+        if repeat and cue.kind in ("audio", "video"):
+            return None
+        return current + 1 if current + 1 < len(cues) else None
+
     def _update_tree_playing_highlight(self) -> None:
         audio = self.audio_runner.current_cue() if self.audio_runner.is_playing() else None
         output = self.video_runner.current_cue() if self.video_runner.is_playing() else None
@@ -9650,14 +9736,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 ("B", self.tree_b, self._cues_b, self._cueid_to_iid_b, self._selected_b,
                  output if output and owner == "B" else None)):
             playing = ids.get(active.id) if active else None
-            anchor = int(playing) if playing is not None else selected
-            following = anchor + 1 if 0 <= anchor < len(cues) else None
-            if active and playing is not None and active.kind in ("audio", "video"):
-                repeat = self._loop_enabled_for_deck(deck)
-                if deck == "B" and active.kind == "video" and active.auto_play:
-                    following = self._visuals_next_autoplay_index(active.id, wrap=repeat)
-                elif repeat:
-                    following = None
+            following = self._next_cue_index(deck, active.id if active else None)
             tree.set_emphasis(playing, str(following) if following is not None and following < len(cues) else None)
 
     def _handle_runner_finished(self, deck: str, runner) -> None:
@@ -9706,10 +9785,20 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception:
             cue = None
 
+        cues = self._cues_a if deck == "A" else self._cues_b
+        if cue is not None and not self._playback_scene_matches(deck, cue.id):
+            return  # Shared cues still belong to the scene that actually started them.
+        if cue is not None and not any(item.id == cue.id for item in cues):
+            return  # An old scene's EOF cannot advance or repeat the new scene.
+
         # CRITICAL: Images and PPT stay visible until manually stopped - NO auto-advance!
         if cue and cue.kind in ("image", "ppt"):
             self._log(f"Deck {deck}: {cue.kind.upper()} displayed - stays visible until manually stopped")
             return
+
+        selected = self._selected_a if deck == "A" else self._selected_b
+        manual_next = bool(cue is not None and any(item.id == cue.id for item in cues)
+                           and 0 <= selected < len(cues) and cues[selected].id != cue.id)
 
         playlist_mode = bool(
             deck == "B"
@@ -9718,7 +9807,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             and bool(getattr(cue, "auto_play", False))
             and len(self._visuals_autoplay_indices()) >= 2
         )
-        if cue and cue.kind in ("audio", "video") and self._loop_enabled_for_deck(deck) and (not playlist_mode):
+        if cue and cue.kind in ("audio", "video") and self._loop_enabled_for_deck(deck) and not playlist_mode:
             self._log(f"DEBUG: Deck {deck} looping cue: {cue.display_name()}")
             try:
                 # OutputRunner must be re-triggered with the correct owner deck.
@@ -9743,14 +9832,16 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
         # Deck B: auto-play playlist (visual videos).
         # Auto-play is opt-in per cue; LOOP controls wrap-around.
-        if deck == "B" and cue is not None and cue.kind == "video" and bool(getattr(cue, "auto_play", False)):
+        if deck == "B" and cue is not None and cue.kind == "video" and cue.auto_play and (not manual_next or self._loop_b_enabled):
             next_idx = self._visuals_next_autoplay_index(str(cue.id), wrap=bool(self._loop_b_enabled))
             if next_idx is not None:
                 try:
                     next_cue = self._cues_b[int(next_idx)]
-                    self._play_visuals_by_index(int(next_idx), log_action=f"Auto-playing next visual (Deck B): {next_cue.display_name()}")
+                    self._play_visuals_by_index(int(next_idx), log_action=f"Auto-playing next visual (Deck B): {next_cue.display_name()}",
+                                                preserve_ready=manual_next)
                 except Exception:
-                    self._play_visuals_by_index(int(next_idx), log_action="Auto-playing next visual (Deck B)")
+                    self._play_visuals_by_index(int(next_idx), log_action="Auto-playing next visual (Deck B)",
+                                                preserve_ready=manual_next)
                 return
             # End of playlist (LOOP OFF) -> restore last still image if any and stop.
             try:
@@ -9798,6 +9889,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
                 paused = self._paused_state_for_deck(deck)
                 sel = self._selected_cue_for_deck(deck)
+                if deck == "A" and not self._playback_scene_matches("A"):
+                    paused = None
+                if deck == "A" and playing:
+                    _, current = self._current_playback_source()
+                    playing = bool(sel is not None and current is not None and sel.id == current.id
+                                   and self._playback_scene_matches("A"))
 
                 if deck == "B":
                     play_text = "Show"
@@ -9982,6 +10079,17 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception:
             runner_b = None
         self._update_vu_for_deck("B", runner_b)
+
+    def _vu_snapshot(self, deck: str) -> dict:
+        """Real engine channel RMS/peak for Qt; legacy envelope meters stay separate."""
+        from audio_meter import empty_levels
+        if deck == "A" and self.audio_runner.is_playing():
+            session = self.audio_runner._media_clock
+        elif self.video_runner.owner_deck == deck:
+            session = self.video_runner._sess
+        else:
+            session = None
+        return session.audio_levels() if session is not None else empty_levels()
 
     def _update_vu_for_deck(self, deck: str, runner) -> None:
         canvas = getattr(self, "vu_canvas_a", None) if deck == "A" else getattr(self, "vu_canvas_b", None)
@@ -10491,46 +10599,42 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         # During playback: show only the countdown (timecode with ms).
         _set_time(f"-{_format_timecode(remaining, with_ms=True)}")
 
-        # Blink in the last 20% of the marked segment (match waveform logic).
-        blink = frac >= 0.80
-        blink_on = blink and (int(time.monotonic() * 4) % 2 == 0)
-        _set_fg_cached("#ff1744" if blink_on else None)
+        # Normal media completion is not an error. Keep the countdown readable
+        # with a steady, restrained end-of-cue accent instead of red flashing.
+        _set_fg_cached(palette.AMBER if frac >= 0.80 else None)
 
     def _select_next_cue_for_deck(self, deck: str, *, from_cue_id: str | None = None) -> None:
-        """Select (and optionally auto-play) the next cue based on its auto_play property"""
-        idx_from: int | None = None
-        if from_cue_id:
-            try:
-                cues = self._cues_a if deck == "A" else self._cues_b
-                idx = next((i for i, c in enumerate(cues) if c.id == str(from_cue_id)), None)
-                if idx is not None:
-                    idx_from = int(idx)
-                    if deck == "A":
-                        self._selected_a = int(idx)
-                    else:
-                        self._selected_b = int(idx)
-            except Exception:
-                pass
-        if deck == "A":
-            if self._selected_a >= 0 and self._selected_a + 1 < len(self._cues_a):
-                self._selected_a += 1
-                next_cue = self._cues_a[self._selected_a]
-                self.tree_a.selection_set(str(self._selected_a))
-                self.tree_a.see(str(self._selected_a))
-                self._load_cue_into_editor(next_cue)
-                # Check if THIS cue has auto-play enabled
-                if next_cue.auto_play:
-                    # Auto-play the next cue
-                    self._log(f"Auto-playing next cue (Deck A): {next_cue.display_name()}")
-                    try:
-                        self._play_deck_a()
-                    except Exception as e:
-                        self._log(f"Auto-play failed: {e}")
+        """Keep a manually selected target; otherwise advance from the finished cue."""
+        cues = self._cues_a if deck == "A" else self._cues_b
+        selected = self._selected_a if deck == "A" else self._selected_b
+        tree = self.tree_a if deck == "A" else self.tree_b
+        if from_cue_id is None and 0 <= selected < len(cues):
+            from_cue_id = cues[selected].id
+        idx_from = next((i for i, cue in enumerate(cues) if cue.id == from_cue_id), None)
+        if idx_from is None:
+            return
+        following = self._next_cue_index(deck, from_cue_id)
+        if following is not None:
+            next_cue = cues[following]
+            if selected != following:
+                if deck == "A":
+                    self._selected_a = following
                 else:
-                    self._log(f"Ready on next cue (Deck A): {next_cue.display_name()}")
-                return
-
-            # End of Deck A list: if the active scene is configured for auto-advance, move to next scene.
+                    self._selected_b = following
+                tree.selection_set(str(following))
+                tree.see(str(following))
+                self._load_cue_into_editor(next_cue)
+            if next_cue.auto_play:
+                self._log(f"Auto-playing next cue (Deck {deck}): {next_cue.display_name()}")
+                try:
+                    (self._play_deck_a if deck == "A" else self._play_deck_b)()
+                except Exception as exc:
+                    self._log(f"Auto-play failed: {exc}")
+            else:
+                self._log(f"Ready on next cue (Deck {deck}): {next_cue.display_name()}")
+            return
+        if deck == "A":
+            # Preserve scene auto-advance only at the actual end of this scene.
             try:
                 if idx_from is not None and idx_from == (len(self._cues_a) - 1) and (0 <= self._selected_scene_idx < len(self._scenes)):
                     scene = self._scenes[self._selected_scene_idx]
@@ -10539,25 +10643,6 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                         self._next_scene()
             except Exception:
                 pass
-            return
-
-        # Deck B
-        if self._selected_b >= 0 and self._selected_b + 1 < len(self._cues_b):
-            self._selected_b += 1
-            next_cue = self._cues_b[self._selected_b]
-            self.tree_b.selection_set(str(self._selected_b))
-            self.tree_b.see(str(self._selected_b))
-            self._load_cue_into_editor(next_cue)
-            # Check if THIS cue has auto-play enabled
-            if next_cue.auto_play:
-                # Auto-play the next cue
-                self._log(f"Auto-playing next cue (Deck B): {next_cue.display_name()}")
-                try:
-                    self._play_deck_b()
-                except Exception as e:
-                    self._log(f"Auto-play failed: {e}")
-            else:
-                self._log(f"Ready on next cue (Deck B): {next_cue.display_name()}")
 
     def _select_next_cue(self) -> None:
         # Legacy: pick deck based on the last active runner.
@@ -10576,6 +10661,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._stop_deck_b()
         if sys.platform == "win32":
             self._ppt_end()
+        self._playback_origin.clear()
         self._show_path = None
         self._loaded_preset_path = None
         self._scenes = []
@@ -11289,24 +11375,33 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         """Open a dialog to edit scene properties"""
         dialog = tk.Toplevel(self)
         dialog.title(f"Edit Scene: {scene.name}")
-        dialog.geometry("500x450")
+        dialog.geometry(f"{palette.pixels(self, 620)}x{palette.pixels(self, 510)}")
+        dialog.minsize(palette.pixels(self, 560), palette.pixels(self, 450))
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
         if not self._operator_worker:
             dialog.transient(self)
         dialog.grab_set()
 
+        body = ttk.Frame(dialog, padding=20)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Scene details", style="ToolTitle.TLabel").pack(anchor="w")
+        ttk.Label(body, text="Name, colour and operator notes", style="ToolHint.TLabel").pack(anchor="w", pady=(4, 18))
+        form = ttk.Frame(body)
+        form.pack(fill="x")
+        form.columnconfigure(1, weight=1)
         # Scene name
-        ttk.Label(dialog, text="Scene Name:").pack(anchor="w", padx=10, pady=(10, 2))
+        ttk.Label(form, text="Scene name").grid(row=0, column=0, sticky="w", padx=(0, 20))
         name_var = tk.StringVar(value=scene.name)
-        name_entry = ttk.Entry(dialog, textvariable=name_var, width=50)
-        name_entry.pack(fill="x", padx=10, pady=(0, 10))
+        name_entry = ttk.Entry(form, textvariable=name_var)
+        name_entry.grid(row=0, column=1, sticky="ew")
 
         # Scene color
-        ttk.Label(dialog, text="Scene Color:").pack(anchor="w", padx=10, pady=(5, 2))
-        color_frame = ttk.Frame(dialog)
-        color_frame.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Label(form, text="Scene colour").grid(row=1, column=0, sticky="w", padx=(0, 20), pady=(12, 0))
+        color_frame = ttk.Frame(form)
+        color_frame.grid(row=1, column=1, sticky="ew", pady=(12, 0))
 
         color_var = tk.StringVar(value=scene.color)
-        color_entry = ttk.Entry(color_frame, textvariable=color_var, width=15)
+        color_entry = ttk.Entry(color_frame, textvariable=color_var, width=12)
         color_entry.pack(side="left")
 
         def pick_color():
@@ -11315,26 +11410,25 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             if color[1]:
                 color_var.set(color[1])
 
-        ttk.Button(color_frame, text="Pick Color", command=pick_color).pack(side="left", padx=(5, 0))
+        ttk.Button(color_frame, text="Choose colour…", command=pick_color).pack(side="left", padx=(10, 0))
 
         # Auto-advance
         auto_advance_var = tk.BooleanVar(value=scene.auto_advance)
-        ttk.Checkbutton(dialog, text="Auto-advance to next scene when finished", variable=auto_advance_var).pack(anchor="w", padx=10, pady=5)
+        ttk.Checkbutton(body, text="Auto-advance to the next scene when finished", variable=auto_advance_var).pack(anchor="w", pady=(18, 0))
 
         # Notes
-        ttk.Label(dialog, text="Notes:").pack(anchor="w", padx=10, pady=(10, 2))
-        notes_text = ScrolledText(dialog, height=10, width=50)
-        notes_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        ttk.Label(body, text="Operator notes", style="CardTitle.TLabel").pack(anchor="w", pady=(18, 8))
+        notes_text = ScrolledText(body, height=5, width=40, wrap="word")
+        notes_text.pack(fill="both", expand=True)
         notes_text.insert("1.0", scene.notes)
 
         # Info about cue assignment
-        info_label = ttk.Label(dialog, text="ℹ️ Media is automatically assigned to this scene when you add it.",
-                               foreground="gray", font=("Helvetica", 9, "italic"))
-        info_label.pack(anchor="w", padx=10, pady=(0, 10))
+        info_label = ttk.Label(body, text="Added media belongs to this scene.", style="ToolHint.TLabel")
+        info_label.pack(anchor="w", pady=(10, 0))
 
         # Buttons
-        btn_frame = ttk.Frame(dialog)
-        btn_frame.pack(fill="x", padx=10, pady=10)
+        btn_frame = ttk.Frame(body)
+        btn_frame.pack(fill="x", pady=(18, 0))
 
         def save_scene():
             scene.name = name_var.get().strip() or "Untitled Scene"
@@ -11348,8 +11442,10 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             dialog.destroy()
             self._log(f"Updated scene: {scene.name}")
 
-        ttk.Button(btn_frame, text="Save", command=save_scene).pack(side="right", padx=2)
-        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side="right", padx=2)
+        ttk.Button(btn_frame, text="Save scene", style="Accent.TButton", command=save_scene).pack(side="right")
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side="right", padx=(0, 8))
+        palette.prepare_tool_window(dialog)
+        name_entry.focus_set()
 
     # ────────────────────────────────────────────────────────────────────
 

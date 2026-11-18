@@ -48,6 +48,11 @@ def smoke():
     import win32process
 
     exe = APP / "SP Show Control.exe"
+    dnd = APP / "_internal/tkinterdnd2/tkdnd"
+    assert sorted(path.name for path in dnd.iterdir()) == ["win-x64"]
+    assert (dnd / "win-x64/pkgIndex.tcl").is_file()
+    assert list((dnd / "win-x64").glob("*.dll"))
+    print("PASS: portable bundle includes only the Windows x64 drag-and-drop runtime")
     resources = win32api.LoadLibraryEx(str(exe), 0, 2)  # LOAD_LIBRARY_AS_DATAFILE
     try:
         manifest = ElementTree.fromstring(win32api.LoadResource(resources, 24, 1))  # RT_MANIFEST
@@ -135,7 +140,7 @@ def smoke():
                 frame = ImageGrab.grab(bbox=bounds)
                 # Restrict detection to the upper-left waveform lane. The
                 # Fullscreen button uses the same neon color elsewhere.
-                lane = frame.convert("RGB").crop((20, 67, round(frame.width * 0.38), round(frame.height * 0.31)))
+                lane = frame.convert("RGB").crop((20, 67, round(frame.width * 0.23), round(frame.height * 0.36)))
                 wave_pixels = sum(count for count, (red, green, blue) in lane.getcolors(lane.width * lane.height)
                                   if red > 170 and green > 136 and 60 < blue < 175)
                 if wave_pixels > 400:
@@ -164,12 +169,18 @@ def smoke():
             app.wait(timeout=10)
         subprocess.run([sys.executable, Path(__file__).with_name("test_spectral_waveform.py"), media / "ffmpeg.exe"],
                        env=env, cwd=test, check=True, timeout=20)
+        # The frozen Save/Open/relaunch test intentionally remembers a show.
+        # Source rehearsals own different fixtures and must not inherit it.
+        env = dict(env, APPDATA=str(Path(test) / "source-rehearsal-profile"))
         subprocess.run([sys.executable, Path(__file__).with_name("windows_quick_rehearsal.py"), test],
                        env=env, cwd=test, check=True, timeout=100)
         for test_script in ("test_ppt_media.py", "test_media_previews.py", "test_download_tools.py",
                             "test_show_storage.py", "test_mpv_ipc.py", "test_playback_state.py",
-                            "test_operator_transport.py", "test_operator_dialogs.py", "test_operator_qml.py"):
+                            "test_operator_transport.py", "test_operator_dialogs.py", "test_operator_qml.py",
+                            "test_operator_models.py", "test_tool_layout.py", "test_next_selection.py"):
             subprocess.run([sys.executable, Path(__file__).with_name(test_script)], env=env, check=True, timeout=30)
+        subprocess.run([sys.executable, Path(__file__).with_name("test_audio_meter.py")],
+                       env=env, check=True, timeout=90)
         subprocess.run([sys.executable, Path(__file__).with_name("windows_show_rehearsal.py"), test],
                        env=env, cwd=test, check=True, timeout=120)
     print("PASS: portable GUI, FFmpeg/ffprobe/ffplay, Show Control IPC play/pause/resume and decoded mpv video")

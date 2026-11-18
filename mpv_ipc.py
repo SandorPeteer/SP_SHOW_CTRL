@@ -11,6 +11,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable
+from audio_meter import METER_PROPERTIES, METER_PROPERTY, levels_from_telemetry, metered_filters
 
 
 def _user_data_dir() -> Path:
@@ -32,6 +33,10 @@ def _clamp_int(value: int, lo: int, hi: int) -> int:
     except Exception:
         v = int(lo)
     return int(max(int(lo), min(int(hi), v)))
+
+
+_PLAYBACK_PROPERTIES = ("path", "time-pos", "duration", "eof-reached", *METER_PROPERTIES)
+_FILE_PROPERTIES = ("path", "time-pos", "duration", "eof-reached", METER_PROPERTY, "core-idle")
 
 
 class MpvIpcSession:
@@ -71,6 +76,7 @@ class MpvIpcSession:
         self._pending: dict[int, "queue.Queue[dict]"] = {}
         self._next_id: int = 1
         self._telemetry: dict[str, object] = {}
+        self._clock_updated = 0.0
         self._retry_after = 0.0
         self._playing: bool = False
         self._end_info: tuple[str | None, str | None] | None = None
@@ -191,10 +197,7 @@ class MpvIpcSession:
         )
         try:
             self._connect_ipc()
-            for observer, name in enumerate(("path", "time-pos", "duration", "eof-reached"), 1):
-                response = self.command(["observe_property", observer, name], timeout=0.5)
-                if not self._is_success(response):
-                    raise RuntimeError(f"mpv could not observe {name}")
+            self.observe_playback()
         except Exception:
             self.shutdown()
             raise
@@ -419,6 +422,19 @@ class MpvIpcSession:
         with self._lock:
             return tuple(self._telemetry.get(name) for name in names)
 
+    def observe_playback(self) -> None:
+        for observer, name in enumerate(_PLAYBACK_PROPERTIES, 1):
+            response = self.command(["observe_property", observer, name], timeout=0.5)
+            if not self._is_success(response):
+                raise RuntimeError(f"mpv could not observe {name}")
+
+    def audio_levels(self) -> dict:
+        """Read the last event snapshot; never issues IPC on the UI thread."""
+        with self._lock:
+            values = dict(self._telemetry)
+            current = time.monotonic() - self._clock_updated <= 1.0
+        return levels_from_telemetry(values, clock_current=current)
+
     def get_property(self, name: str) -> object | None:
         try:
             resp = self.command(["get_property", str(name)], timeout=0.4)
@@ -493,7 +509,7 @@ class MpvIpcSession:
             self.set_property("volume", _clamp_int(int(volume), 0, 100))
         # The persistent output carries properties across files. Explicitly
         # clear a previous cue's normalization when this cue needs no filter.
-        self.set_property("af", str(af_lavfi) if af_lavfi else "")
+        self.set_property("af", metered_filters(af_lavfi))
 
     def _reader_loop_socket(self) -> None:
         f = getattr(self, "_sock_file", None)
@@ -552,13 +568,19 @@ class MpvIpcSession:
         ev = msg.get("event")
         if ev == "property-change":
             name = msg.get("name")
-            if name in ("path", "time-pos", "duration", "eof-reached"):
+            if name in _PLAYBACK_PROPERTIES:
                 with self._lock:
                     self._telemetry[name] = msg.get("data")
+                    if name == "time-pos":
+                        self._clock_updated = time.monotonic()
             return
         if ev == "start-file":
             with self._lock:
-                self._telemetry.clear()
+                # Gain/mute observers only notify on change; keep their state
+                # when replacing a file, but discard every previous PCM value.
+                for name in _FILE_PROPERTIES:
+                    self._telemetry.pop(name, None)
+                self._clock_updated = 0.0
             self._end_info = None
             return
         if ev == "file-loaded":

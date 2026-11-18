@@ -34,6 +34,7 @@ def controller_worker(connection):
         "a_add": app._add_media_a, "a_remove": app._remove_a,
         "a_up": lambda: app._move_a(-1), "a_down": lambda: app._move_a(1),
         "a_tools": lambda: show_tools(app.audio_tools, app.tabs_a, app.tab_a_inout),
+        "a_audio_only": app._toggle_audio_only,
         "a_play": app._play_deck_a, "a_stop": app._stop_deck_a, "a_repeat": lambda: app._toggle_loop("A"),
         "b_add": app._add_media_b, "b_remove": app._remove_b,
         "b_up": lambda: app._move_b(-1), "b_down": lambda: app._move_b(1),
@@ -48,6 +49,7 @@ def controller_worker(connection):
     def send_snapshots():
         sent_state = None
         sent_frames = {}
+        sent_waveform = None
         last_sent = 0
         while not closing.is_set():
             try:
@@ -66,11 +68,17 @@ def controller_worker(connection):
                     changes[key] = encoded.getvalue()
                 sent_frames[key] = frame
             if changes or state != sent_state or time.monotonic() - last_sent >= 1:
+                waveform = state["waveform"]
+                waveform_changed = waveform is not sent_waveform and waveform != sent_waveform
+                wire_state = dict(state)
+                if not waveform_changed:
+                    wire_state.pop("waveform")
                 try:
-                    connection.send((state, changes))
+                    connection.send((wire_state, changes))
                 except (BrokenPipeError, EOFError, OSError):
                     return
                 sent_state = state
+                sent_waveform = waveform
                 last_sent = time.monotonic()
 
     def run_action(name, value):
@@ -122,7 +130,7 @@ def controller_worker(connection):
             app._activate_scene()
 
     def cue_rows(deck, cues, tree, selected, checkbox, checked):
-        return [dict(name=cue.display_name(), kind=cue.kind, armed=cue.auto_play,
+        return [dict(id=cue.id, name=cue.display_name(), kind=cue.kind, armed=cue.auto_play,
                      selected=index == selected, role=tree.emphasis.get(str(index), ""),
                      detail=tree.set(str(index), "duration") if tree.exists(str(index)) else "",
                      checkbox=checkbox, checked=index in checked)
@@ -178,14 +186,17 @@ def controller_worker(connection):
             "dialog": dialogs.state,
             "show": app.var_showfile.get(), "activity": app.var_activity.get(),
             "busy": bool(app._busy_jobs), "fullscreen": app.var_presentation_btn.get(),
-            "scenes": [dict(name=scene.name, selected=i == app._selected_scene_idx,
+            "scenes": [dict(id=scene.id, name=scene.name, selected=i == app._selected_scene_idx,
                             role="next" if app._selected_scene_idx >= 0 and i == app._selected_scene_idx + 1 else "",
                             number=f"{i+1:02d}")
                        for i, scene in enumerate(app._scenes)],
             "audio": cue_rows("A", app._cues_a, app.tree_a, app._selected_a, app._checkbox_mode_a, app._checked_cues_a),
             "projection": cue_rows("B", app._cues_b, app.tree_b, app._selected_b, app._checkbox_mode_b, app._checked_cues_b),
             "waveform": bars or [], "waveLoading": bars is None, "time": countdown,
+            "vu": {"decks": [dict(name=deck, **app._vu_snapshot(deck)) for deck in ("A", "B")]},
             "duration": app.var_wave_duration.get(), "source": app.var_wave_source.get(),
+            "selectedIsVideo": bool(selected and selected.kind == "video"),
+            "audioOnly": bool(selected and selected.kind == "video" and selected.video_mode == "audio_only"),
             "inPoint": min(1, selected.start_sec / duration) if selected and duration else 0,
             "outPoint": min(1, selected.stop_at_sec / duration) if selected and duration and selected.stop_at_sec else 0,
             "ticks": [tick.get() for tick in app._wave_scale_ticks],
@@ -238,6 +249,7 @@ def run_quick(on_ready=None):
     from PySide6.QtQuick import QQuickImageProvider
     from operator_ui import _ICON_PATHS
     from operator_transport import OperatorTransport
+    from waveform_item import register_waveform_item
 
     class PreviewImages(QQuickImageProvider):
         def __init__(self):
@@ -288,6 +300,8 @@ def run_quick(on_ready=None):
             self.preview_provider = previews
             self.current = {"activity": "Starting Show Control…", "busy": True, "fullscreen": "Fullscreen"}
             self.rows = {}
+            from operator_models import OperatorRows
+            self.models = {name: OperatorRows(self) for name in ("audio", "projection", "scenes")}
             self.revisions = {}
             self.generation = 0
             self.bars = []
@@ -301,7 +315,7 @@ def run_quick(on_ready=None):
 
         @Property("QVariantMap", notify=listsChanged)
         def lists(self):
-            return self.rows
+            return self.models
 
         @Property("QVariantMap", notify=previewsChanged)
         def previews(self):
@@ -372,14 +386,16 @@ def run_quick(on_ready=None):
                 self.revisions[key] = f"image://preview/{key}/{self.generation}" if data else ""
             if changes:
                 self.previewsChanged.emit()
-            bars = state.pop("waveform")
-            if self.bars != bars:
-                self.bars = bars
-                self.waveformChanged.emit()
+            if "waveform" in state:
+                bars = state.pop("waveform")
+                if self.bars != bars:
+                    self.bars = bars
+                    self.waveformChanged.emit()
             rows = {key: state.pop(key) for key in ("audio", "projection", "scenes")}
             if self.rows != rows:
                 self.rows = rows
-                self.listsChanged.emit()
+                for name, values in rows.items():
+                    self.models[name].set_rows(values)
             if self.current != state:
                 self.current = state
                 self.stateChanged.emit()
@@ -393,6 +409,7 @@ def run_quick(on_ready=None):
     backend.close()
     bridge = Bridge(frontend, preview)
     engine = QQmlApplicationEngine()
+    register_waveform_item()
     engine.addImageProvider("preview", preview)
     engine.addImageProvider("icon", Icons())
     engine.rootContext().setContextProperty("operatorBridge", bridge)

@@ -348,6 +348,18 @@ def rehearse(folder):
         app.btn_output_fullscreen.invoke()
         app._ppt_next_ui()
         assert_slide("0002.mp4")
+        app.var_ppt_sound.set(True)
+        app._ppt_apply_sound()
+        sounding = wait_for(lambda: app._vu_snapshot("B"),
+                            lambda meter: meter["available"] and any(channel["level"] > .01 for channel in meter["channels"]))
+        assert not sounding["muted"]
+        app.var_ppt_sound.set(False)
+        app._ppt_apply_sound()
+        muted = wait_for(lambda: app._vu_snapshot("B"),
+                        lambda meter: meter["muted"] and all(channel["level"] == 0 for channel in meter["channels"]))
+        (root / "dist/windows-slide-audio-meter.json").write_text(json.dumps({
+            "slide_audio_enabled": sounding, "slide_audio_muted": muted}, indent=2))
+        print("PASS: actual video-slide audio produced VU signal; slide mute returned it to zero")
         aspect = lambda: visual.get_property("video-aspect-override")
         source_aspect = aspect()
         from output_monitor import capture_output
@@ -406,6 +418,25 @@ def rehearse(folder):
         wait_for(lambda: audio.get_property("time-pos"), lambda v: v and v > before)
         assert app.audio_runner.is_playing()
         print("PASS: Deck A music advanced throughout Deck B image/video/image/stop, visuals muted")
+        # The visible countdown must remain steady when a cue approaches its end.
+        # Change only the display marker briefly; the real player keeps decoding.
+        cue = app.audio_runner.current_cue()
+        original_out = cue.stop_at_sec
+        position = app.audio_runner.playback_position_sec()
+        cue.stop_at_sec = position + min(3.0, max(0.5, position / 8))
+        colors, countdowns = [], []
+        try:
+            for _ in range(7):
+                app._update_deck_now_playing("A", app.audio_runner, app.var_now_a_time)
+                app.update_idletasks()
+                colors.append(app.lbl_now_a_time.cget("foreground"))
+                countdowns.append(app.var_now_a_time.get())
+                time.sleep(0.08)
+            assert set(colors) == {palette.AMBER}, colors
+            assert len(set(countdowns)) > 1, countdowns
+        finally:
+            cue.stop_at_sec = original_out
+        print("PASS: real countdown advanced through seven samples without red flashing")
         app._selected_b = 3
         app.btn_play_b.invoke()
         wait_for(lambda: (app.update(), app._ppt_running)[1], bool)

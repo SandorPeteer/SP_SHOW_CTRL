@@ -3,6 +3,7 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtQuick.Window
 import QtQuick.Dialogs as NativeDialogs
+import ShowControl 1.0
 
 ApplicationWindow {
     id: screen
@@ -137,6 +138,10 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+Shift+S"; onActivated: screen.action("save_as") }
     Shortcut { sequence: "Ctrl+Shift+A"; onActivated: screen.action("a_add") }
     Shortcut { sequence: "Ctrl+Shift+B"; onActivated: screen.action("b_add") }
+    Shortcut { sequence: "Ctrl+,"; onActivated: screen.action("settings") }
+    Shortcut { sequence: "Ctrl+Shift+M"; onActivated: screen.action("a_tools") }
+    Shortcut { sequence: "Ctrl+Shift+P"; onActivated: screen.action("b_tools") }
+    Shortcut { sequence: "Ctrl+E"; onActivated: screen.action("scene_edit") }
     Shortcut { sequence: "PageUp"; enabled: !!screen.ui.slides; onActivated: operatorBridge.press("slide_key", -1) }
     Shortcut { sequence: "PageDown"; enabled: !!screen.ui.slides; onActivated: operatorBridge.press("slide_key", 1) }
     Shortcut { sequence: "Left"; enabled: !!screen.ui.slides; onActivated: operatorBridge.press("slide_key", -1) }
@@ -205,6 +210,7 @@ ApplicationWindow {
             anchors.margins: 5
             spacing: 3
             RowLayout {
+                objectName: live ? "livePreviewHeader" : "nextPreviewHeader"
                 Layout.fillWidth: true
                 Caption {
                     color: screen.ink
@@ -226,7 +232,9 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Image {
+                    objectName: live ? "livePreview" : "nextPreview"
                     anchors.fill: parent
+                    anchors.rightMargin: live ? 68 : 0
                     source: (live ? operatorBridge.previews.live : operatorBridge.previews.next) || ""
                     fillMode: Image.PreserveAspectFit
                     cache: false
@@ -234,12 +242,74 @@ ApplicationWindow {
                 }
                 Rectangle {
                     anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                    anchors.rightMargin: live ? 68 : 0
                     height: 20; color: "#a0080e16"
                     visible: previewCaption.text !== ""
                     Caption {
                         id: previewCaption
                         anchors.fill: parent; anchors.leftMargin: 5; anchors.rightMargin: 5
                         text: live ? (screen.ui.liveCaption || "") : (screen.ui.nextCaption || "")
+                    }
+                }
+                Item {
+                    id: audioMeter
+                    visible: live
+                    anchors.top: parent.top; anchors.bottom: parent.bottom; anchors.right: parent.right
+                    width: 64
+                    readonly property var decks: screen.ui.vu && screen.ui.vu.decks ? screen.ui.vu.decks :
+                        [{name: "A", active: false, channels: []}, {name: "B", active: false, channels: []}]
+                    Caption { anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter; text: "VU · dBFS"; font.pixelSize: 9 }
+                    Row {
+                        anchors.top: parent.top; anchors.topMargin: 14
+                        anchors.bottom: parent.bottom; anchors.bottomMargin: 4
+                        spacing: 3
+                        Repeater {
+                            model: audioMeter.decks
+                            Item {
+                                id: meterDeck
+                                required property var modelData
+                                width: 21; height: parent.height
+                                Caption { anchors.top: parent.top; anchors.horizontalCenter: parent.horizontalCenter; text: meterDeck.modelData.name; font.pixelSize: 9; color: meterDeck.modelData.name === "A" ? screen.cyan : screen.violet }
+                                Row {
+                                    anchors.top: parent.top; anchors.topMargin: 15
+                                    anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter
+                                    spacing: 2
+                                    Repeater {
+                                        model: meterDeck.modelData.channels.length ? meterDeck.modelData.channels : [{level: 0, peak: 0}, {level: 0, peak: 0}]
+                                        Rectangle {
+                                            id: channelMeter
+                                            required property var modelData
+                                            width: 8; height: parent.height; radius: 2; color: "#1c2b38"
+                                            Rectangle {
+                                                anchors.bottom: parent.bottom
+                                                width: parent.width
+                                                height: parent.height * Math.max(0, Math.min(1, channelMeter.modelData.level || 0))
+                                                color: channelMeter.modelData.level >= 0.96 ? screen.coral : channelMeter.modelData.level >= 0.80 ? screen.amber : screen.mint
+                                                Behavior on height { NumberAnimation { duration: 80 } }
+                                            }
+                                            Rectangle {
+                                                visible: meterDeck.modelData.active && meterDeck.modelData.available
+                                                x: -1; width: parent.width + 2; height: 2; color: screen.ink
+                                                y: (1 - Math.max(0, Math.min(1, channelMeter.modelData.peak || 0))) * (parent.height - height)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Repeater {
+                        model: [0, -12, -24, -36, -48]
+                        Caption {
+                            required property int modelData
+                            x: 47; y: 25 + (-modelData / 60) * (parent.height - 33)
+                            text: modelData; font.pixelSize: 8; color: screen.quiet
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton
+                        ToolTip.visible: containsMouse
+                        ToolTip.text: "RMS / sample peak\n" + audioMeter.decks.map(function(deck) { return deck.name + ": " + (deck.db || "No audio signal") }).join("\n")
                     }
                 }
             }
@@ -252,8 +322,9 @@ ApplicationWindow {
             anchors.margins: 5
             spacing: 3
             RowLayout {
+                objectName: "waveformHeader"
                 Layout.fillWidth: true
-                Caption { color: screen.ink; font.weight: Font.DemiBold; text: "Waveform"; Layout.fillWidth: true }
+                Caption { color: screen.ink; font.weight: Font.DemiBold; text: "Waveform"; Layout.fillWidth: true; Layout.minimumWidth: 0 }
                 Caption { color: screen.cyan; font.pixelSize: 14; font.weight: Font.DemiBold; text: screen.ui.time || "—" }
                 Caption { text: screen.ui.duration || "" }
             }
@@ -264,26 +335,13 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 readonly property var bars: operatorBridge.waveform
-                Item {
-                    id: waveformGeometry
-                    width: 512
-                    height: 160
-                    transform: Scale {
-                        xScale: plot.width / waveformGeometry.width
-                        yScale: plot.height / waveformGeometry.height
-                    }
-                    Repeater {
-                        model: plot.bars
-                        delegate: Rectangle {
-                            required property var modelData
-                            required property int index
-                            x: index * waveformGeometry.width / plot.bars.length
-                            width: waveformGeometry.width * 0.65 / plot.bars.length
-                            height: Math.max(1, waveformGeometry.height * modelData.height)
-                            y: (waveformGeometry.height - height) / 2
-                            color: modelData.color
-                        }
-                    }
+                AudioWaveform { anchors.fill: parent; samples: plot.bars }
+                Rectangle {
+                    objectName: "waveformPlayedShade"
+                    width: screen.ui.cursor >= 0 ? Math.max(0, Math.min(1, screen.ui.cursor)) * parent.width : 0
+                    height: parent.height
+                    color: "#ad0e1722"
+                    Behavior on width { NumberAnimation { duration: 34 } }
                 }
                 Rectangle {
                     visible: !!screen.ui.inPoint
@@ -347,8 +405,18 @@ ApplicationWindow {
             anchors.margins: 7
             spacing: 7
             RowLayout {
+                objectName: "cueHeader_" + card.deck
                 Layout.fillWidth: true
-                Caption { text: heading; color: screen.ink; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                Caption { text: heading; color: screen.ink; font.weight: Font.DemiBold; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                KeyButton {
+                    objectName: "audioOnlyButton"
+                    visible: card.deck === "a" && !!screen.ui.selectedIsVideo
+                    label: "Audio only"; showLabel: true; command: "a_audio_only"
+                    implicitHeight: 25
+                    base: screen.ui.audioOnly ? screen.cyan : "#1c2938"
+                    tone: screen.ui.audioOnly ? "#07131d" : screen.ink
+                    line: screen.ui.audioOnly ? screen.cyan : screen.edge
+                }
                 Repeater {
                     model: card.editButtons
                     KeyButton {
@@ -365,6 +433,7 @@ ApplicationWindow {
                 radius: 4
                 ListView {
                     id: list
+                    objectName: "cueList_" + card.deck
                     anchors.fill: parent
                     clip: true
                     model: card.rows
@@ -456,6 +525,7 @@ ApplicationWindow {
         anchors.margins: 10
         spacing: 8
         RowLayout {
+            objectName: "operatorHeader"
             Layout.fillWidth: true
             spacing: 5
             Caption { text: "SP Show Control"; color: screen.ink; font.pixelSize: 14; font.weight: Font.DemiBold; Layout.rightMargin: 5 }
@@ -506,11 +576,12 @@ ApplicationWindow {
             Item {
                 id: topRow
                 width: parent.width
-                height: Math.floor((workspace.height - 8) / 3)
+                height: Math.floor((workspace.height - 8) * 0.42)
                 readonly property real available: width - 16
-                WaveTile { width: topRow.available * 0.40; height: topRow.height }
-                PreviewTile { x: topRow.available * 0.40 + 8; width: topRow.available * 0.30; height: topRow.height; live: true }
-                PreviewTile { x: topRow.available * 0.70 + 16; width: topRow.available * 0.30; height: topRow.height; live: false }
+                readonly property real previewImageWidth: (available * 0.76 - 68) / 2
+                WaveTile { width: topRow.available * 0.24; height: topRow.height }
+                PreviewTile { x: topRow.available * 0.24 + 8; width: topRow.previewImageWidth + 68; height: topRow.height; live: true }
+                PreviewTile { x: topRow.available * 0.24 + topRow.previewImageWidth + 84; width: topRow.previewImageWidth; height: topRow.height; live: false }
             }
             Item {
                 id: lower

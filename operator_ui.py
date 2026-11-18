@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from PIL import Image, ImageDraw, ImageTk
+import windows_theme as palette
 from windows_theme import CYAN, EDGE, LIVE_ROW, MINT, NEXT_ROW, SELECTED, TEXT, VIOLET, pixels
 
 
@@ -345,17 +346,28 @@ def tool_window(root, title):
     window.title(title)
     if not getattr(root, "_operator_worker", False):
         window.transient(root)
-    window.resizable(True, False)
-    window.minsize(440, 1)
+    window.resizable(True, True)
+    window.geometry(f"{palette.pixels(root, 620)}x{palette.pixels(root, 330)}")
+    window.minsize(palette.pixels(root, 580), palette.pixels(root, 180))
     window.protocol("WM_DELETE_WINDOW", window.withdraw)
     window.bind("<Escape>", lambda _event: window.withdraw())
     tabs = ttk.Notebook(window, style="Deck.TNotebook")
-    tabs.pack(fill="both", expand=True, padx=12, pady=12)
+    tabs.pack(fill="both", expand=True, padx=16, pady=16)
+    def fit_tab(_event=None):
+        if window.winfo_viewable() and tabs.select():
+            window.update_idletasks()
+            selected = window.nametowidget(tabs.select())
+            height = max(palette.pixels(root, 180), selected.winfo_reqheight() + palette.pixels(root, 76))
+            window.geometry(f"{window.winfo_width()}x{height}")
+    tabs.bind("<<NotebookTabChanged>>", fit_tab, add="+")
+    window._fit_tool_tab = fit_tab
     return window, tabs
 
 
 def show_tools(window, tabs, tab=None):
     if tab is not None:
         tabs.select(tab)
+    palette.prepare_tool_window(window)
     window.deiconify()
+    window._fit_tool_tab()
     window.lift()

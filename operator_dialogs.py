@@ -96,8 +96,11 @@ class OperatorDialogs:
         # without the global TOPMOST flag that could cover the projector.
         import win32con
         import win32gui
+        from windows_theme import prepare_tool_window, style_native_tool_window
+        prepare_tool_window(window)
         handle = win32gui.GetParent(window.winfo_id()) or window.winfo_id()
         win32gui.SetWindowLong(handle, win32con.GWL_HWNDPARENT, owner)
+        style_native_tool_window(handle)
         left, top, right, bottom = win32gui.GetWindowRect(owner)
         x, y, x2, y2 = win32gui.GetWindowRect(handle)
         width, height = x2 - x, y2 - y

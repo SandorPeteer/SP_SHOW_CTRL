@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mpv_ipc import MpvIpcSession
+from audio_meter import METER_PROPERTY, metered_filters
 
 
 class MpvIpcTests(unittest.TestCase):
@@ -52,10 +53,10 @@ class MpvIpcTests(unittest.TestCase):
         with patch.object(self.session, "command", return_value={"error": "success"}), \
                 patch.object(self.session, "set_property", return_value=True) as change:
             self.session.loadfile("quiet.mp4", af_lavfi="lavfi=[volume=6dB]")
-            change.assert_any_call("af", "lavfi=[volume=6dB]")
+            change.assert_any_call("af", metered_filters("lavfi=[volume=6dB]"))
             change.reset_mock()
             self.session.loadfile("normal.mp4")
-            change.assert_any_call("af", "")
+            change.assert_any_call("af", metered_filters())
 
     def test_disconnected_clock_does_not_keep_stale_telemetry(self):
         class BrokenPipe:
@@ -65,6 +66,21 @@ class MpvIpcTests(unittest.TestCase):
         pipe = self.session._pipe = BrokenPipe()
         self.session._reader_loop_pipe(pipe)
         self.assertEqual(self.session.observed("time-pos"), (None,))
+
+    def test_new_file_keeps_gain_observers_but_discards_previous_audio(self):
+        self.event(event="property-change", name="volume", data=50)
+        self.event(event="property-change", name="mute", data=False)
+        self.event(event="property-change", name=METER_PROPERTY,
+                   data={"lavfi.astats.1.RMS_level": "-9", "lavfi.astats.1.Peak_level": "-6"})
+        self.event(event="property-change", name="time-pos", data=3)
+        self.assertTrue(self.session.audio_levels()["active"])
+        self.event(event="start-file")
+        self.assertEqual(self.session.observed("volume", "mute", METER_PROPERTY), (50, False, None))
+        self.assertFalse(self.session.audio_levels()["available"])
+
+    def test_meter_snapshot_never_waits_for_ipc(self):
+        with patch.object(self.session, "command", side_effect=AssertionError("unexpected IPC")):
+            self.assertFalse(self.session.audio_levels()["available"])
 
 
 if __name__ == "__main__":

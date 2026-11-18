@@ -61,6 +61,10 @@ class OperatorTransport:
                 return
             with self._lock:
                 frames = self._pending[1] if self._pending is not None else {}
+                if self._pending is not None and "waveform" not in state:
+                    previous_state = self._pending[0]
+                    if "waveform" in previous_state:
+                        state["waveform"] = previous_state["waveform"]
                 frames.update(changes)
                 self._pending = (state, frames)
 

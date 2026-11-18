@@ -6,10 +6,10 @@ import subprocess
 import threading
 
 
-def pcm_overview(exe, path, cancelled, max_bars=256, **kwargs):
+def pcm_overview(exe, path, cancelled, max_bars=2048, **kwargs):
     import numpy as np
 
-    rate, window_size = 48000, 2048
+    rate, window_size, envelope_size = 48000, 2048, 256
     frequencies = np.fft.rfftfreq(window_size, 1 / rate)
     cuts = np.searchsorted(frequencies, (25, 250, 2500))
     window = np.hanning(window_size).astype(np.float32)[None, :, None]
@@ -43,13 +43,23 @@ def pcm_overview(exe, path, cancelled, max_bars=256, **kwargs):
                 samples = samples[:len(samples) // 2 * 2]
                 if not len(samples):
                     break
+                sample_count = len(samples) // 2
                 frames = (len(samples) + window_size * 2 - 1) // (window_size * 2)
                 samples = np.pad(samples, (0, frames * window_size * 2 - len(samples)))
                 samples = samples.reshape(frames, window_size, 2)
-                peak = np.max(np.abs(samples), axis=(1, 2))
+                envelope = samples.reshape(-1, envelope_size, 2)
+                envelope_count = (sample_count + envelope_size - 1) // envelope_size
+                minima = envelope.min(axis=(1, 2))[:envelope_count]
+                maxima = envelope.max(axis=(1, 2))[:envelope_count]
+                # FFT padding must not introduce a zero-valued sample into
+                # the actual last waveform interval (e.g. asymmetric audio).
+                if sample_count % envelope_size:
+                    tail = samples.reshape(-1, 2)[(envelope_count - 1) * envelope_size:sample_count]
+                    minima[-1], maxima[-1] = tail.min(), tail.max()
                 power = np.abs(np.fft.rfft(samples * window, axis=1)) ** 2
                 bands = np.add.reduceat(power.sum(axis=2), cuts, axis=1)
-                groups.append(np.column_stack((peak, bands)).astype(np.float32))
+                bands = np.repeat(bands, window_size // envelope_size, axis=0)[:envelope_count]
+                groups.append(np.column_stack((minima, maxima, bands)).astype(np.float32))
         finally:
             watchdog.cancel()
             if cancelled.is_set():
@@ -58,19 +68,26 @@ def pcm_overview(exe, path, cancelled, max_bars=256, **kwargs):
             return []
 
     data = np.concatenate(groups)
+    groups.clear()
     count = min(max_bars, len(data))
     edges = np.arange(count + 1) * len(data) // count
-    amp = np.maximum.reduceat(data[:, 0], edges[:-1])
-    energies = np.add.reduceat(data[:, 1:], edges[:-1], axis=0)
+    minima = np.minimum.reduceat(data[:, 0], edges[:-1])
+    maxima = np.maximum.reduceat(data[:, 1], edges[:-1])
+    amp = np.maximum(np.abs(minima), np.abs(maxima))
+    energies = np.add.reduceat(data[:, 2:], edges[:-1], axis=0)
     # Give weak harmonics some visibility while retaining the dominant band.
     weights = np.sqrt(energies)
     totals = weights.sum(axis=1, keepdims=True)
     weights /= np.maximum(1e-8, totals)
     palette = np.array([[255, 102, 129], [255, 208, 110], [89, 216, 255]])
     colors = (weights @ palette).astype(int)
-    heights = 0.94 * (amp / max(0.015, float(amp.max()))) ** 0.65
-    return [dict(height=round(float(level), 4), color=("#%02x%02x%02x" % tuple(rgb)) if level else "#27384a")
-            for level, rgb in zip(heights, colors)]
+    # One linear display gain for the entire file preserves the real sample
+    # shape, channel extrema and amplitude ratios. No per-bin height shaping.
+    gain = 0.94 / max(0.015, float(amp.max()))
+    return [dict(minimum=round(float(low * gain), 6), maximum=round(float(high * gain), 6),
+                 height=round(float(level * gain), 6),
+                 color=("#%02x%02x%02x" % tuple(rgb)) if level else "#27384a")
+            for low, high, level, rgb in zip(minima, maxima, amp, colors)]
 
 
 class SpectralOverview:

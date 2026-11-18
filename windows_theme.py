@@ -93,11 +93,19 @@ def apply_windows_theme(app):
                   indicatorforeground=[("disabled", disabled), ("!disabled", foreground)])
     for widget in ("TEntry", "TCombobox", "TSpinbox"):
         style.configure(widget, fieldbackground=field, foreground=foreground,
-                        insertcolor=foreground, arrowcolor=foreground)
+                        insertcolor=foreground, arrowcolor=foreground, font=("Segoe UI", 10),
+                        padding=tuple(pixels(app, value) for value in (8, 6)), borderwidth=1)
         style.map(widget, fieldbackground=[("disabled", background), ("readonly", field)],
                   foreground=[("disabled", disabled), ("!disabled", foreground)],
                   background=[("active", raised), ("!active", raised)],
-                  selectbackground=[("!disabled", selected)], selectforeground=[("!disabled", foreground)])
+                  selectbackground=[("!disabled", selected)], selectforeground=[("!disabled", foreground)],
+                  bordercolor=[("focus", CYAN), ("!focus", EDGE)],
+                  lightcolor=[("focus", CYAN), ("!focus", EDGE)],
+                  darkcolor=[("focus", CYAN), ("!focus", EDGE)])
+    style.configure("TLabelframe", background=PANEL, bordercolor=EDGE, relief="solid", borderwidth=1)
+    style.configure("TLabelframe.Label", foreground=CYAN, font=("Segoe UI", 10, "bold"))
+    style.configure("ToolTitle.TLabel", foreground=TEXT, font=("Segoe UI", 15, "bold"))
+    style.configure("ToolHint.TLabel", foreground=MUTED, font=("Segoe UI", 10))
     app.option_add("*TCombobox*Listbox.background", field)
     app.option_add("*TCombobox*Listbox.foreground", foreground)
     style.configure("Treeview", background=field, fieldbackground=field, foreground=foreground, rowheight=27)
@@ -106,6 +114,10 @@ def apply_windows_theme(app):
     style.map("Treeview.Heading", background=[("active", "#4a4e55")], foreground=[("active", foreground)])
     style.configure("TScrollbar", background=raised, arrowcolor=foreground)
     style.map("TScrollbar", background=[("active", "#666a72")])
+    style.layout("Tool.Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
+        ("Vertical.Scrollbar.thumb", {"sticky": "nswe"})]})])
+    style.configure("Tool.Vertical.TScrollbar", background=EDGE, troughcolor=FIELD,
+                    borderwidth=0, width=pixels(app, 8), arrowsize=0)
     style.configure("TScale", background=raised)
     style.configure("TProgressbar", background=selected)
     style.configure("Deck.TNotebook", background=background, borderwidth=0, padding=0)
@@ -150,6 +162,7 @@ def _apply_workspace_surfaces(app, style):
         style.layout("Activity.TFrame", [("Activity.surface", {"sticky": "nswe"})])
 
     for name, fill, edge, fg, padding in (
+            ("Tool", BUTTON, EDGE, TEXT, (10, 6)),
             ("Icon", BUTTON, EDGE, TEXT, (6, 5)),
             ("HeaderIcon", BUTTON, EDGE, TEXT, (3, 3)),
             ("Toolbar", BUTTON, EDGE, TEXT, (6, 5)),
@@ -185,6 +198,10 @@ def _apply_workspace_surfaces(app, style):
         style.map(role, foreground=[("disabled", MUTED), ("!disabled", fg)])
 
     if rounded:
+        style.layout("TButton", style.layout("Tool.TButton"))
+    style.configure("TButton", padding=tuple(pixels(app, n) for n in (10, 6)), font=("Segoe UI", 10))
+
+    if rounded:
         style.layout("TMenubutton", [("Toolbar.surface", {"sticky": "nswe", "children": [
             ("Menubutton.indicator", {"side": "right", "sticky": ""}),
             ("Menubutton.padding", {"side": "left", "sticky": "nswe", "children": [
@@ -193,6 +210,50 @@ def _apply_workspace_surfaces(app, style):
         ]})])
     style.configure("TMenubutton", padding=(8, 5), arrowcolor=MUTED)
     app._rounded_theme_images = pictures
+
+
+def prepare_tool_window(window):
+    """Keep legacy Tk editors on the same palette and text scale as ttk forms."""
+    import tkinter as tk
+
+    window.configure(background=PANEL)
+    widgets = list(window.winfo_children())
+    while widgets:
+        widget = widgets.pop()
+        widgets.extend(widget.winfo_children())
+        if isinstance(widget, ttk.Widget):
+            continue
+        if isinstance(widget, (tk.Frame, tk.LabelFrame)):
+            widget.configure(background=PANEL)
+        elif isinstance(widget, tk.Text):
+            widget.configure(background=FIELD, foreground=TEXT, insertbackground=CYAN,
+                             selectbackground=SELECTED, selectforeground=TEXT,
+                             font=("Segoe UI", 10), borderwidth=0, highlightthickness=1,
+                             highlightbackground=EDGE, highlightcolor=CYAN,
+                             padx=pixels(window, 10), pady=pixels(window, 8))
+            if hasattr(widget, "vbar") and not hasattr(widget, "_themed_scrollbar"):
+                widget.vbar.pack_forget()
+                scrollbar = ttk.Scrollbar(widget.frame, orient="vertical", command=widget.yview,
+                                           style="Tool.Vertical.TScrollbar")
+                scrollbar.pack(side="right", fill="y")
+                widget.configure(yscrollcommand=scrollbar.set)
+                widget._themed_scrollbar = scrollbar
+        elif isinstance(widget, tk.Label):
+            widget.configure(background=PANEL)
+            if str(widget.cget("foreground")) in ("gray", "#e8e8e8", "#e0e0e0", "#ffffff"):
+                widget.configure(foreground=TEXT)
+
+
+def style_native_tool_window(hwnd):
+    """Dark, rounded Windows captions without replacing native move/resize."""
+    if sys.platform != "win32":
+        return
+    from ctypes import WinDLL, byref, c_int, c_uint32, c_void_p, sizeof
+    attribute = WinDLL("dwmapi").DwmSetWindowAttribute
+    attribute.argtypes = (c_void_p, c_uint32, c_void_p, c_uint32)
+    for key, value in ((20, 1), (33, 2), (34, 0x49392B), (35, 0x281D12), (36, 0xFFF5EC)):
+        number = c_int(value)
+        attribute(hwnd, key, byref(number), sizeof(number))
 
 
 def controller_chrome(app, drag_surfaces, zoom_button):

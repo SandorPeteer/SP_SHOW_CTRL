@@ -64,6 +64,7 @@ def rehearse(folder):
         modal_verified = False
         saved_rows = None
         event_ticks = []
+        meter_evidence = {}
         window.frameSwapped.connect(lambda: swaps.append(time.perf_counter()))
         resize_timer = QTimer(window)
         resize_timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -75,13 +76,16 @@ def rehearse(folder):
                 if time.monotonic() - start > 45:
                     raise RuntimeError(f"Timed out in Qt rehearsal phase {phase}, {bridge.current!r}")
                 state = bridge.current
+                decks = {deck["name"]: deck for deck in state.get("vu", {}).get("decks", [])}
+                meter_a, meter_b = decks.get("A", {}), decks.get("B", {})
+                audible_a = meter_a.get("available") and any(channel["level"] > .01 for channel in meter_a.get("channels", []))
                 if phase == 0 and bridge.bars and len(bridge.rows.get("audio", [])) == 2:
                     assert bridge.rows["audio"][1]["armed"] and bridge.rows["scenes"][1]["role"] == "next"
                     bridge.press("a_play", None)
                     bridge.press("b_select", 0)
                     bridge.press("b_play", None)
                     phase = 1
-                if phase == 1 and bridge.revisions.get("live") and bridge.revisions.get("next") and state.get("cursor", -1) > 0:
+                if phase == 1 and audible_a and bridge.revisions.get("live") and bridge.revisions.get("next") and state.get("cursor", -1) > 0:
                     if not modal_verified:
                         saved_rows = {key: list(rows) for key, rows in bridge.rows.items()}
                         bridge.press("new", None)
@@ -174,7 +178,37 @@ def rehearse(folder):
                     assert state["projectionClock"]["label"].startswith("● ")
                     live, following = bridge.revisions.get("live"), bridge.revisions.get("next")
                     if live and following and live != previous_live and following != previous_next:
+                        assert audible_a and meter_a.get("active")
+                        assert meter_b.get("muted") and all(channel["level"] == 0 for channel in meter_b.get("channels", []))
+                        meter_evidence["playing_audio_muted_video"] = decks
                         assert window.grabWindow().save(str(root / "dist/windows-qt-projection-timing.png"))
+                        bridge.press("a_play", None)
+                        phase = 20
+                if phase == 20 and not meter_a.get("active"):
+                    assert all(channel["level"] == 0 for channel in meter_a.get("channels", []))
+                    meter_evidence["paused_audio"] = meter_a
+                    bridge.press("a_play", None)
+                    phase = 21
+                elif phase == 21 and audible_a and meter_a.get("active"):
+                    meter_evidence["resumed_audio"] = meter_a
+                    (root / "dist/windows-qt-vu-verification.json").write_text(json.dumps(meter_evidence, indent=2))
+                    print("PASS: decoded Deck A VU, muted video zero, audio pause zero and resume signal", flush=True)
+                    bridge.connection.close()
+                    phase = 3
+                if phase == 3 and state.get("controllerError"):
+                    assert "Logs:" in state["controllerError"]
+                    assert window.isVisible()
+                    window.resize(1000, 640)
+                    (root / "dist/windows-qt-controller-failure.json").write_text(json.dumps({
+                        "trigger": "deliberate operator transport disconnect after playback checks",
+                        "visible_error": state["controllerError"], "operator_remained_visible": True,
+                        "limitation": "This exercises disconnect, not a physically stalled audio driver or laptop."}, indent=2))
+                    phase = 4
+                elif phase == 4:
+                    assert window.width() == 1000 and window.height() == 640
+                    assert window.grabWindow().save(str(root / "dist/windows-qt-controller-failure.png"))
+                    print("PASS: disconnected controller left the operator responsive with its log path visible", flush=True)
+                    if not result:
                         result.append(True)
                         qt_app.quit()
                         return

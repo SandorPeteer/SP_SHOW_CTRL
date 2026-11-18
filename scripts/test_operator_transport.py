@@ -63,11 +63,12 @@ class OperatorTransportTests(unittest.TestCase):
         self.assertEqual(self.pipe.sent, [])
 
     def test_latest_state_preserves_changed_frames_and_dialog(self):
-        self.pipe.incoming.put(({"position": 1}, {"live": b"live-frame", "next": b"old"}))
+        waveform = [{"minimum": -0.4, "maximum": 0.6, "color": "#59d8ff"}]
+        self.pipe.incoming.put(({"position": 1, "waveform": waveform}, {"live": b"live-frame", "next": b"old"}))
         self.pipe.incoming.put(({"position": 2, "dialog": {"id": 4}}, {"next": b"new"}))
         self.assertTrue(self.pipe.processed.wait(1))
         state, frames = self.transport.receive_latest()
-        self.assertEqual(state, {"position": 2, "dialog": {"id": 4}})
+        self.assertEqual(state, {"position": 2, "dialog": {"id": 4}, "waveform": waveform})
         self.assertEqual(frames, {"live": b"live-frame", "next": b"new"})
         # A blocked next recv must not make the GUI wait for a full message.
         self.assertIsNone(self.transport.receive_latest())
