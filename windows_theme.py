@@ -171,6 +171,7 @@ def _apply_workspace_surfaces(app, style):
 def controller_chrome(app, drag_surfaces, zoom_button):
     """Remove the system caption while preserving native taskbar and resizing."""
     from ctypes import WinDLL, byref, c_int, c_uint32, c_void_p, sizeof
+    import win32api
     import win32con
     import win32gui
 
@@ -190,6 +191,17 @@ def controller_chrome(app, drag_surfaces, zoom_button):
     # Tk still budgets the original non-client area for its minimum size.
     min_width, min_height = app.minsize()
     app.minsize(max(1, min_width - removed_width), max(1, min_height - removed_height))
+
+    monitor = win32api.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+    work_left, work_top, work_right, work_bottom = win32api.GetMonitorInfo(monitor)["Work"]
+    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+    margin = 8
+    width = min(right - left, work_right - work_left - 2 * margin)
+    height = min(bottom - top, work_bottom - work_top - 2 * margin)
+    left = max(work_left + margin, min(left, work_right - width - margin))
+    top = max(work_top + margin, min(top, work_bottom - height - margin))
+    win32gui.SetWindowPos(hwnd, 0, left, top, width, height,
+                          win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
 
     attribute = WinDLL("dwmapi").DwmSetWindowAttribute
     attribute.argtypes = (c_void_p, c_uint32, c_void_p, c_uint32)

@@ -101,6 +101,10 @@ def smoke():
             else:
                 raise AssertionError(f"Integrated toolbar did not replace the caption: {window_style:#x}")
             assert window_style & win32con.WS_THICKFRAME
+            import win32api
+            work = win32api.GetMonitorInfo(win32api.MonitorFromWindow(hwnd, 2))["Work"]
+            bounds = win32gui.GetWindowRect(hwnd)
+            assert bounds[1] >= work[1] and bounds[3] <= work[3], (bounds, work)
             print("PASS: frozen EXE has integrated chrome and a native resize frame")
             # A second click must reuse the controller, even during initial loading.
             duplicate = subprocess.Popen([exe], env=env, cwd=test)
