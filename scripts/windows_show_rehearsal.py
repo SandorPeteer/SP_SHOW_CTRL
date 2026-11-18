@@ -240,15 +240,19 @@ def rehearse(folder):
         caption_controls = (app.btn_minimize_window, app.btn_zoom_window, app.btn_close_window)
         assert app.btn_output_fullscreen.master == caption_controls[0].master.master
         assert app.btn_output_fullscreen.winfo_rootx() < caption_controls[0].winfo_rootx()
-        from win32gui import GetAncestor, IsZoomed
+        from ctypes import c_int, c_void_p, windll
+        from win32gui import GetAncestor
+        is_zoomed = windll.user32.IsZoomed
+        is_zoomed.argtypes = (c_void_p,)
+        is_zoomed.restype = c_int
         wrapper = GetAncestor(app.winfo_id(), 2)
-        assert not IsZoomed(wrapper)
+        assert not is_zoomed(wrapper)
         app.btn_zoom_window.invoke()
         app.update()
-        assert IsZoomed(wrapper)
+        assert is_zoomed(wrapper)
         app.btn_zoom_window.invoke()
         app.update()
-        assert not IsZoomed(wrapper)
+        assert not is_zoomed(wrapper)
         print("PASS: window, file and projection controls share a single toolbar; maximize and restore work")
 
         def tool_order(last):

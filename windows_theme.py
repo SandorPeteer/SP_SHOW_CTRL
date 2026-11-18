@@ -194,7 +194,11 @@ def controller_chrome(app, drag_surfaces, zoom_button):
     corner = c_uint32(2)  # DWMWCP_ROUND
     attribute(hwnd, 33, byref(corner), sizeof(corner))
 
-    release_capture = WinDLL("user32").ReleaseCapture
+    user32 = WinDLL("user32")
+    release_capture = user32.ReleaseCapture
+    is_zoomed = user32.IsZoomed
+    is_zoomed.argtypes = (c_void_p,)
+    is_zoomed.restype = c_int
 
     def drag(event):
         release_capture()
@@ -202,7 +206,7 @@ def controller_chrome(app, drag_surfaces, zoom_button):
         win32gui.PostMessage(hwnd, win32con.WM_NCLBUTTONDOWN, win32con.HTCAPTION, xy)
 
     def maximize(_event=None):
-        mode = win32con.SW_RESTORE if win32gui.IsZoomed(hwnd) else win32con.SW_MAXIMIZE
+        mode = win32con.SW_RESTORE if is_zoomed(hwnd) else win32con.SW_MAXIMIZE
         win32gui.ShowWindow(hwnd, mode)
         return "break"
 
