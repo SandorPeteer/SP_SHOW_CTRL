@@ -177,12 +177,19 @@ def controller_chrome(app, drag_surfaces, zoom_button):
     hwnd = win32gui.GetAncestor(app.winfo_id(), 2)  # GA_ROOT
     if not hwnd:
         return
+    _, _, original_width, original_height = win32gui.GetClientRect(hwnd)
     style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
     win32gui.SetWindowLong(hwnd, win32con.GWL_STYLE, style & ~win32con.WS_CAPTION)
     extended = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
     win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, extended | win32con.WS_EX_APPWINDOW)
     win32gui.SetWindowPos(hwnd, 0, 0, 0, 0, 0, win32con.SWP_NOSIZE | win32con.SWP_NOMOVE |
                           win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE | win32con.SWP_FRAMECHANGED)
+    _, _, width, height = win32gui.GetClientRect(hwnd)
+    removed_width = width - original_width
+    removed_height = height - original_height
+    # Tk still budgets the original non-client area for its minimum size.
+    min_width, min_height = app.minsize()
+    app.minsize(max(1, min_width - removed_width), max(1, min_height - removed_height))
 
     attribute = WinDLL("dwmapi").DwmSetWindowAttribute
     attribute.argtypes = (c_void_p, c_uint32, c_void_p, c_uint32)

@@ -241,11 +241,12 @@ def rehearse(folder):
         assert app.btn_output_fullscreen.master == caption_controls[0].master.master
         assert app.btn_output_fullscreen.winfo_rootx() < caption_controls[0].winfo_rootx()
         from ctypes import c_int, c_void_p, windll
-        from win32gui import GetAncestor
+        import win32con
+        import win32gui
         is_zoomed = windll.user32.IsZoomed
         is_zoomed.argtypes = (c_void_p,)
         is_zoomed.restype = c_int
-        wrapper = GetAncestor(app.winfo_id(), 2)
+        wrapper = win32gui.GetAncestor(app.winfo_id(), 2)
         assert not is_zoomed(wrapper)
         app.btn_zoom_window.invoke()
         app.update()
@@ -269,9 +270,15 @@ def rehearse(folder):
         assert style.lookup(app.btn_stop_b.cget("style"), "foreground") == palette.CORAL
         measured = []
         for width, height in ((900, 550), (980, 620), (1440, 820), (980, 620)):
-            app.geometry(f"{width}x{height}+20+40")
-            app.update()
-            assert app.winfo_width() == width and app.winfo_height() == height
+            # Resize the native captionless window, as the Windows sizing border does.
+            x0, y0, x1, y1 = win32gui.GetWindowRect(wrapper)
+            _, _, client_width, client_height = win32gui.GetClientRect(wrapper)
+            win32gui.SetWindowPos(wrapper, 0, 20, 40, width + x1 - x0 - client_width,
+                                  height + y1 - y0 - client_height,
+                                  win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+            actual = wait_for(lambda: pump(lambda: (app.winfo_width(), app.winfo_height())),
+                              lambda size: size == (width, height))
+            assert actual == (width, height)
             assert all(button.winfo_viewable() for button in controls)
             widgets = (*controls, app.scene_listbox, app.tree_a, app.tree_b, app.canvas_a,
                        *app.output_monitor.canvases.values())
