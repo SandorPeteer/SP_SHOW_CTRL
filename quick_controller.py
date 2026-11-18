@@ -77,10 +77,10 @@ def controller_worker(connection):
             if 0 <= value < len(app._scenes):
                 app.scene_listbox.select(value)
                 app._on_scene_select(value)
-        elif name == "seek":
+        elif name in ("seek", "mark_out"):
             from types import SimpleNamespace
-            x = float(value) * app.canvas_a.winfo_width()
-            app._waveform_click(SimpleNamespace(x=x), "A", "IN")
+            x = max(0, min(1, float(value))) * app.canvas_a.winfo_width()
+            app._waveform_click(SimpleNamespace(x=x), "A", "OUT" if name == "mark_out" else "IN")
         elif name == "slide_key":
             if app._ppt_running:
                 (app._ppt_next_ui if value > 0 else app._ppt_prev_ui)()
@@ -121,18 +121,20 @@ def controller_worker(connection):
     def projection_clock():
         out = app.video_runner
         current = out.current_cue()
-        if out.owner_deck != "B" or current is None:
+        if out.owner_deck not in ("A", "B") or current is None:
             return {"fraction": -1, "label": ""}
         if current.kind == "video" and out._sess:
-            path, pos, duration = out._sess.observed("path", "time-pos", "duration")
+            path, pos, duration, ended = out._sess.observed("path", "time-pos", "duration", "eof-reached")
             if path == current.path and isinstance(pos, (int, float)) and isinstance(duration, (int, float)):
                 start = float(current.start_sec)
                 end = min(duration, current.stop_at_sec) if current.stop_at_sec is not None else duration
                 if end > start:
+                    if ended:
+                        return {"fraction": 1, "label": "▪ End"}
                     prefix = "Ⅱ " if out.is_paused() else "● "
                     return {"fraction": round(max(0, min(1, (pos - start) / (end - start))), 3),
                             "label": prefix + _format_timecode(max(0, end - pos), with_ms=True)[:-2]}
-        if app._ppt_running and current.kind == "image":
+        if out.owner_deck == "B" and app._ppt_running and current.kind == "image":
             if app._loop_b_enabled:
                 seconds = app._ppt_still_duration()
                 elapsed = time.monotonic() - app._ppt_slide_started

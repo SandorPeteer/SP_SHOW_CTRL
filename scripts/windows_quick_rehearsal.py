@@ -11,7 +11,7 @@ import time
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root))
 
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtQuick import QQuickWindow
 from quick_controller import run_quick
 
@@ -30,10 +30,15 @@ def rehearse(folder):
     slides.mkdir()
     shutil.copyfile(root / "assets/logo.png", slides / "0001.png")
     shutil.copyfile(film, slides / "0002.mp4")
+    shutil.copyfile(root / "assets/logo.png", slides / "0003.png")
     (slides / "slides.json").write_text(json.dumps({"version": 1,
-        "sha256": hashlib.sha256(slideshow.read_bytes()).hexdigest(), "slides": ["png", "mp4"], "seconds": [6, None]}))
+        "sha256": hashlib.sha256(slideshow.read_bytes()).hexdigest(),
+        "slides": ["png", "mp4", "png"], "seconds": [6, None, None]}))
+    signal = "(0.08+0.30*sin(3*t)^2)*sin(2*PI*120*t)*lt(mod(t,9),3)"
+    signal += "+(0.04+0.36*sin(2*t)^2)*sin(2*PI*900*t)*between(mod(t,9),3,6)"
+    signal += "+(0.06+0.26*sin(4*t)^2)*sin(2*PI*6300*t)*gte(mod(t,9),6)"
     subprocess.run([tools / "ffmpeg/ffmpeg.exe", "-v", "error", "-f", "lavfi", "-i",
-                    "sine=frequency=120:duration=25", sound], check=True, timeout=15)
+                    f"aevalsrc={signal}:d=35", sound], check=True, timeout=15)
     model = dict(version=3, cues_a=[
         {"id": "music", "kind": "audio", "path": str(sound)},
         {"id": "music2", "kind": "audio", "path": str(sound), "auto_play": True},
@@ -53,7 +58,12 @@ def rehearse(folder):
         phase = 0
         times = []
         swaps = []
+        previous_live = ""
+        previous_next = ""
         window.frameSwapped.connect(lambda: swaps.append(time.perf_counter()))
+        resize_timer = QTimer(window)
+        resize_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        resize_timer.setInterval(16)
 
         def poll():
             nonlocal phase
@@ -69,7 +79,7 @@ def rehearse(folder):
                     phase = 1
                 if phase == 1 and bridge.revisions.get("live") and bridge.revisions.get("next") and state.get("cursor", -1) > 0:
                     assert state.get("projectionClock", {}).get("label") == "● Live · Manual"
-                    assert state["time"].startswith("−") and state["slidePosition"] == "01 / 02"
+                    assert state["time"].startswith("−") and state["slidePosition"] == "01 / 03"
                     assert bridge.rows["projection"][1]["role"] == "next"
                     phase = 2
                     fullscreen = win32gui.FindWindow(None, "SP Show Control Output (OUTPUT)")
@@ -78,14 +88,19 @@ def rehearse(folder):
                     window.requestActivate()
                     cursor_before = state["cursor"]
                     tick = time.perf_counter()
+                    resize_frame = 0
 
-                    def resize(frame):
+                    def resize():
+                        nonlocal resize_frame
                         try:
-                            if frame == 75:
+                            if resize_frame == 75:
+                                resize_timer.stop()
                                 ordered = sorted(times)
                                 p95 = ordered[71]
+                                elapsed = time.perf_counter() - tick
+                                frame_count = sum(timestamp >= tick for timestamp in swaps)
                                 print(f"Qt Quick resize: p95 {p95:.2f} ms application work, "
-                                      f"{len(swaps)} displayed frames in {time.perf_counter() - tick:.2f}s, "
+                                      f"{frame_count} swaps in {elapsed:.2f}s ({frame_count / elapsed:.1f}/s), "
                                       f"backend {window.rendererInterface().graphicsApi()}", flush=True)
                                 assert p95 < 16.667, p95
                                 assert bridge.current.get("cursor", 0) > cursor_before
@@ -93,27 +108,39 @@ def rehearse(folder):
                                 QTimer.singleShot(150, capture)
                                 return
                             started = time.perf_counter()
-                            step = min(frame, 75 - frame)
+                            step = min(resize_frame, 75 - resize_frame)
                             window.resize(910 + step * 3, 555 + step * 2)
                             times.append((time.perf_counter() - started) * 1000)
-                            QTimer.singleShot(16, lambda: resize(frame + 1))
+                            resize_frame += 1
                         except Exception as exc:
+                            resize_timer.stop()
                             result.append(exc)
                             qt_app.quit()
 
                     def capture():
+                        nonlocal previous_live, previous_next
                         try:
                             assert window.grabWindow().save(str(root / "dist/windows-qt-operator-preview.png"))
+                            previous_live = bridge.revisions.get("live")
+                            previous_next = bridge.revisions.get("next")
+                            if fullscreen:
+                                win32gui.ShowWindow(fullscreen, 9)
                             bridge.press("slide_next", None)
                         except Exception as exc:
                             result.append(exc)
                             qt_app.quit()
 
-                    resize(0)
-                if phase == 2 and state.get("slidePosition") == "02 / 02" and state.get("projectionClock", {}).get("fraction", -1) > 0:
-                    result.append(True)
-                    qt_app.quit()
-                    return
+                    resize_timer.timeout.connect(resize)
+                    resize_timer.start()
+                fraction = state.get("projectionClock", {}).get("fraction", -1)
+                if phase == 2 and state.get("slidePosition") == "02 / 03" and 0.1 < fraction < 1:
+                    assert state["projectionClock"]["label"].startswith("● ")
+                    live, following = bridge.revisions.get("live"), bridge.revisions.get("next")
+                    if live and following and live != previous_live and following != previous_next:
+                        assert window.grabWindow().save(str(root / "dist/windows-qt-projection-timing.png"))
+                        result.append(True)
+                        qt_app.quit()
+                        return
             except Exception as exc:
                 result.append(exc)
                 qt_app.quit()

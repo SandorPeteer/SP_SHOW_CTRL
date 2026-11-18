@@ -120,7 +120,7 @@ ApplicationWindow {
                     }
                 }
                 Caption {
-                    visible: live && !!operatorBridge.previews.live
+                    visible: live && (!!operatorBridge.previews.live || !!(screen.ui.projectionClock && screen.ui.projectionClock.label))
                     color: screen.mint
                     text: screen.ui.projectionClock && screen.ui.projectionClock.label
                           ? screen.ui.projectionClock.label : "● Live"
@@ -166,16 +166,25 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 readonly property var bars: operatorBridge.waveform
-                Repeater {
-                    model: plot.bars
-                    delegate: Rectangle {
-                        required property var modelData
-                        required property int index
-                        x: index * plot.width / plot.bars.length
-                        width: Math.max(0.8, plot.width / plot.bars.length - 1)
-                        height: Math.max(1, plot.height * modelData.height)
-                        y: (plot.height - height) / 2
-                        color: modelData.color
+                Item {
+                    id: waveformGeometry
+                    width: 512
+                    height: 160
+                    transform: Scale {
+                        xScale: plot.width / waveformGeometry.width
+                        yScale: plot.height / waveformGeometry.height
+                    }
+                    Repeater {
+                        model: plot.bars
+                        delegate: Rectangle {
+                            required property var modelData
+                            required property int index
+                            x: index * waveformGeometry.width / plot.bars.length
+                            width: waveformGeometry.width * 0.65 / plot.bars.length
+                            height: Math.max(1, waveformGeometry.height * modelData.height)
+                            y: (waveformGeometry.height - height) / 2
+                            color: modelData.color
+                        }
                     }
                 }
                 Rectangle {
@@ -202,6 +211,12 @@ ApplicationWindow {
                 TapHandler {
                     onTapped: function(point) {
                         operatorBridge.press("seek", point.position.x / plot.width)
+                    }
+                }
+                TapHandler {
+                    acceptedButtons: Qt.RightButton | Qt.MiddleButton
+                    onTapped: function(point) {
+                        operatorBridge.press("mark_out", point.position.x / plot.width)
                     }
                 }
             }
