@@ -100,6 +100,8 @@ def rehearse(folder):
         with patch.object(OutputRunner, "ensure_window", slow_start):
             wait_for(lambda: pump(startup_entered.is_set), bool)
             assert app.activity_progress.winfo_viewable()
+            assert app.activity_frame.master == app.btn_output_fullscreen.master
+            assert app.activity_progress.winfo_rootx() < app.btn_output_fullscreen.winfo_rootx()
             progress = float(app.activity_progress["value"])
             wait_for(lambda: pump(lambda: float(app.activity_progress["value"])), lambda value: value != progress)
             assert app._starting_up

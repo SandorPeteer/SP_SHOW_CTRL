@@ -3283,17 +3283,26 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._busy_jobs[job] = message
         else:
             self._busy_jobs.pop(job, None)
-        caption = next((self._busy_jobs[key] for key in
-                        ("startup", "open", "save", "download", "ppt", "wave-A", "duration", "analysis")
-                        if key in self._busy_jobs), "")
-        self.var_activity.set(caption or self._callback_notice)
-        self.activity_label.configure(style="Alert.TLabel" if not caption and self._callback_notice else "Activity.TLabel")
         if self._busy_jobs and not was_busy:
             self.activity_progress.grid()
             self.activity_progress.start(24)
         elif was_busy and not self._busy_jobs:
             self.activity_progress.stop()
             self.activity_progress.grid_remove()
+        self._render_activity()
+
+    def _render_activity(self):
+        caption = next((self._busy_jobs[key] for key in
+                        ("startup", "open", "save", "download", "ppt", "wave-A", "duration", "analysis")
+                        if key in self._busy_jobs), "")
+        alert = not caption and self._callback_notice
+        self.var_activity.set(caption or self._callback_notice)
+        self.activity_label.configure(style="Alert.TLabel" if alert else "Activity.TLabel")
+        if caption or alert:
+            if self.activity_frame.winfo_manager() != "pack":
+                self.activity_frame.pack(side="right", padx=(0, 10))
+        else:
+            self.activity_frame.pack_forget()
 
     def _startup_sequence(self) -> None:
         self._set_busy("startup", "Checking playback tools…")
@@ -4560,10 +4569,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             _append_app_log("".join(traceback.format_exception(exc, val, tb)))
         except Exception:
             pass
-        self._callback_notice = f"Control error · {type(val).__name__} · see App settings → Logs"
-        if hasattr(self, "activity_label") and not self._busy_jobs:
-            self.activity_label.configure(style="Alert.TLabel")
-            self.var_activity.set(self._callback_notice)
+        self._callback_notice = "Control error · see Logs"
+        if hasattr(self, "activity_label"):
+            self._render_activity()
 
 
     def _copy_log(self) -> None:
@@ -5268,7 +5276,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         root.pack(fill="both", expand=True)
 
         filebar = ttk.Frame(root, style="Shell.TFrame")
-        filebar.pack(fill="x")
+        filebar.pack(fill="x", pady=(0, 8))
         ttk.Label(filebar, text="SP Show Control", style="AppTitle.TLabel").pack(side="left", padx=(0, 12))
         self.var_showfile = tk.StringVar(value="")
         self.var_presentation_btn = tk.StringVar(value="Fullscreen")
@@ -5292,17 +5300,16 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.bind(f"<{shortcut}-s>", lambda _e: self._save_show())
         self.bind(f"<{shortcut}-o>", lambda _e: self._open_show())
 
-        activity = ttk.Frame(root, style="Shell.TFrame")
-        activity.pack(fill="x", pady=(2, 5))
-        activity.columnconfigure(0, weight=1)
+        self.activity_frame = ttk.Frame(filebar, style="Shell.TFrame")
         self.var_activity = tk.StringVar(value=self._busy_jobs["startup"])
-        self.activity_label = ttk.Label(activity, textvariable=self.var_activity, style="Activity.TLabel",
-                                        width=1, anchor="w")
-        self.activity_label.grid(row=0, column=0, sticky="ew")
-        self.activity_progress = ttk.Progressbar(activity, orient="horizontal", mode="indeterminate",
-                                                 style="Activity.Horizontal.TProgressbar", length=145)
-        self.activity_progress.grid(row=0, column=1, padx=(10, 0))
+        self.activity_label = ttk.Label(self.activity_frame, textvariable=self.var_activity, style="Activity.TLabel",
+                                        width=24, anchor="e")
+        self.activity_label.grid(row=0, column=0, sticky="e")
+        self.activity_progress = ttk.Progressbar(self.activity_frame, orient="horizontal", mode="indeterminate",
+                                                 style="Activity.Horizontal.TProgressbar", length=68)
+        self.activity_progress.grid(row=0, column=1, padx=(6, 0))
         self.activity_progress.start(24)
+        self._render_activity()
 
         workspace = ttk.Frame(root, style="Shell.TFrame")
         workspace.pack(fill="both", expand=True)
