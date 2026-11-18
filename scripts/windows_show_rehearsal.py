@@ -389,6 +389,15 @@ def rehearse(folder):
         assert_slide("0001.png")
         app._ppt_next_ui()
         assert_slide("0002.mp4")
+        # A new explicit Show restores the operator's saved Slide audio choice.
+        # Hand it back to A before testing that Mix itself starts nothing.
+        wait_for(lambda: pump(lambda: app._paused_state_for_deck("A")), bool)
+        assert not app.audio_runner.is_playing() and visual.get_property("mute") is False
+        assert app._ppt_sound_preference
+        app._transport_play_pause("A")
+        wait_for(lambda: pump(audio_time), lambda value: isinstance(value, (int, float)))
+        assert visual.get_property("mute") is True and not app.var_ppt_sound.get()
+        routing_evidence["new_show_restored_slide_audio_preference"] = True
         app._toggle_audio_mix()
         assert app.audio_mix and visual.get_property("mute") is True
         assert app.audio_runner.is_playing()
@@ -428,6 +437,8 @@ def rehearse(folder):
         print("PASS: explicit Mix advanced both real clocks/meters; Mix OFF kept the last source; toggle/End never auto-resumed A")
 
         # Restore the silent video fixture for the remaining aspect/presenter tests.
+        app.var_ppt_sound.set(False)
+        app._ppt_apply_sound()
         app._selected_b = 2
         app.btn_play_b.invoke()
         assert_slide("0001.png")
