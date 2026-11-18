@@ -37,6 +37,8 @@ class AudioRoutingTests(unittest.TestCase):
         a.play.side_effect = lambda *args, **kwargs: self.calls.append(("A", "play"))
         b.owner_deck = "B"
         b.is_playing.return_value = True
+        b.is_paused.return_value = False
+        b.current_cue.return_value = Cue(id="projection", path="slide.mp4", kind="video")
         b._sess.is_alive.return_value = True
         b._sess.set_property.side_effect = lambda name, value: self.calls.append(("B", name, value)) or True
         self.app = SimpleNamespace(audio_runner=a, video_runner=b, audio_mix=False,
@@ -51,6 +53,7 @@ class AudioRoutingTests(unittest.TestCase):
         for name in ("_audio_route_error", "_pause_audio_for_presentation", "_prepare_audio_source",
                      "_mute_presentation_for_audio", "_audio_source_started", "_toggle_audio_mix",
                      "_reset_audio_routing", "_active_audio_meter", "_ppt_apply_sound",
+                     "_apply_projection_sound", "_toggle_projection_sound",
                      "_paused_state_for_deck", "_set_paused_state_for_deck"):
             setattr(self.app, name, MethodType(getattr(App, name), self.app))
 
@@ -60,6 +63,132 @@ class AudioRoutingTests(unittest.TestCase):
         self.assertLess(self.calls.index(("A", "pause", True)), self.calls.index(("A", "stop")))
         self.assertLess(self.calls.index(("A", "stop")), self.calls.index(("B", "mute", False)))
         self.assertEqual(self.app._last_audio_source, "B")
+
+    def test_direct_video_uses_projection_sound_and_cue_volume(self):
+        self.app._ppt_running = False
+        self.app.video_runner.current_cue.return_value.volume_percent = 37
+        self.assertTrue(self.app._ppt_apply_sound())
+        self.assertEqual(self.app._paused_a, ("audio", 4.25))
+        self.assertIn(("B", "volume", 37), self.calls)
+        self.assertLess(self.calls.index(("A", "stop")), self.calls.index(("B", "mute", False)))
+        self.assertEqual(self.app._last_audio_source, "B")
+
+    def test_direct_video_sound_off_keeps_picture_and_does_not_resume_audio(self):
+        self.app._ppt_running = False
+        self.app.var_ppt_sound.set(False)
+        self.assertTrue(self.app._ppt_apply_sound())
+        self.assertEqual(self.calls, [("B", "mute", True)])
+        self.app.video_runner.stop.assert_not_called()
+        self.app.video_runner.play_for_deck.assert_not_called()
+        self.app.audio_runner.play.assert_not_called()
+        self.app.audio_runner.play_at.assert_not_called()
+
+    def test_sound_on_at_matching_video_eof_only_arms_preference(self):
+        app = self.app
+        cue = app.video_runner.current_cue()
+        app._ppt_running = False
+        app.var_ppt_sound.set(False)
+        app._ppt_sound_preference = False
+        app.video_runner.is_playing.return_value = False
+        app.video_runner._sess.observed.return_value = (cue.path, True)
+        self.assertTrue(app._toggle_projection_sound())
+        self.assertTrue(app.var_ppt_sound.get())
+        self.assertTrue(app._ppt_sound_preference)
+        self.assertEqual(app._last_audio_source, "A")
+        self.assertEqual(self.calls, [], "EOF Sound on must not pause A or mutate the held B frame")
+        app.video_runner.stop.assert_not_called()
+        app.video_runner.play_for_deck.assert_not_called()
+        app.video_runner._sess.loadfile.assert_not_called()
+
+    def test_old_or_missing_eof_path_cannot_block_new_video_sound(self):
+        for observed in (("previous.mp4", True), (None, True), ("slide.mp4", False), ("slide.mp4", None)):
+            with self.subTest(observed=observed):
+                self.setUp()
+                app = self.app
+                app._ppt_running = False
+                app.video_runner._sess.observed.return_value = observed
+                self.assertTrue(app._apply_projection_sound())
+                self.assertIn(("A", "pause", True), self.calls)
+                self.assertIn(("B", "mute", False), self.calls)
+                self.assertEqual(app._last_audio_source, "B")
+
+    def test_direct_video_audio_can_mix_with_audio_deck(self):
+        self.app._ppt_running = False
+        self.app.audio_mix = True
+        self.assertTrue(self.app._ppt_apply_sound())
+        self.assertNotIn(("A", "stop"), self.calls)
+        self.assertIn(("B", "mute", False), self.calls)
+        self.assertEqual(self.app._last_audio_source, "B")
+
+    def test_projection_sound_can_be_armed_before_loading_without_starting_audio(self):
+        self.app.video_runner.owner_deck = None
+        self.app.var_ppt_sound.set(False)
+        self.app._ppt_sound_preference = False
+        self.assertTrue(self.app._toggle_projection_sound())
+        self.assertTrue(self.app.var_ppt_sound.get())
+        self.assertTrue(self.app._ppt_sound_preference)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.app._last_audio_source, "A")
+
+    def test_projection_sound_failed_ack_restores_the_switch_and_preference(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                self.setUp()
+                self.app._ppt_running = False
+                self.app.var_ppt_sound.set(enabled)
+                self.app._ppt_sound_preference = enabled
+                self.app.video_runner._sess.set_property.side_effect = lambda *_: False
+                self.assertFalse(self.app._toggle_projection_sound())
+                self.assertEqual(self.app.var_ppt_sound.get(), enabled)
+                self.assertEqual(self.app._ppt_sound_preference, enabled)
+                self.assertEqual(self.app._last_audio_source, "A")
+
+    def test_still_image_does_not_pause_audio_or_claim_mix_priority(self):
+        self.app.video_runner.current_cue.return_value = Cue(id="still", path="still.png", kind="image")
+        self.assertTrue(self.app._apply_projection_sound())
+        self.assertEqual(self.calls, [("B", "mute", True)])
+        self.assertEqual(self.app._last_audio_source, "A")
+
+    def test_explicit_video_show_restores_sound_but_auto_show_cannot_reclaim_it(self):
+        for automatic in (False, True):
+            with self.subTest(automatic=automatic):
+                self.setUp()
+                app = self.app
+                app._ppt_running = False
+                app.var_ppt_sound.set(False)  # A has temporarily taken audio.
+                app._audio_auto_start = automatic
+                app._loop_b_enabled = False
+                app._visuals_autoplay_indices = Mock(return_value=[])
+                video = app.video_runner.current_cue.return_value
+                app._selected_cue_for_deck.return_value = video
+                app.video_runner.play_for_deck.side_effect = lambda *_: self.calls.append(("B", "load"))
+                App._transport_play_pause(app, "B")
+                self.assertIn(("B", "load"), self.calls)
+                app._record_playback_origin.assert_called_with("B", video)
+                self.assertEqual(app.var_ppt_sound.get(), not automatic)
+                if automatic:
+                    self.assertNotIn(("A", "stop"), self.calls)
+                    self.assertNotIn(("B", "mute", False), self.calls)
+                    self.assertEqual(app._last_audio_source, "A")
+                else:
+                    self.assertLess(self.calls.index(("A", "stop")), self.calls.index(("B", "load")))
+                    self.assertIn(("B", "mute", False), self.calls)
+                    self.assertEqual(app._last_audio_source, "B")
+
+    def test_video_repeat_keeps_sound_without_changing_mix_priority(self):
+        app = self.app
+        app._ppt_running = False
+        app.audio_mix = True
+        app._inhibit_auto_advance = False
+        video = app.video_runner.current_cue.return_value
+        app._cues_b, app._selected_b = [video], 0
+        app.video_runner.last_exit_code = 0
+        app._loop_enabled_for_deck = Mock(return_value=True)
+        App._handle_runner_finished(app, "B", app.video_runner)
+        app.video_runner.play_for_deck.assert_called_once_with("B", video, volume_override=video.volume_percent)
+        self.assertIn(("B", "mute", False), self.calls)
+        self.assertNotIn(("A", "stop"), self.calls)
+        self.assertEqual(app._last_audio_source, "A")
 
     def test_failed_pause_or_stop_does_not_unmute_presentation(self):
         for fail in ("pause", "stop", "clock"):

@@ -40,6 +40,7 @@ def controller_worker(connection):
         "b_add": app._add_media_b, "b_remove": app._remove_b,
         "b_up": lambda: app._move_b(-1), "b_down": lambda: app._move_b(1),
         "b_tools": lambda: show_tools(app.projection_tools, app.tabs_b, app.tab_b_ppt),
+        "b_sound": app._toggle_projection_sound,
         "download": lambda: show_tools(app.projection_tools, app.tabs_b, app.tab_b_download),
         "b_play": app._play_deck_b, "b_stop": app._stop_deck_b, "b_repeat": lambda: app._toggle_loop("B"),
         "slide_prev": app._ppt_prev_ui, "slide_next": app._ppt_next_ui,
@@ -101,6 +102,10 @@ def controller_worker(connection):
             actions[name]()
         elif name == "window":
             app._operator_hwnd = int(value)
+        elif name == "b_seek":
+            app._seek_projection(value)
+        elif name == "b_still":
+            app._set_standby_cue(value)
         elif name == "scene":
             if 0 <= value < len(app._scenes):
                 app.scene_listbox.select(value)
@@ -141,6 +146,7 @@ def controller_worker(connection):
 
     def cue_rows(deck, cues, tree, selected, checkbox, checked):
         return [dict(id=cue.id, name=cue.display_name(), kind=cue.kind, armed=cue.auto_play,
+                     standby=deck == "B" and cue.id == app._standby_cue_id,
                      selected=index == selected, role=tree.emphasis.get(str(index), ""),
                      detail=tree.set(str(index), "duration") if tree.exists(str(index)) else "",
                      checkbox=checkbox, checked=index in checked)
@@ -204,6 +210,10 @@ def controller_worker(connection):
             "projection": cue_rows("B", app._cues_b, app.tree_b, app._selected_b, app._checkbox_mode_b, app._checked_cues_b),
             "waveform": bars or [], "waveLoading": bars is None, "time": countdown,
             "vu": app._active_audio_meter(), "audioMix": app.audio_mix,
+            "projectionSound": bool(app.var_ppt_sound.get()),
+            "projectionTimeline": app._projection_timeline(),
+            "audioPlaying": app._transport_is_active("A"),
+            "projectionPlaying": app._transport_is_active("B"),
             "duration": app.var_wave_duration.get(), "source": app.var_wave_source.get(),
             "selectedIsVideo": bool(selected and selected.kind == "video"),
             "audioOnly": bool(selected and selected.kind == "video" and selected.video_mode == "audio_only"),

@@ -1,7 +1,7 @@
 """Transport state must follow the media engine, including failed IPC and final frames."""
 from pathlib import Path
 import sys
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -16,6 +16,89 @@ class PlaybackStateTests(unittest.TestCase):
         self.session = self.output._sess = Mock()
         self.session.consume_end_info.return_value = None
         self.session.set_property.return_value = True
+
+    def projection_controller(self):
+        self.output.owner_deck = "B"
+        self.output._playing_cue = Cue(id="B-video", path="movie.mp4", kind="video", start_sec=10, stop_at_sec=30)
+        self.session.is_playing.return_value = True
+        self.session.observed.return_value = ("movie.mp4", 15.0, 60.0)
+        app = SimpleNamespace(video_runner=self.output, _callback_notice="", _render_activity=Mock(), _log=Mock(),
+                              audio_mix=True, _last_audio_source="A", audio_runner=Mock(is_playing=Mock(return_value=False)))
+        for name in ("_projection_timeline", "_seek_projection", "_audio_route_error", "_transport_is_active"):
+            setattr(app, name, MethodType(getattr(App, name), app))
+        return app
+
+    def test_projection_timeline_uses_real_clock_and_cue_in_out(self):
+        app = self.projection_controller()
+        timeline = app._projection_timeline()
+        self.assertTrue(timeline["available"])
+        self.assertEqual((timeline["position"], timeline["start"], timeline["end"]), (15, 10, 30))
+        self.assertEqual(timeline["fraction"], .25)
+        self.assertEqual((timeline["elapsed"], timeline["remaining"], timeline["duration"]), ("0:05", "0:15", "0:20"))
+        self.session.get_property.assert_not_called()
+        for values in (("old.mp4", 15, 60), ("movie.mp4", None, 60), ("movie.mp4", float("nan"), 60)):
+            self.session.observed.return_value = values
+            self.assertFalse(app._projection_timeline()["available"])
+
+    def test_projection_seek_is_in_place_and_preserves_pause_mix_and_audio(self):
+        app = self.projection_controller()
+        self.output._paused = True
+        self.assertTrue(app._seek_projection(dict(cueId="B-video", path="movie.mp4", fraction=.75)))
+        self.session.set_property.assert_called_once_with("time-pos", 25.0)
+        self.session.loadfile.assert_not_called()
+        self.assertTrue(self.output.is_paused())
+        self.assertTrue(app.audio_mix)
+        self.assertEqual(app._last_audio_source, "A")
+
+    def test_projection_seek_rejects_replaced_cues_and_invalid_positions(self):
+        app = self.projection_controller()
+        for value in (dict(cueId="old", path="movie.mp4", fraction=.5),
+                      dict(cueId="B-video", path="previous-slide.mp4", fraction=.5),
+                      dict(cueId="B-video", path="movie.mp4", fraction=float("nan"))):
+            self.assertFalse(app._seek_projection(value))
+        self.output.owner_deck = "A"
+        self.assertFalse(app._seek_projection(dict(cueId="B-video", path="movie.mp4", fraction=.5)))
+        self.session.set_property.assert_not_called()
+
+    def test_projection_seek_failure_is_visible_and_does_not_fabricate_position(self):
+        app = self.projection_controller()
+        self.session.set_property.return_value = False
+        self.assertFalse(app._seek_projection(dict(cueId="B-video", path="movie.mp4", fraction=.8)))
+        self.assertIn("not acknowledged", app._callback_notice)
+        self.assertEqual(app._projection_timeline()["position"], 15.0)
+
+    def test_transport_highlights_only_a_matching_running_decoder(self):
+        app = self.projection_controller()
+        for deck in ("A", "B"):
+            self.output.owner_deck = deck
+            for clock, active in ((("movie.mp4", 15, False, False, False), True),
+                                  (("movie.mp4", 15, True, True, False), False),
+                                  (("movie.mp4", 15, False, True, False), False),
+                                  (("old.mp4", 15, False, False, False), False),
+                                  (("movie.mp4", None, False, False, False), False),
+                                  (("movie.mp4", 30, False, False, True), False)):
+                with self.subTest(deck=deck, clock=clock):
+                    self.session.observed.return_value = clock
+                    self.assertEqual(app._transport_is_active(deck), active)
+            self.session.is_playing.return_value = False
+            self.assertFalse(app._transport_is_active(deck))
+            self.session.is_playing.return_value = True
+        self.session.get_property.assert_not_called()
+
+    def test_silent_running_audio_and_held_image_still_highlight_their_transport(self):
+        app = self.projection_controller()
+        app.audio_runner.is_playing.return_value = True
+        app.audio_runner.current_cue.return_value = Cue(id="A", path="silence.wav", kind="audio")
+        clock = app.audio_runner._media_clock
+        clock.is_playing.return_value = False  # A's non-owning observer has no process handle.
+        clock.observed.return_value = ("silence.wav", 2, False, False, False)
+        self.assertTrue(app._transport_is_active("A"))
+        clock.observed.return_value = ("silence.wav", 2, True, True, False)
+        self.assertFalse(app._transport_is_active("A"))
+        self.output._playing_cue = Cue(id="B", path="still.png", kind="image")
+        self.session.observed.return_value = ("still.png", None, False, True, False)
+        self.assertTrue(app._transport_is_active("B"))
+        self.assertFalse(app._projection_timeline()["available"])
 
     def test_pause_and_resume_change_state_only_after_acknowledgement(self):
         self.session.set_property.return_value = False

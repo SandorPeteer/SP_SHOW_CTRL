@@ -152,6 +152,26 @@ ApplicationWindow {
     Shortcut { sequence: "Left"; enabled: !!screen.ui.slides; onActivated: operatorBridge.press("slide_key", -1) }
     Shortcut { sequence: "Right"; enabled: !!screen.ui.slides; onActivated: operatorBridge.press("slide_key", 1) }
 
+    Menu {
+        id: projectionStillMenu
+        objectName: "projectionStillMenu"
+        parent: Overlay.overlay
+        property string targetCueId: ""
+        property bool marked: false
+        width: 180
+        background: Rectangle { color: screen.panel; radius: 5; border.color: screen.edge }
+        MenuItem {
+            id: stillAction
+            objectName: "projectionStillAction"
+            text: projectionStillMenu.marked ? "Clear Still" : "Use as Still"
+            enabled: projectionStillMenu.targetCueId !== ""
+            implicitHeight: 34
+            onTriggered: operatorBridge.press("b_still", projectionStillMenu.targetCueId)
+            contentItem: Text { text: stillAction.text; color: screen.ink; font.pixelSize: 13; verticalAlignment: Text.AlignVCenter }
+            background: Rectangle { color: stillAction.highlighted ? "#193747" : "transparent"; radius: 4 }
+        }
+    }
+
     component Glyph: Image {
         property string symbol
         property color tone: screen.ink
@@ -451,6 +471,7 @@ ApplicationWindow {
         required property var rows
         required property var editButtons
         required property Component transport
+        readonly property var projectionTime: screen.ui.projectionTimeline || ({available: false})
         ColumnLayout {
             anchors.fill: parent
             anchors.margins: 7
@@ -458,7 +479,7 @@ ApplicationWindow {
             RowLayout {
                 objectName: "cueHeader_" + card.deck
                 Layout.fillWidth: true
-                Caption { text: heading; color: screen.ink; font.weight: Font.DemiBold; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                Caption { objectName: "cueTitle_" + card.deck; text: heading; color: screen.ink; font.weight: Font.DemiBold; Layout.fillWidth: true; Layout.minimumWidth: 0 }
                 KeyButton {
                     objectName: "audioOnlyButton"
                     visible: card.deck === "a" && !!screen.ui.selectedIsVideo
@@ -467,6 +488,16 @@ ApplicationWindow {
                     base: screen.ui.audioOnly ? screen.cyan : "#1c2938"
                     tone: screen.ui.audioOnly ? "#07131d" : screen.ink
                     line: screen.ui.audioOnly ? screen.cyan : screen.edge
+                }
+                KeyButton {
+                    objectName: card.deck === "b" ? "projectionSoundButton" : ""
+                    visible: card.deck === "b"
+                    label: screen.ui.projectionSound ? "Sound on" : "Sound off"
+                    showLabel: true; command: "b_sound"
+                    implicitHeight: 25
+                    base: screen.ui.projectionSound ? screen.violet : "#1c2938"
+                    tone: screen.ui.projectionSound ? "#07131d" : screen.ink
+                    line: screen.ui.projectionSound ? screen.violet : screen.edge
                 }
                 Repeater {
                     model: card.editButtons
@@ -500,6 +531,7 @@ ApplicationWindow {
                         id: row
                         required property var modelData
                         required property int index
+                        objectName: "cueRow_" + card.deck + "_" + (modelData.id || index)
                         width: ListView.view.width
                         height: Math.max(34, rowName.implicitHeight + 13)
                         readonly property color accent: modelData.role === "playing" ? screen.mint :
@@ -510,8 +542,20 @@ ApplicationWindow {
                         Rectangle { anchors.bottom: parent.bottom; height: 1; width: parent.width; color: "#1f2c3c" }
                         MouseArea {
                             anchors.fill: parent
-                            onClicked: operatorBridge.press(card.deck === "scene" ? "scene" : card.deck + "_select", row.index)
-                            onDoubleClicked: if (card.deck !== "scene") screen.action(card.deck + "_play")
+                            acceptedButtons: card.deck === "b" ? Qt.LeftButton | Qt.RightButton : Qt.LeftButton
+                            onClicked: function(mouse) {
+                                if (mouse.button === Qt.RightButton) {
+                                    projectionStillMenu.targetCueId = row.modelData.id || ""
+                                    projectionStillMenu.marked = !!row.modelData.standby
+                                    const position = row.mapToItem(projectionStillMenu.parent, mouse.x, mouse.y)
+                                    projectionStillMenu.x = position.x
+                                    projectionStillMenu.y = position.y
+                                    projectionStillMenu.open()
+                                } else operatorBridge.press(card.deck === "scene" ? "scene" : card.deck + "_select", row.index)
+                            }
+                            onDoubleClicked: function(mouse) {
+                                if (mouse.button === Qt.LeftButton && card.deck !== "scene") screen.action(card.deck + "_play")
+                            }
                         }
                         RowLayout {
                             anchors.fill: parent
@@ -556,6 +600,13 @@ ApplicationWindow {
                                 elide: card.deck === "scene" ? Text.ElideNone : Text.ElideRight
                                 font.pixelSize: 13
                             }
+                            Rectangle {
+                                objectName: "standbyBadge_" + card.deck + "_" + (row.modelData.id || row.index)
+                                visible: card.deck === "b" && !!row.modelData.standby
+                                Layout.preferredWidth: 38; Layout.preferredHeight: 17
+                                radius: 3; color: "#2b2541"
+                                Caption { anchors.centerIn: parent; text: "STILL"; color: screen.violet; font.pixelSize: 9; font.weight: Font.DemiBold }
+                            }
                             Caption { visible: card.deck !== "scene"; text: row.modelData.detail || "" }
                         }
                     }
@@ -566,7 +617,63 @@ ApplicationWindow {
                     onDropped: function(drop) { if (drop.hasUrls) operatorBridge.drop(card.deck, drop.urls) }
                 }
             }
-            Loader { sourceComponent: card.transport; Layout.fillWidth: true }
+            Item {
+                objectName: card.deck === "b" ? "projectionTimeline" : ""
+                visible: card.deck === "b" && !!card.projectionTime.available
+                Layout.fillWidth: true
+                Layout.preferredHeight: 38
+                RowLayout {
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                    Caption { objectName: card.deck === "b" ? "projectionElapsed" : ""; text: card.projectionTime.elapsed || ""; font.pixelSize: 11 }
+                    Item { Layout.fillWidth: true }
+                    Caption { objectName: card.deck === "b" ? "projectionRemaining" : ""; text: card.projectionTime.remaining ? "−" + card.projectionTime.remaining : ""; font.pixelSize: 11 }
+                }
+                Slider {
+                    id: projectionSeek
+                    objectName: card.deck === "b" ? "projectionSeek" : ""
+                    Accessible.name: "Projection video position"
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                    height: 22; padding: 0
+                    from: 0; to: 1
+                    property var gestureSource: null
+                    property real gestureFraction: 0
+                    property bool gestureMoved: false
+                    function commit(source, fraction) {
+                        operatorBridge.press("b_seek", {cueId: source.cueId, path: source.path, fraction: fraction})
+                    }
+                    Binding {
+                        target: projectionSeek; property: "value"
+                        value: Math.max(0, Math.min(1, card.projectionTime.fraction || 0))
+                        when: !projectionSeek.pressed
+                        restoreMode: Binding.RestoreNone
+                    }
+                    onPressedChanged: {
+                        if (pressed) {
+                            gestureSource = {cueId: card.projectionTime.cueId, path: card.projectionTime.path}
+                            gestureFraction = value
+                            gestureMoved = false
+                        } else if (gestureSource) {
+                            if (gestureMoved) commit(gestureSource, gestureFraction)
+                            gestureSource = null
+                        }
+                    }
+                    onMoved: {
+                        if (pressed) { gestureFraction = value; gestureMoved = true }
+                        else commit(card.projectionTime, value)
+                    }
+                    background: Rectangle {
+                        x: projectionSeek.leftPadding; y: (projectionSeek.height - height) / 2
+                        width: projectionSeek.availableWidth; height: 3; radius: 1.5; color: screen.edge
+                        Rectangle { width: parent.width * projectionSeek.visualPosition; height: parent.height; radius: 1.5; color: screen.mint }
+                    }
+                    handle: Rectangle {
+                        x: projectionSeek.leftPadding + projectionSeek.visualPosition * (projectionSeek.availableWidth - width)
+                        y: (projectionSeek.height - height) / 2
+                        width: 10; height: 10; radius: 5; color: screen.mint
+                    }
+                }
+            }
+            Loader { objectName: "cueTransport_" + card.deck; sourceComponent: card.transport; Layout.fillWidth: true }
         }
     }
 
@@ -658,7 +765,14 @@ ApplicationWindow {
                     editButtons: [["add","Add media","a_add"],["remove","Remove media","a_remove"],
                                   ["up","Move item up","a_up"],["down","Move item down","a_down"],["settings","Media tools","a_tools"]]
                     transport: RowLayout {
-                        KeyButton { symbol: screen.ui.play === "Pause" ? "pause" : "play"; label: screen.ui.play || "Play"; showLabel: true; command: "a_play"; base: screen.ui.play === "Pause" ? screen.amber : screen.cyan; line: base; tone: "#07131d" }
+                        KeyButton {
+                            objectName: "playA"
+                            symbol: screen.ui.play === "Pause" ? "pause" : "play"
+                            label: screen.ui.play || "Play"; showLabel: true; command: "a_play"
+                            base: screen.ui.audioPlaying ? screen.cyan : "#1c2938"
+                            line: screen.ui.audioPlaying ? screen.cyan : screen.edge
+                            tone: screen.ui.audioPlaying ? "#07131d" : screen.ink
+                        }
                         KeyButton { symbol: "stop"; label: "Stop media"; command: "a_stop"; tone: screen.coral; base: "#331e2a"; line: "#754559" }
                         KeyButton { symbol: "repeat"; label: "Repeat media"; command: "a_repeat"; tone: screen.ui.repeatA ? screen.violet : screen.ink }
                         Item { Layout.fillWidth: true }
@@ -671,7 +785,13 @@ ApplicationWindow {
                                   ["up","Move item up","b_up"],["down","Move item down","b_down"],
                                   ["download","Downloads","download"],["settings","Projection tools","b_tools"]]
                     transport: RowLayout {
-                        KeyButton { symbol: "show"; label: "Show"; showLabel: true; command: "b_play"; base: screen.mint; line: screen.mint; tone: "#07131d" }
+                        KeyButton {
+                            objectName: "showB"; symbol: "show"
+                            label: "Show"; showLabel: true; command: "b_play"
+                            base: screen.ui.projectionPlaying ? screen.mint : "#1c2938"
+                            line: screen.ui.projectionPlaying ? screen.mint : screen.edge
+                            tone: screen.ui.projectionPlaying ? "#07131d" : screen.ink
+                        }
                         KeyButton { symbol: "previous"; label: "Previous slide"; command: "slide_prev"; tone: screen.violet }
                         KeyButton { symbol: "next"; label: "Next slide"; command: "slide_next"; tone: screen.violet }
                         KeyButton { symbol: "stop"; label: "Clear projection"; command: "b_stop"; tone: screen.coral; base: "#331e2a"; line: "#754559" }

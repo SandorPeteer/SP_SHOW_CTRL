@@ -1,9 +1,11 @@
 """Headless regression tests for modal answers and scene/show preservation."""
 import ast
 from collections import deque
+import json
 from pathlib import Path
 import queue
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -13,12 +15,12 @@ from operator_dialogs import OperatorDialogs
 import tkinter as tk
 
 
-def model_method(name):
+def model_method(name, **values):
     source = Path(__file__).resolve().parents[1] / "player.py"
     app = next(node for node in ast.parse(source.read_text(encoding="utf-8")).body
                if isinstance(node, ast.ClassDef) and node.name == "App")
     method = next(node for node in app.body if isinstance(node, ast.FunctionDef) and node.name == name)
-    namespace = {"sys": SimpleNamespace(platform="win32"), "messagebox": Mock()}
+    namespace = {"sys": SimpleNamespace(platform="win32"), "messagebox": Mock(), **values}
     exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
     return namespace[name], namespace["messagebox"]
 
@@ -232,6 +234,83 @@ class DialogTests(unittest.TestCase):
         self.assertEqual((app._selected_a, app._selected_b), (-1, -1))
         self.assertEqual(app._cues_a, [])
         self.assertEqual(app._cues_b, [])
+
+
+class MediaFolderTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.preferences = self.root / "settings.json"
+
+    def app(self):
+        class Settings:
+            def __init__(self, data=None):
+                self.startup_volume = (data or {}).get("startup_volume", 73)
+
+            def to_dict(self):
+                return {"startup_volume": self.startup_volume}
+
+            @staticmethod
+            def from_dict(data):
+                return Settings(data)
+
+        save, _ = model_method("_save_persistent_settings", json=json)
+        load, _ = model_method("_load_persistent_settings", json=json, Settings=Settings)
+        app = SimpleNamespace(settings=Settings(), _persistent_settings_path=lambda: self.preferences)
+        app._save_persistent_settings = lambda: save(app)
+        load(app)
+        return app
+
+    def picker(self, app, answer, title="Add Media", kind="open", **options):
+        dialogs = OperatorDialogs(app)
+        dialogs.request = Mock(return_value=answer)
+        result = dialogs.files(kind, title=title, multiple=kind == "open", **options)
+        self.assertEqual(result, answer)
+        return dialogs.request.call_args.args[0]
+
+    def test_media_a_folder_is_shared_with_b_and_survives_restart(self):
+        media = self.root / "árvíz media"
+        media.mkdir()
+        first = media / "audio.mp4"
+        first.touch()
+        app = self.app()
+        self.picker(app, [str(first)])
+        saved = json.loads(self.preferences.read_text(encoding="utf-8"))
+        self.assertEqual(saved["last_media_folder"], str(media))
+        self.assertEqual(saved["startup_volume"], 73)
+        self.assertEqual(self.picker(app, "", title="Add Visuals (Deck B)")["folder"], media.as_uri())
+        restarted = self.app()
+        self.assertEqual(self.picker(restarted, "", title="Add Visuals (Deck B)")["folder"], media.as_uri())
+        other = self.root / "visuals"
+        other.mkdir()
+        self.picker(restarted, [str(other / "slide.png")], title="Add Visuals (Deck B)")
+        self.assertEqual(self.picker(restarted, "")["folder"], other.as_uri())
+
+    def test_cancel_and_show_pickers_do_not_change_media_preference(self):
+        media = self.root / "media"
+        media.mkdir()
+        app = self.app()
+        self.picker(app, [str(media / "audio.mp4")])
+        before = self.preferences.read_bytes()
+        self.picker(app, "", initialdir=self.root)
+        self.picker(app, [], title="Add Visuals (Deck B)")
+        self.assertEqual(self.preferences.read_bytes(), before)
+        for kind, title in (("open", "Open show"), ("save", "Save show as")):
+            spec = self.picker(app, str(self.root / "show.json"), title=title, kind=kind, initialdir=self.root)
+            self.assertEqual(spec["folder"], self.root.as_uri())
+            self.assertEqual(self.preferences.read_bytes(), before)
+
+    def test_missing_remembered_media_folder_falls_back_without_forgetting_it(self):
+        missing = self.root / "unmounted drive"
+        self.preferences.write_text(json.dumps({"last_media_folder": str(missing), "startup_volume": 73}), encoding="utf-8")
+        before = self.preferences.read_bytes()
+        app = self.app()
+        spec = self.picker(app, "", initialdir=self.root)
+        self.assertEqual(spec["folder"], self.root.as_uri())
+        self.assertEqual(self.preferences.read_bytes(), before)
+        spec = self.picker(app, "", title="Add Visuals (Deck B)")
+        self.assertEqual(spec["folder"], Path.home().resolve().as_uri())
 
 
 if __name__ == "__main__":

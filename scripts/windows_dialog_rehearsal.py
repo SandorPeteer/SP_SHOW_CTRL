@@ -95,10 +95,36 @@ def exercise_dialogs(process, controller, folder, environment):
               dialog=dialog, monitor=str(controller_monitor))
         return dialog
 
-    def cancel_file(code, title, *, shift=False):
+    def check_native_folder(expected):
+        marker = "SP Show Control: waiting for native folder"
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardText(marker, win32con.CF_UNICODETEXT)
+        finally:
+            win32clipboard.CloseClipboard()
+        key(ord("D"), win32con.VK_MENU)
+        key(ord("C"), win32con.VK_CONTROL)
+        def copied_address():
+            try:
+                win32clipboard.OpenClipboard()
+                try:
+                    return win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
+                finally:
+                    win32clipboard.CloseClipboard()
+            except Exception:
+                return None  # The shell may briefly own the clipboard while copying.
+        address = wait(copied_address, lambda text: text and text != marker)
+        assert Path(address).resolve() == Path(expected).resolve(), ("Unexpected media folder", address, str(expected))
+        key(ord("N"), win32con.VK_MENU)
+        check("Native Add picker reopened the remembered media folder", folder=str(expected))
+
+    def cancel_file(code, title, *, shift=False, expected_folder=None):
         activate()
         key(code, win32con.VK_CONTROL, *([win32con.VK_SHIFT] if shift else []))
         dialog = native_dialog(title)
+        if expected_folder is not None:
+            check_native_folder(expected_folder)
         capture(title.lower().replace(" ", "-") + "-cancel")
         key(win32con.VK_ESCAPE)
         wait(lambda: not win32gui.IsWindowVisible(dialog))
@@ -106,10 +132,12 @@ def exercise_dialogs(process, controller, folder, environment):
         assert win32gui.IsWindowEnabled(controller)
         check(title + " Cancel returned focus")
 
-    def choose_file(code, title, destination, *, shift=False):
+    def choose_file(code, title, destination, *, shift=False, expected_folder=None):
         activate()
         key(code, win32con.VK_CONTROL, *([win32con.VK_SHIFT] if shift else []))
         dialog = native_dialog(title)
+        if expected_folder is not None:
+            check_native_folder(expected_folder)
         # The standard Windows file-name accelerator focuses the native field.
         key(ord("N"), win32con.VK_MENU)
         key(ord("A"), win32con.VK_CONTROL)
@@ -233,6 +261,12 @@ def exercise_dialogs(process, controller, folder, environment):
         wait(lambda: observer.get_property("path"), lambda value: value and value.endswith("logo.png"))
         wait(lambda: observer.get_property("video-params"))
         check("Dialog checks started with a decoded image in the real mpv output")
+        activate()
+        win32api.SetCursorPos((round(left + (right - left) * .8), round(first_row_y)))
+        win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
+        win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+        key(win32con.VK_DOWN)
+        key(win32con.VK_RETURN)
 
         new_dialog("new-show-keep")
         key(win32con.VK_ESCAPE)
@@ -256,6 +290,9 @@ def exercise_dialogs(process, controller, folder, environment):
         kept = folder / "kept-show.json"
         data = save_to(kept)
         assert len(data["cues_a"]) == len(data["cues_b"]) == len(data["scenes"]) == 1
+        assert data["playback"]["standby_cue_id"] == data["cues_b"][0]["id"]
+        capture("still-marked")
+        check("Actual Projection context menu marked Still and saved its media reference")
         kept_digest = hashlib.sha256(kept.read_bytes()).hexdigest()
         check("New/Open/Add/Save-as Cancel preserved both cue lists and the scene")
         new_dialog("new-show-keep-button")
@@ -265,7 +302,8 @@ def exercise_dialogs(process, controller, folder, environment):
         assert len(after_keep["cues_a"]) == len(after_keep["cues_b"]) == len(after_keep["scenes"]) == 1
         check("Keep show button retained both lists and the scene")
         choose_file(ord("A"), "Add Media", folder / "árvíz teszt.mp4", shift=True)
-        choose_file(ord("B"), "Add Visuals (Deck B)", app_path.parent / "_internal/assets/logo.png", shift=True)
+        choose_file(ord("B"), "Add Visuals (Deck B)", app_path.parent / "_internal/assets/logo.png",
+                    shift=True, expected_folder=folder)
         added = save_to(folder / "added-show.json")
         assert len(added["cues_a"]) == len(added["cues_b"]) == 2
         assert len({cue["path"] for cue in added["cues_a"]}) == 1
@@ -278,12 +316,14 @@ def exercise_dialogs(process, controller, folder, environment):
         time.sleep(0.4)
         empty = save_to(folder / "empty-show.json")
         assert not empty["cues_a"] and not empty["cues_b"] and len(empty["scenes"]) == 1
+        assert empty["playback"].get("standby_cue_id") is None
         assert hashlib.sha256(kept.read_bytes()).hexdigest() == kept_digest
         check("Confirmed New show cleared the active show and preserved the saved original")
         choose_file(ord("O"), "Open show", kept)
         wait(remembered_path, lambda value: value == kept, timeout=25)
         opened = save_to(folder / "opened-show.json")
         assert len(opened["cues_a"]) == len(opened["cues_b"]) == 1
+        assert opened["playback"]["standby_cue_id"] == data["playback"]["standby_cue_id"]
         saved_pointer_time = remembered.stat().st_mtime_ns
         key(ord("S"), win32con.VK_CONTROL)
         wait(lambda: remembered.stat().st_mtime_ns, lambda value: value != saved_pointer_time, timeout=25)
@@ -307,8 +347,10 @@ def exercise_dialogs(process, controller, folder, environment):
         # the next operator command can only run after that callback returns.
         wait(lambda: app_log.read_bytes()[log_offset:],
              lambda value: b"Loaded 1 cues to Deck A, 1 cues to Deck B" in value, timeout=35)
+        cancel_file(ord("A"), "Add Media", shift=True, expected_folder=app_path.parent / "_internal/assets")
         restored = save_to(folder / "restored-show.json")
         assert len(restored["cues_a"]) == len(restored["cues_b"]) == 1
+        assert restored["playback"]["standby_cue_id"] == data["playback"]["standby_cue_id"]
         assert restored["scenes"][0]["name"] == data["scenes"][0]["name"]
         check("Frozen EXE relaunch restored the last saved show")
         key(win32con.VK_F4, win32con.VK_MENU)

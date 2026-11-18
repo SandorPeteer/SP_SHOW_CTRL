@@ -328,6 +328,213 @@ class OperatorQmlTests(unittest.TestCase):
         finally:
             delete(engine)
 
+    def test_projection_still_context_menu_keeps_selection_and_dispatches_cue_id(self):
+        from operator_models import OperatorRows
+        from PySide6.QtCore import QPointF
+        from shiboken6 import delete
+        bridge = Bridge()
+        model = OperatorRows(bridge)
+        rows = [dict(id="playing", name="Playing video", kind="video", selected=True, role="playing", standby=False),
+                dict(id="background", name="Background image", kind="image", selected=False, role="", standby=False)]
+        model.set_rows(rows)
+        bridge.models = {"projection": model}
+        engine = QQmlApplicationEngine()
+        engine.addImageProvider("icon", EmptyImages())
+        engine.rootContext().setContextProperty("operatorBridge", bridge)
+        engine.load(QUrl.fromLocalFile(str(Path(__file__).resolve().parents[1] / "operator.qml")))
+        try:
+            window = engine.rootObjects()[0]
+            window.resize(900, 550)
+            window.requestActivate()
+            self.assertTrue(QTest.qWaitForWindowActive(window, 1000))
+            QTest.qWait(30)
+            def visual(name):
+                pending = [window.contentItem()]
+                while pending:
+                    item = pending.pop()
+                    if item.objectName() == name:
+                        return item
+                    pending.extend(item.childItems())
+                self.fail("Missing visible item " + name)
+            row = visual("cueRow_b_background")
+            selected = visual("cueRow_b_playing")
+            selected_color = selected.property("color")
+            target_color = row.property("color")
+            menu = window.findChild(QObject, "projectionStillMenu")
+            self.assertEqual(len(window.findChildren(QObject, "projectionStillMenu")), 1)
+            for marked in (False, True):
+                with self.subTest(marked=marked):
+                    model.set_rows([rows[0], dict(rows[1], standby=marked)])
+                    QTest.qWait(20)
+                    badge = visual("standbyBadge_b_background")
+                    self.assertEqual(badge.isVisible(), marked)
+                    if marked:
+                        pos = badge.mapToItem(row, QPointF())
+                        self.assertGreaterEqual(pos.x(), 0)
+                        self.assertLessEqual(pos.x() + badge.width(), row.width())
+                    bridge.commands.clear()
+                    point = row.mapToScene(QPointF(120, row.height() / 2)).toPoint()
+                    QTest.mouseClick(window, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier, point)
+                    QTest.qWait(20)
+                    self.assertTrue(menu.property("visible"))
+                    self.assertEqual(bridge.commands, [])
+                    self.assertEqual(selected.property("color"), selected_color)
+                    self.assertEqual(row.property("color"), target_color)
+                    action = window.findChild(QObject, "projectionStillAction")
+                    self.assertEqual(action.property("text"), "Clear Still" if marked else "Use as Still")
+                    point = action.mapToScene(QPointF(action.width() / 2, action.height() / 2)).toPoint()
+                    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+                    self.assertEqual(bridge.commands, [("b_still", "background")])
+                    self.assertEqual(badge.isVisible(), marked)  # Wait for backend acknowledgement.
+        finally:
+            delete(engine)
+
+    def test_transport_highlights_require_confirmed_playback_and_do_not_steal_focus(self):
+        from PySide6.QtCore import QPointF
+        from shiboken6 import delete
+        bridge = Bridge()
+        bridge.models = {deck: [dict(name="Selected cue", kind="video", selected=True, role="playing")]
+                         for deck in ("audio", "projection")}
+        engine = QQmlApplicationEngine()
+        engine.addImageProvider("icon", EmptyImages())
+        engine.rootContext().setContextProperty("operatorBridge", bridge)
+        engine.load(QUrl.fromLocalFile(str(Path(__file__).resolve().parents[1] / "operator.qml")))
+        try:
+            window = engine.rootObjects()[0]
+            window.resize(900, 550)
+            window.requestActivate()
+            self.assertTrue(QTest.qWaitForWindowActive(window, 1000))
+            QTest.qWait(30)
+            play = window.findChild(QObject, "playA")
+            show = window.findChild(QObject, "showB")
+            focus_target = window.findChild(QObject, "mixAudioButton")
+            for label, playing_a, playing_b, loading in (("Play", False, False, False),
+                    ("Pause", False, False, True), ("Resume", False, False, False),
+                    ("Pause", True, False, False), ("Play", False, True, False),
+                    ("Pause", True, True, False), ("Play", False, False, False)):
+                with self.subTest(label=label, a=playing_a, b=playing_b, loading=loading):
+                    focus_target.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+                    before_focus = window.activeFocusItem()
+                    bridge.current = dict(play=label, audioPlaying=playing_a, projectionPlaying=playing_b, busy=loading)
+                    bridge.stateChanged.emit()
+                    QTest.qWait(10)
+                    self.assertIs(window.activeFocusItem(), before_focus)
+                    self.assertEqual(play.property("label"), label)
+                    self.assertEqual(show.property("label"), "Show")
+                    for button, command, active, accent in ((play, "a_play", playing_a, "#59d8ff"),
+                                                           (show, "b_play", playing_b, "#57f3b9")):
+                        before = button.property("base")
+                        self.assertEqual(before.name(), accent if active else "#1c2938")
+                        self.assertEqual(button.property("tone").name(), "#07131d" if active else "#ecf5ff")
+                        point = button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint()
+                        QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+                        self.assertEqual(bridge.commands[-1], (command, None))
+                        self.assertEqual(button.property("base"), before)
+        finally:
+            delete(engine)
+
+    def test_projection_timeline_click_drag_identity_and_compact_layout(self):
+        from PySide6.QtCore import QPointF
+        from shiboken6 import delete
+        bridge = Bridge()
+        timeline = dict(available=True, position=35, start=10, end=110, fraction=0.25,
+                        elapsed="0:25", remaining="1:15", duration="1:40", cueId="video-1", path="/media/one.mp4")
+        bridge.current = {"projectionTimeline": timeline}
+        engine = QQmlApplicationEngine()
+        engine.addImageProvider("icon", EmptyImages())
+        engine.rootContext().setContextProperty("operatorBridge", bridge)
+        engine.load(QUrl.fromLocalFile(str(Path(__file__).resolve().parents[1] / "operator.qml")))
+        try:
+            window = engine.rootObjects()[0]
+            window.resize(900, 550)
+            window.requestActivate()
+            self.assertTrue(QTest.qWaitForWindowActive(window, 1000))
+            QTest.qWait(30)
+            strip = window.findChild(QObject, "projectionTimeline")
+            slider = window.findChild(QObject, "projectionSeek")
+            self.assertTrue(strip.isVisible())
+            self.assertEqual(window.findChild(QObject, "projectionElapsed").property("text"), "0:25")
+            self.assertEqual(window.findChild(QObject, "projectionRemaining").property("text"), "−1:15")
+            transport = window.findChild(QObject, "cueTransport_b")
+            self.assertLessEqual(strip.y() + strip.height(), transport.y())
+            self.assertGreaterEqual(slider.x(), 0)
+            self.assertLessEqual(slider.x() + slider.width(), strip.width())
+            live = window.findChild(QObject, "livePreviewPanel")
+            following = window.findChild(QObject, "nextPreviewPanel")
+            original_geometry = (live.width(), live.height(), following.width(), following.height())
+            self.assertEqual(original_geometry[:2], original_geometry[2:])
+            def point(fraction):
+                return slider.mapToScene(QPointF(5 + fraction * (slider.width() - 10), slider.height() / 2)).toPoint()
+            QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point(0.75))
+            self.assertEqual(len(bridge.commands), 1)
+            command, payload = bridge.commands[-1]
+            self.assertEqual(command, "b_seek")
+            self.assertEqual((payload["cueId"], payload["path"]), ("video-1", "/media/one.mp4"))
+            self.assertAlmostEqual(payload["fraction"], 0.75, delta=0.01)
+            bridge.commands.clear()
+            QTest.mousePress(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point(0.25))
+            QTest.mouseMove(window, point(0.80))
+            self.assertEqual(bridge.commands, [])  # One seek on release, not an IPC flood.
+            bridge.current = {"projectionTimeline": dict(timeline, cueId="video-2", path="/media/two.mp4", fraction=0.1)}
+            bridge.stateChanged.emit()
+            QTest.qWait(20)
+            self.assertAlmostEqual(slider.property("value"), 0.80, delta=0.01)
+            QTest.mouseRelease(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point(0.80))
+            self.assertEqual(len(bridge.commands), 1)
+            payload = bridge.commands[0][1]
+            self.assertEqual((payload["cueId"], payload["path"]), ("video-1", "/media/one.mp4"))
+            self.assertAlmostEqual(payload["fraction"], 0.80, delta=0.01)
+            bridge.current = {"projectionTimeline": {"available": False}}
+            bridge.stateChanged.emit()
+            QTest.qWait(20)
+            self.assertFalse(strip.isVisible())
+            self.assertEqual((live.width(), live.height(), following.width(), following.height()), original_geometry)
+        finally:
+            delete(engine)
+
+    def test_projection_sound_click_waits_for_backend_and_header_fits_at_900(self):
+        from PySide6.QtCore import QPointF
+        from shiboken6 import delete
+        bridge = Bridge()
+        bridge.current = {"projectionSound": False, "audioMix": False}
+        engine = QQmlApplicationEngine()
+        engine.addImageProvider("icon", EmptyImages())
+        engine.rootContext().setContextProperty("operatorBridge", bridge)
+        engine.load(QUrl.fromLocalFile(str(Path(__file__).resolve().parents[1] / "operator.qml")))
+        try:
+            window = engine.rootObjects()[0]
+            window.resize(900, 550)
+            window.requestActivate()
+            self.assertTrue(QTest.qWaitForWindowActive(window, 1000))
+            QTest.qWait(30)
+            button = window.findChild(QObject, "projectionSoundButton")
+            self.assertIsNotNone(button)
+            self.assertTrue(button.isVisible())
+            self.assertTrue(button.isEnabled())  # Available before any cue is loaded.
+            for enabled, mixed in ((False, False), (True, False), (True, True), (False, True)):
+                bridge.current = {"projectionSound": enabled, "audioMix": mixed}
+                bridge.stateChanged.emit()
+                QTest.qWait(20)
+                expected_label = "Sound on" if enabled else "Sound off"
+                self.assertEqual(button.property("label"), expected_label)
+                before = button.property("base")
+                self.assertEqual(before.name(), "#c3a3ff" if enabled else "#1c2938")
+                point = button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint()
+                QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+                self.assertEqual(bridge.commands[-1], ("b_sound", None))
+                self.assertEqual(button.property("label"), expected_label)
+                self.assertEqual(button.property("base"), before)
+                header = window.findChild(QObject, "cueHeader_b")
+                edge = 0
+                for item in sorted((item for item in header.childItems() if item.isVisible() and item.width() > 0), key=lambda item: item.x()):
+                    self.assertGreaterEqual(item.x(), edge - 0.5)
+                    self.assertLessEqual(item.x() + item.width(), header.width() + 0.5)
+                    edge = item.x() + item.width()
+                title = window.findChild(QObject, "cueTitle_b")
+                self.assertGreaterEqual(title.width(), title.implicitWidth() - 0.5)
+        finally:
+            delete(engine)
+
     def test_mix_button_waits_for_backend_and_fits_the_small_header(self):
         from PySide6.QtCore import QMetaObject
         from shiboken6 import delete

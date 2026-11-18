@@ -16,6 +16,8 @@ from windows_theme import MINT, VIOLET
 
 _PREVIEW_SIZE = (640, 360)
 _OVERRIDE_RATIOS = {"4:3": 4 / 3, "16:9": 16 / 9}
+_PREVIEW_SCALE = "scale=640:360:force_original_aspect_ratio=decrease:reset_sar=1"
+_PREVIEW_SEARCH_SECONDS = 5
 
 
 def _fit_size(width, height):
@@ -78,26 +80,12 @@ def _next_preview(frame, aspect):
     return ImageOps.contain(image, _PREVIEW_SIZE)
 
 
-def load_preview(path, ffmpeg, subprocess_kwargs, cancel=None, aspect="Source"):
-    path = Path(path)
-    poster = path.with_suffix(".preview.png")
-    if poster.is_file():
-        path = poster
-    try:
-        with Image.open(path) as frame:
-            return _next_preview(ImageOps.exif_transpose(frame), aspect)
-    except (OSError, ValueError):
-        pass
-    if not ffmpeg:
-        raise RuntimeError("Az FFmpeg nem található a csomagban.")
-    command = [
-        ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-threads", "1",
-        "-i", str(path), "-map", "0:v:0", "-an", "-frames:v", "1", "-threads", "1",
-        "-vf", "scale=640:360:force_original_aspect_ratio=decrease:reset_sar=1",
-        "-f", "image2pipe", "-vcodec", "png", "-",
-    ]
+def _decode_preview(command, subprocess_kwargs, cancel, deadline):
+    if cancel is not None and cancel.is_set():
+        return None
+    if time.monotonic() >= deadline:
+        raise TimeoutError("Az előnézet előállítása túllépte a 20 másodpercet.")
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **subprocess_kwargs) as process:
-        deadline = time.monotonic() + 20
         try:
             while True:
                 if cancel is not None and cancel.is_set():
@@ -112,8 +100,62 @@ def load_preview(path, ffmpeg, subprocess_kwargs, cancel=None, aspect="Source"):
             if process.poll() is None:
                 process.kill()
                 process.communicate()
-        if process.returncode or not output:
+        if process.returncode:
             raise RuntimeError(errors.decode(errors="replace").strip() or "Üres előnézet.")
+    return output
+
+
+def _mostly_black(frame):
+    sample = frame.convert("L")
+    sample.thumbnail((64, 36), Image.Resampling.BOX)
+    return sum(sample.histogram()[:18]) >= sample.width * sample.height * .98
+
+
+def load_preview(path, ffmpeg, subprocess_kwargs, cancel=None, aspect="Source"):
+    if cancel is not None and cancel.is_set():
+        return None
+    path = Path(path)
+    poster = path.with_suffix(".preview.png")
+    if poster.is_file():
+        path = poster
+    try:
+        with Image.open(path) as frame:
+            return _next_preview(ImageOps.exif_transpose(frame), aspect)
+    except (OSError, ValueError):
+        pass
+    if not ffmpeg:
+        raise RuntimeError("Az FFmpeg nem található a csomagban.")
+    command = [
+        ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-threads", "1", "-filter_threads", "1",
+        "-i", str(path), "-map", "0:v:0", "-an", "-frames:v", "1", "-threads", "1",
+        "-vf", _PREVIEW_SCALE, "-f", "image2pipe", "-vcodec", "png", "-",
+    ]
+    deadline = time.monotonic() + 20
+    output = _decode_preview(command, subprocess_kwargs, cancel, deadline)
+    if output is None:
+        return None
+    if not output:
+        raise RuntimeError("Üres előnézet.")
+    with Image.open(BytesIO(output)) as frame:
+        first = _next_preview(frame, aspect)
+    if not _mostly_black(first):
+        return first
+    # Preserve the fast first-frame path for ordinary clips and every explicit
+    # slide poster. Only a black opening warrants one bounded extra decode.
+    search = list(command)
+    at = search.index("-i")
+    search[at:at] = ["-t", str(_PREVIEW_SEARCH_SECONDS)]
+    search[search.index("-vf") + 1] = (
+        "fps=2," + _PREVIEW_SCALE + ",blackframe=amount=0:threshold=32,"
+        "metadata=mode=select:key=lavfi.blackframe.pblack:function=less:value=98")
+    try:
+        output = _decode_preview(search, subprocess_kwargs, cancel, deadline)
+    except (RuntimeError, TimeoutError):
+        return first
+    if output is None:
+        return None
+    if not output:
+        return first  # Entire search window was black, or the clip was too short.
     with Image.open(BytesIO(output)) as frame:
         return _next_preview(frame, aspect)
 

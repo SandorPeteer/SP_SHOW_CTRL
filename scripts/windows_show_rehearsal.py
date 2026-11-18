@@ -596,6 +596,112 @@ def rehearse(folder):
         assert app._ppt_index == paused_index
         app._ppt_end()
         print("PASS: four slides repeated twice in order; loop OFF retained manual control; lookahead wrapped to the first slide")
+
+        # Still is a return destination, not an implicit Show action. Keep the
+        # real A player paused throughout so no fallback can silently resume it.
+        app._transport_play_pause("A")
+        still_paused = wait_for(lambda: pump(lambda: app._paused_state_for_deck("A")), bool)
+        assert not app.audio_runner.is_playing()
+        assert not app._loop_b_enabled and not app.var_ppt_sound.get()
+        sound_preference = app._ppt_sound_preference
+        app._ppt_sound_preference = False
+
+        def select_projection(index):
+            app._selected_b = index
+            tree.selection_set(str(index))
+            tree.focus(str(index))
+            pump(lambda: None)
+
+        def wait_projection(path, *, playing=False):
+            wait_for(lambda: pump(current_slide), lambda value: value and Path(value).samefile(path))
+            if playing:
+                wait_for(lambda: pump(lambda: app._transport_is_active("B")), bool)
+            assert app._paused_state_for_deck("A") == still_paused
+            assert not app.audio_runner.is_playing()
+
+        def ready_context():
+            return app._selected_b, tree.selection(), tree.yview()
+
+        def finish_video():
+            # Seek only this test clip, then let the decoder reach its real EOF.
+            # No finish callback or EOF property is simulated by the rehearsal.
+            duration = visual.get_property("duration")
+            assert isinstance(duration, (int, float)) and duration > 0.5
+            assert visual.command(["seek", duration - 0.35, "absolute+exact"]).get("error") == "success"
+
+        select_projection(1)
+        app.btn_play_b.invoke()
+        wait_projection(clip, playing=True)
+        for i in range(40):
+            tree.insert("", "end", iid=f"still-scroll-{i}", values=("", "", i, "video", f"Still rehearsal {i}", "0:04"))
+        tree.yview_moveto(0.54)
+        pump(lambda: None)
+        ready = ready_context()
+        clock_before = visual.get_property("time-pos")
+        assert app._set_standby_cue("B1") and app._standby_cue_id == "B1"
+        wait_for(lambda: pump(lambda: visual.get_property("time-pos")),
+                 lambda value: isinstance(value, (int, float)) and value > clock_before + 0.1)
+        assert Path(visual.get_property("path")).samefile(clip)
+        assert app.video_runner.current_cue().id == "B2" and ready_context() == ready
+        # Automatic Still uses the current Sound switch, even if an explicit
+        # future Show would restore a different saved preference.
+        app._ppt_sound_preference = True
+        app.btn_play_b.invoke()
+        wait_projection(image)
+        assert app.video_runner.current_cue().id == "B1" and ready_context() == ready
+        assert not app.var_ppt_sound.get() and app._ppt_sound_preference
+        assert visual.get_property("mute") is True and not app._loop_b_enabled
+        app._ppt_sound_preference = False
+        select_projection(2)
+        app.btn_play_b.invoke()
+        wait_projection(sidecar / "0001.png")
+        assert app._ppt_running and app._ppt_cue.id == "B3" and app._ppt_index == 0
+        print("PASS: assigning Still did not start it; same-cue Show returned to it without moving the ready row/scroll; another selected Show started normally")
+
+        select_projection(1)
+        app.btn_play_b.invoke()
+        wait_projection(clip, playing=True)
+        select_projection(2)  # Ready PPT is not auto-enabled; EOF must return to Still.
+        ready = ready_context()
+        finish_video()
+        wait_projection(image)
+        assert not app._ppt_running and app.video_runner.current_cue().id == "B1"
+        assert ready_context() == ready
+        assert app._set_standby_cue("B3")
+        assert Path(visual.get_property("path")).samefile(image)
+        app.btn_stop_b.invoke()
+        wait_projection(sidecar / "0001.png")
+        assert app._ppt_running and app._ppt_cue.id == "B3" and app._ppt_index == 0
+        assert ready_context() == ready and not app.var_ppt_sound.get()
+        print("PASS: real video EOF returned to the image Still; Stop returned to the prepared PPT's first slide with ready selection and scroll intact")
+
+        assert app._set_standby_cue("B2")
+        app.btn_stop_b.invoke()
+        wait_projection(clip, playing=True)
+        assert not app._ppt_running and app._standby_active_cue_id == "B2"
+        assert visual.get_property("loop-file") in (False, "no")
+        assert visual.get_property("mute") is True and not app.var_ppt_sound.get()
+        finish_video()
+        wait_for(lambda: pump(lambda: visual.get_property("eof-reached")), bool)
+        eof_position = visual.get_property("time-pos")
+        hold = time.monotonic() + 0.7
+        while time.monotonic() < hold:
+            pump(lambda: None)
+            assert visual.get_property("eof-reached") is True
+            assert Path(visual.get_property("path")).samefile(clip)
+            assert abs(visual.get_property("time-pos") - eof_position) < 0.05
+            assert ready_context() == ready
+            assert app._paused_state_for_deck("A") == still_paused and not app.audio_runner.is_playing()
+            time.sleep(0.05)
+        assert not app._loop_b_enabled and not app.var_ppt_sound.get()
+        print("PASS: video Still obeyed Repeat OFF, held its final frame after real EOF, and never resumed paused music")
+        tree.delete(*(f"still-scroll-{i}" for i in range(40)))
+        assert app._set_standby_cue("B1")
+        app.btn_stop_b.invoke()
+        wait_projection(image)
+        app._ppt_sound_preference = sound_preference
+        app._transport_play_pause("A")
+        wait_for(lambda: pump(audio_time), lambda value: isinstance(value, (int, float)) and value > still_paused[1])
         from windows_downloader_rehearsal import exercise_downloader
         before = audio_time()
         exercise_downloader(app, folder, tools)
@@ -611,8 +717,10 @@ def rehearse(folder):
         app.var_ppt_interval.set("8")
         app.btn_save_show.invoke()
         wait_for(lambda: (app.update(), app._saving_show)[1], lambda busy: not busy)
+        assert json.loads(showfile.read_text(encoding="utf-8"))["playback"]["standby_cue_id"] == "B1"
         assert app._auto_open_last_show()
         assert app._show_path.samefile(showfile) and len(app._scenes) == 2
+        assert app._standby_cue_id == "B1" and app._standby_cue().kind == "image"
         assert app.var_ppt_interval.get() == "8"
         assert app._scenes[0].cue_ids_a == ["A1", "A2"] and app._scenes[1].cue_ids_a == ["A2"]
         first, second = app._cues_a
@@ -621,7 +729,7 @@ def rehearse(folder):
         saved_ppt = Path(app._cues_b[2].path)
         assert saved_ppt.with_name(saved_ppt.name + ".mpv").joinpath("0001.png").is_file()
         assert music.is_file() and ppt.is_file()
-        print("PASS: quick save and reopen preserve repeated cues, shared media and portable prepared slides")
+        print("PASS: quick save and reopen preserve repeated cues, shared media, portable prepared slides and the Still reference")
     except Exception:
         print("PPT status:", ascii(app.var_ppt_status.get()), flush=True)
         print("Recent events:", ascii(app._log_buffer[-10:]) if isinstance(app._log_buffer, list)

@@ -3156,11 +3156,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._ppt_index = 0
         self._ppt_seconds = []
         self._ppt_slide_started = 0.0
+        # One projection-audio permission for both direct videos and PPT media.
+        self.var_ppt_sound = tk.BooleanVar(value=False)
         if sys.platform == "win32":
             from ppt_media import SlidePreparer
             self._ppt_preparer = SlidePreparer(_user_data_dir() / "ppt-media-v1", self._ui_tasks)
             self.var_ppt_status = tk.StringVar(value="")
-            self.var_ppt_sound = tk.BooleanVar(value=False)
             self.var_ppt_interval = tk.StringVar(value="5")
         self._disp_apply_after_id: str | None = None
         self._wave_req_seq: dict[str, int] = {"A": 0, "B": 0}
@@ -3719,7 +3720,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._ppt_errors[path] = error
         self._update_ppt_activity(path)
         pending = self._ppt_pending
-        take = pending is not None and pending.path == path
+        take = (pending is not None and pending.path == path
+                and any(cue is pending for cue in self._all_cues_b))
         status = f"{Path(path).name} • " + (f"Error: {error}" if error else f"Ready ({len(files)} slides)")
         self._log(status)
         if take or (not self._ppt_running and not pending):
@@ -3801,28 +3803,115 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._show_mpv_slide(self._ppt_cue, self._ppt_slides, (self._ppt_index + 1) % len(self._ppt_slides))
 
     def _ppt_apply_sound(self, *, explicit=True):
-        if explicit:
-            self._ppt_sound_preference = bool(self.var_ppt_sound.get())
-        if self._ppt_running and self.video_runner.owner_deck == "B":
-            sess = self.video_runner._sess
-            if sess is not None:
-                audible = self.var_ppt_sound.get() and self._ppt_slides[self._ppt_index].suffix == ".mp4"
-                if not audible:
-                    if not sess.set_property("mute", True):
-                        return self._audio_route_error("Presentation mute was not acknowledged; audio is still enabled.")
-                    return True
-                if audible and not self.audio_mix and not self._pause_audio_for_presentation():
+        return self._apply_projection_sound(explicit=explicit)
+
+    def _toggle_projection_sound(self) -> bool:
+        previous = bool(self.var_ppt_sound.get())
+        preference = self._ppt_sound_preference
+        self.var_ppt_sound.set(not previous)
+        if self._apply_projection_sound():
+            return True
+        self.var_ppt_sound.set(previous)
+        self._ppt_sound_preference = preference
+        return False
+
+    def _projection_timeline(self) -> dict:
+        """Read the current B decoder clock; never poll IPC from the UI tick."""
+        out = self.video_runner
+        cue, sess = out.current_cue(), out._sess
+        if out.owner_deck != "B" or cue is None or cue.kind != "video" or sess is None or not sess.is_playing():
+            return {"available": False}
+        path, position, duration = sess.observed("path", "time-pos", "duration")
+        if (path != cue.path or not isinstance(position, (int, float))
+                or not isinstance(duration, (int, float))
+                or not math.isfinite(position) or not math.isfinite(duration)):
+            return {"available": False}
+        start = max(0.0, float(cue.start_sec))
+        end = min(float(duration), float(cue.stop_at_sec)) if cue.stop_at_sec is not None else float(duration)
+        if end <= start:
+            return {"available": False}
+        position = max(start, min(end, float(position)))
+        return dict(available=True, cueId=cue.id, path=cue.path, position=position, start=start, end=end,
+                    fraction=(position - start) / (end - start),
+                    elapsed=_format_timecode(position - start), remaining=_format_timecode(end - position),
+                    duration=_format_timecode(end - start))
+
+    def _transport_is_active(self, deck: str) -> bool:
+        """Highlight only media acknowledged as running by its decoder."""
+        media_clock = deck == "A" and self.audio_runner.is_playing()
+        if media_clock:
+            cue, sess = self.audio_runner.current_cue(), self.audio_runner._media_clock
+        elif self.video_runner.owner_deck == deck:
+            cue, sess = self.video_runner.current_cue(), self.video_runner._sess
+        else:
+            return False
+        # The A clock only observes a process owned by MediaRunner. Its own
+        # session has no process handle; output sessions own their player.
+        if cue is None or sess is None or (not media_clock and not sess.is_playing()):
+            return False
+        path, position, paused, idle, eof = sess.observed("path", "time-pos", "pause", "core-idle", "eof-reached")
+        if path != cue.path or paused is not False or eof is True:
+            return False
+        if cue.kind == "image":
+            return True  # A deliberately held still picture is on screen.
+        return idle is False and isinstance(position, (int, float)) and math.isfinite(position)
+
+    def _seek_projection(self, value) -> bool:
+        if not isinstance(value, dict):
+            return False
+        timeline = self._projection_timeline()
+        if (not timeline["available"] or value.get("cueId") != timeline["cueId"]
+                or value.get("path") != timeline["path"]):
+            return False  # The operator may have clicked just as the next cue took over.
+        fraction = value.get("fraction")
+        if isinstance(fraction, bool) or not isinstance(fraction, (int, float)) or not math.isfinite(fraction):
+            return False
+        position = timeline["start"] + max(0.0, min(1.0, float(fraction))) * (timeline["end"] - timeline["start"])
+        notice = "Projection seek was not acknowledged by the player."
+        # In-place seek preserves the existing decoder, pause, audio and Mix state.
+        if not self.video_runner._sess.set_property("time-pos", position):
+            return self._audio_route_error(notice)
+        if self._callback_notice == notice:
+            self._callback_notice = ""
+            self._render_activity()
+        return True
+
+    def _apply_projection_sound(self, *, explicit=True) -> bool:
+        """Apply the shared B audio permission without restarting its picture."""
+        enabled = bool(self.var_ppt_sound.get())
+        out = self.video_runner
+        cue = out.current_cue() if out.owner_deck == "B" else None
+        if cue is not None:
+            sess = out._sess
+            if sess is None:
+                return self._audio_route_error("Projection audio is unavailable; the sound setting was not applied.")
+            if (enabled and cue.kind == "video"
+                    and sess.observed("path", "eof-reached") == (cue.path, True)):
+                # Arm the next start without taking sound from A for a held
+                # final frame. EOF from a replaced/loading file is irrelevant.
+                if explicit:
+                    self._ppt_sound_preference = enabled
+                return True
+            audible = enabled and cue.kind == "video"
+            if not audible:
+                if not sess.set_property("mute", True):
+                    self.var_ppt_sound.set(True)
+                    return self._audio_route_error("Projection mute was not acknowledged; audio is still enabled.")
+            else:
+                if not self.audio_mix and not self._pause_audio_for_presentation():
                     self.var_ppt_sound.set(False)
                     return False
-                if not sess.set_property("volume", self.settings.startup_volume if audible else 0):
+                volume = self.settings.startup_volume if cue.volume_percent is None else cue.volume_percent
+                if not sess.set_property("volume", _clamp_int(int(volume), 0, 100)):
                     self.var_ppt_sound.set(False)
-                    return self._audio_route_error("Presentation volume was not acknowledged; audio handoff was cancelled.")
-                if not sess.set_property("mute", not audible):
+                    return self._audio_route_error("Projection volume was not acknowledged; audio handoff was cancelled.")
+                if not sess.set_property("mute", False):
                     self.var_ppt_sound.set(False)
-                    return self._audio_route_error("Presentation mute was not acknowledged; audio handoff was cancelled.")
-                if audible and explicit:
+                    return self._audio_route_error("Projection unmute was not acknowledged; audio handoff was cancelled.")
+                if explicit:
                     self._last_audio_source = "B"
-                return True
+        if explicit:
+            self._ppt_sound_preference = enabled
         return True
 
     def _clear_mpv_ppt(self):
@@ -5759,7 +5848,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if sys.platform == "win32":
             ppt_options = ttk.Frame(ppt_tab)
             ppt_options.pack(fill="x", pady=(4, 0))
-            ttk.Checkbutton(ppt_options, text="Slide audio", variable=self.var_ppt_sound,
+            ttk.Checkbutton(ppt_options, text="Projection audio", variable=self.var_ppt_sound,
                             command=self._ppt_apply_sound).pack(side="left")
             ttk.Spinbox(ppt_options, from_=0.5, to=3600, increment=0.5, width=7,
                         textvariable=self.var_ppt_interval).pack(side="right")
@@ -5830,6 +5919,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._selected_scene_idx: int = -1
         self._all_cues_a: list[Cue] = []  # Master list of all cues for deck A
         self._all_cues_b: list[Cue] = []  # Master list of all cues for deck B
+        self._standby_cue_id: str | None = None
+        self._standby_active_cue_id: str | None = None
+        self._standby_start_cue: Cue | None = None
 
         self._update_showfile_label()
         self._update_now_playing()
@@ -7231,6 +7323,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             for idx in to_remove:
                 if idx < len(self._cues_b):
                     removed_cue = self._cues_b[idx]
+                    if getattr(self, "_standby_cue_id", None) == removed_cue.id:
+                        self._standby_cue_id = None
+                    if getattr(self, "_ppt_pending", None) is removed_cue:
+                        self._ppt_pending = None
+                    current = self.video_runner.current_cue() if self.video_runner.owner_deck == "B" else None
+                    if current is not None and current.id == removed_cue.id:
+                        self._transport_stop("B")  # Deletion is cleanup, never a Still transition.
                     del self._cues_b[idx]
                     # Remove from master list
                     if removed_cue in self._all_cues_b:
@@ -7408,13 +7507,64 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._transport_play_pause("A")
 
     def _play_deck_b(self):
+        cue = self._selected_cue_for_deck("B")
+        current = self.video_runner.current_cue() if self.video_runner.owner_deck == "B" else None
+        if (not self._audio_auto_start and cue is not None and current is not None
+                and cue.id == current.id and getattr(self, "_standby_cue_id", None)
+                and (self._transport_is_active("B") or cue.id == self._standby_cue_id)):
+            self._return_to_standby()
+            return
+        self._standby_active_cue_id = None
         self._transport_play_pause("B")
 
     def _stop_deck_a(self):
         self._transport_stop("A")
 
     def _stop_deck_b(self):
+        if getattr(self, "_standby_cue_id", None) and self._return_to_standby():
+            return
         self._transport_stop("B")
+
+    def _standby_cue(self) -> Cue | None:
+        cue_id = getattr(self, "_standby_cue_id", None)
+        return next((cue for cue in self._all_cues_b
+                     if cue.id == cue_id and cue.kind in ("image", "video", "ppt")), None)
+
+    def _set_standby_cue(self, cue_id) -> bool:
+        if not isinstance(cue_id, str):
+            return False
+        cue = next((cue for cue in self._all_cues_b
+                    if cue.id == cue_id and cue.kind in ("image", "video", "ppt")), None)
+        if cue is None:
+            return False
+        self._standby_cue_id = None if getattr(self, "_standby_cue_id", None) == cue_id else cue_id
+        if getattr(self, "_standby_active_cue_id", None) != self._standby_cue_id:
+            self._standby_active_cue_id = None
+        self._log(f"Still: {cue.display_name()}" if self._standby_cue_id else "Still cleared")
+        return True
+
+    def _return_to_standby(self, *, restart=False) -> bool:
+        """Start the per-show fallback without changing the operator's ready row."""
+        cue = self._standby_cue()
+        if cue is None or getattr(self, "_standby_start_cue", None) is not None:
+            return False
+        current = self.video_runner.current_cue() if self.video_runner.owner_deck == "B" else None
+        if not restart and current is not None and current.id == cue.id:
+            session = self.video_runner._sess
+            held_end = session is not None and session.observed("path", "eof-reached") == (current.path, True)
+            if self._transport_is_active("B") or held_end:
+                self._standby_active_cue_id = cue.id
+                return True  # The Still's held final frame must not restart or go black.
+        previous_auto = self._audio_auto_start
+        self._standby_active_cue_id = cue.id
+        self._standby_start_cue = cue
+        self._audio_auto_start = True  # Keep the current Sound switch, not an old explicit-Show preference.
+        try:
+            self._transport_play_pause("B")
+        finally:
+            self._audio_auto_start = previous_auto
+            self._standby_start_cue = None
+        return True
 
     def _deck_runner(self, deck: str):
         return self.audio_runner if deck == "A" else self.video_runner
@@ -7424,6 +7574,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             if 0 <= self._selected_a < len(self._cues_a):
                 return self._cues_a[self._selected_a]
             return None
+        standby = getattr(self, "_standby_start_cue", None)
+        if standby is not None:
+            return standby
         if 0 <= self._selected_b < len(self._cues_b):
             return self._cues_b[self._selected_b]
         return None
@@ -7536,7 +7689,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if cue.kind != "video":
             return
 
-        # Resume visuals video/playlist (muted) and keep loop behavior on Deck B.
+        # Automatic picture restoration must not reclaim audio after an A take.
         start_idx: int | None = None
         try:
             idx = next((i for i, c in enumerate(self._cues_b or []) if c.id == cue.id), None)
@@ -7549,12 +7702,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             ids = self._visuals_autoplay_indices()
             if start_idx is None or start_idx not in ids:
                 start_idx = int(ids[0])
-            self._play_visuals_by_index(int(start_idx), log_action="Deck B: Restored visuals playlist")
+            self._play_visuals_by_index(int(start_idx), log_action="Deck B: Restored visuals playlist", explicit=False)
             restore_origin()
             return
 
         if start_idx is not None:
-            self._play_visuals_by_index(int(start_idx), log_action="Deck B: Restored visual video")
+            self._play_visuals_by_index(int(start_idx), log_action="Deck B: Restored visual video", explicit=False)
             restore_origin()
             return
 
@@ -7603,6 +7756,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         cue = self._selected_cue_for_deck(deck)
         if cue is None:
             return
+        if deck == "B" and getattr(self, "_standby_start_cue", None) is None:
+            self._standby_active_cue_id = None
 
         if sys.platform == "win32":
             if cue.kind == "ppt":
@@ -7612,7 +7767,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     deck == "A" and cue.kind == "video" and cue.video_mode == "output"):
                 self._clear_mpv_ppt()
 
-        # Deck B is visuals only (image/PPT).
+        # Deck B owns the projected picture, with opt-in audio for its videos.
         if deck == "B":
             if cue.kind == "ppt":
                 try:
@@ -7665,6 +7820,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             if cue.kind not in ("image", "video"):
                 return
             try:
+                if self.video_runner.owner_deck == "A" and not self._pause_audio_for_presentation(include_media=False):
+                    return
                 self._ppt_running = False
                 if cue.kind == "image":
                     self._last_visual_cue_id = str(cue.id)
@@ -7679,21 +7836,30 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     except Exception:
                         pass
                 else:
-                    # Visual video clip (muted) over Deck A music.
+                    explicit = not self._audio_auto_start
+                    if explicit:
+                        self.var_ppt_sound.set(self._ppt_sound_preference)
+                    if self.var_ppt_sound.get() and not self.audio_mix and not self._pause_audio_for_presentation():
+                        self.var_ppt_sound.set(False)
+                        return
+                    # Load silently first; only a confirmed handoff may unmute.
                     self.video_runner.play_for_deck("B", cue)  # type: ignore[attr-defined]
                     self._active_runner = self.video_runner
+                    self._apply_projection_sound(explicit=explicit)
                     self._log(f"Deck B: Playing visual video {Path(cue.path).name}")
                     # Apply mpv-side looping when looping a single file.
                     # If multiple auto-play videos are configured, keep mpv loop off and let the app drive playlist looping.
                     try:
                         sess = getattr(self.video_runner, "_sess", None)
                         if sess is not None:
-                            playlist_mode = bool(getattr(cue, "auto_play", False) and len(self._visuals_autoplay_indices()) >= 2)
+                            playlist_mode = bool(getattr(self, "_standby_start_cue", None) is None
+                                                 and getattr(cue, "auto_play", False) and len(self._visuals_autoplay_indices()) >= 2)
                             loop_file = bool(self._loop_b_enabled and not playlist_mode)
                             sess.set_property("loop-file", ("inf" if loop_file else "no"))
                     except Exception:
                         pass
                 self._record_playback_origin("B", cue)
+                self._suppress_finish.pop("B", None)
                 try:
                     self._last_output_owner = "B"
                     self._last_output_cue_id = str(cue.id)
@@ -7914,6 +8080,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
     def _transport_stop(self, deck: str) -> None:
         self._playback_origin.pop(deck, None)
         self._set_paused_state_for_deck(deck, None)
+        if deck == "B":
+            self._standby_active_cue_id = None
 
         if deck == "A":
             # Stop audio if playing
@@ -8008,7 +8176,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     sess = getattr(self.video_runner, "_sess", None)
                     if sess is not None:
                         # If multiple auto-play videos are configured, keep mpv loop off and let the app drive playlist looping.
-                        playlist_mode = bool(getattr(playing, "auto_play", False) and len(self._visuals_autoplay_indices()) >= 2)
+                        playlist_mode = bool(playing.id != getattr(self, "_standby_active_cue_id", None)
+                                             and getattr(playing, "auto_play", False) and len(self._visuals_autoplay_indices()) >= 2)
                         loop_file = bool(self._loop_b_enabled and not playlist_mode and not self._ppt_running)
                         sess.set_property("loop-file", ("inf" if loop_file else "no"))
         except Exception:
@@ -8050,7 +8219,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return int(ids[0])
         return None
 
-    def _play_visuals_by_index(self, idx: int, *, log_action: str | None = None, preserve_ready=False) -> None:
+    def _play_visuals_by_index(self, idx: int, *, log_action: str | None = None, preserve_ready=False, explicit=True) -> None:
         try:
             idx_i = int(idx)
         except Exception:
@@ -8075,11 +8244,14 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 self._log(str(log_action))
         except Exception:
             pass
+        previous_auto = self._audio_auto_start
+        self._audio_auto_start = previous_auto or not explicit
         try:
             self._transport_play_pause("B")
         except Exception:
             pass
         finally:
+            self._audio_auto_start = previous_auto
             if preserve_ready:
                 self._selected_b = ready
 
@@ -8560,6 +8732,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
     def _load_persistent_settings(self) -> None:
         """Load user-level settings (independent from presets)."""
+        self._last_media_folder = ""
         path = self._persistent_settings_path()
         try:
             if not path.exists():
@@ -8570,6 +8743,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return
+        remembered = data.get("last_media_folder", "") if isinstance(data, dict) else ""
+        self._last_media_folder = remembered if isinstance(remembered, str) else ""
         loaded = Settings.from_dict(data if isinstance(data, dict) else {})
         # Keep the current Settings instance (runners hold references to it).
         try:
@@ -8592,7 +8767,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception:
             return
         try:
-            path.write_text(json.dumps(self.settings.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+            data = self.settings.to_dict()
+            data["last_media_folder"] = self._last_media_folder
+            path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         except Exception:
             return
 
@@ -9433,6 +9610,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._transport_play_pause("B")
 
     def _stop(self) -> None:
+        self._standby_active_cue_id = None
         if sys.platform == "win32":
             self._ppt_end()
         self._inhibit_auto_advance = True
@@ -9809,6 +9987,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception:
             cue = None
 
+        if deck == "B" and cue is not None and cue.id == getattr(self, "_standby_active_cue_id", None):
+            # An idle Still never selects/starts a scene cue. Repeat off keeps
+            # mpv's final frame; Repeat on repeats only this fallback video.
+            if cue.kind == "video" and self._loop_b_enabled:
+                self._return_to_standby(restart=True)
+            return
+
         cues = self._cues_a if deck == "A" else self._cues_b
         if cue is not None and not self._playback_scene_matches(deck, cue.id):
             return  # Shared cues still belong to the scene that actually started them.
@@ -9837,6 +10022,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 # OutputRunner must be re-triggered with the correct owner deck.
                 if runner == self.video_runner and cue.kind == "video":
                     self.video_runner.play_for_deck(deck, cue, volume_override=cue.volume_percent)  # type: ignore[attr-defined]
+                    if deck == "B":
+                        self._apply_projection_sound(explicit=False)
                     self._was_playing_b = True
                 else:
                     runner.play(cue)
@@ -9862,12 +10049,14 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 try:
                     next_cue = self._cues_b[int(next_idx)]
                     self._play_visuals_by_index(int(next_idx), log_action=f"Auto-playing next visual (Deck B): {next_cue.display_name()}",
-                                                preserve_ready=manual_next)
+                                                preserve_ready=manual_next, explicit=False)
                 except Exception:
                     self._play_visuals_by_index(int(next_idx), log_action="Auto-playing next visual (Deck B)",
-                                                preserve_ready=manual_next)
+                                                preserve_ready=manual_next, explicit=False)
                 return
             # End of playlist (LOOP OFF) -> restore last still image if any and stop.
+            if getattr(self, "_standby_cue_id", None) and self._return_to_standby():
+                return
             try:
                 self._restore_last_visual_if_any()
             except Exception:
@@ -9885,7 +10074,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             pass
         # After a VISUALS video ends, restore the last chosen image.
         try:
-            if deck == "B" and cue is not None and cue.kind == "video":
+            if deck == "B" and cue is not None and cue.kind == "video" and not getattr(self, "_standby_cue_id", None):
                 self._restore_last_visual_if_any()
         except Exception:
             pass
@@ -9895,7 +10084,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             from_id = str(cue.id) if cue is not None else None
         except Exception:
             from_id = None
-        self._select_next_cue_for_deck(deck, from_cue_id=from_id)
+        started = self._select_next_cue_for_deck(deck, from_cue_id=from_id)
+        if deck == "B" and not started and getattr(self, "_standby_cue_id", None):
+            self._return_to_standby()
 
     def _update_transport_button_visuals(self) -> None:
         def _update_deck(deck: str, *, playing: bool, loop_enabled: bool) -> None:
@@ -10736,7 +10927,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         # with a steady, restrained end-of-cue accent instead of red flashing.
         _set_fg_cached(palette.AMBER if frac >= 0.80 else None)
 
-    def _select_next_cue_for_deck(self, deck: str, *, from_cue_id: str | None = None) -> None:
+    def _select_next_cue_for_deck(self, deck: str, *, from_cue_id: str | None = None) -> bool:
         """Keep a manually selected target; otherwise advance from the finished cue."""
         cues = self._cues_a if deck == "A" else self._cues_b
         selected = self._selected_a if deck == "A" else self._selected_b
@@ -10745,7 +10936,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             from_cue_id = cues[selected].id
         idx_from = next((i for i, cue in enumerate(cues) if cue.id == from_cue_id), None)
         if idx_from is None:
-            return
+            return False
         following = self._next_cue_index(deck, from_cue_id)
         if following is not None:
             next_cue = cues[following]
@@ -10764,11 +10955,13 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                     (self._play_deck_a if deck == "A" else self._play_deck_b)()
                 except Exception as exc:
                     self._log(f"Auto-play failed: {exc}")
+                    return False
                 finally:
                     self._audio_auto_start = False
+                return True
             else:
                 self._log(f"Ready on next cue (Deck {deck}): {next_cue.display_name()}")
-            return
+            return False
         if deck == "A":
             # Preserve scene auto-advance only at the actual end of this scene.
             try:
@@ -10779,6 +10972,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                         self._next_scene()
             except Exception:
                 pass
+        return False
 
     def _select_next_cue(self) -> None:
         # Legacy: pick deck based on the last active runner.
@@ -10793,6 +10987,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return
         if self._scenes and not messagebox.askyesno("New show", "Start a new show? Unsaved edits will be lost."):
             return
+        self._standby_cue_id = None  # Clear before cleanup so Stop cannot launch an old Still.
+        self._standby_active_cue_id = None
         self._stop_deck_a()
         self._stop_deck_b()
         if sys.platform == "win32":
@@ -10821,6 +11017,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if not cues_a and not cues_b and "cues" in data:
             cues_a = [Cue.from_dict(x) for x in data["cues"]]
         scenes = [Scene.from_dict(x) for x in data.get("scenes", [])]
+        self._standby_cue_id = None
+        self._standby_active_cue_id = None
         self._stop_deck_a()
         self._stop_deck_b()
         if sys.platform == "win32":
@@ -10841,9 +11039,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._loop_b_enabled = bool(playback.get("repeat_projection"))
             self.var_loop_a.set("Repeat on" if self._loop_a_enabled else "Repeat off")
             self.var_loop_b.set("Repeat on" if self._loop_b_enabled else "Repeat off")
+            self.var_ppt_sound.set(bool(playback.get("slide_audio")))
+            self._ppt_sound_preference = bool(self.var_ppt_sound.get())
             if sys.platform == "win32":
-                self.var_ppt_sound.set(bool(playback.get("slide_audio")))
-                self._ppt_sound_preference = bool(self.var_ppt_sound.get())
                 self.var_ppt_interval.set(str(playback.get("slide_seconds", "5")))
 
         self._cues_a, self._cues_b = cues_a, cues_b
@@ -10861,9 +11059,12 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._selected_scene_idx = -1
 
         # Preserve deck assignment from the saved preset (cues_a vs cues_b).
-        # VISUALS can contain video clips too (muted), so we do NOT re-route by kind.
+        # Projection can contain video clips too; preserve their chosen deck.
         self._all_cues_a = list(self._cues_a or [])
         self._all_cues_b = list(self._cues_b or [])
+        standby_id = playback.get("standby_cue_id") if isinstance(playback, dict) else None
+        self._standby_cue_id = next((cue.id for cue in self._all_cues_b
+                                    if cue.id == standby_id and cue.kind in ("image", "video", "ppt")), None)
 
         id_to_cue: dict[str, Cue] = {}
         deck_of: dict[str, str] = {}
@@ -11080,17 +11281,21 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         active = self._scenes[self._selected_scene_idx].id if 0 <= self._selected_scene_idx < len(self._scenes) else None
         used_a = {cue_id for scene in self._scenes for cue_id in scene.cue_ids_a}
         used_b = {cue_id for scene in self._scenes for cue_id in scene.cue_ids_b}
+        standby_id = getattr(self, "_standby_cue_id", None)
+        if standby_id:
+            used_b.add(standby_id)
         payload = deepcopy({
             "version": 3,
             "active_scene": active,
             "settings": self.settings.to_dict(),
-            "playback": {"repeat_audio": self._loop_a_enabled, "repeat_projection": self._loop_b_enabled},
+            "playback": {"repeat_audio": self._loop_a_enabled, "repeat_projection": self._loop_b_enabled,
+                         "slide_audio": self._ppt_sound_preference, "standby_cue_id": standby_id},
             "cues_a": [cue.to_dict() for cue in self._all_cues_a if cue.id in used_a],
             "cues_b": [cue.to_dict() for cue in self._all_cues_b if cue.id in used_b],
             "scenes": [scene.to_dict() for scene in self._scenes],
         })
         if sys.platform == "win32":
-            payload["playback"].update(slide_audio=self._ppt_sound_preference, slide_seconds=self.var_ppt_interval.get())
+            payload["playback"].update(slide_seconds=self.var_ppt_interval.get())
         prepared = ({source: ready[1][0].parent for source, ready in self._ppt_preparer.ready.items()}
                     if sys.platform == "win32" else {})
         self._saving_show = True
@@ -11479,6 +11684,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         """Keep only cues that are referenced by at least one scene."""
         used_a: set[str] = set()
         used_b: set[str] = set()
+        if getattr(self, "_standby_cue_id", None):
+            used_b.add(self._standby_cue_id)
         for s in (self._scenes or []):
             try:
                 used_a.update([str(x) for x in (s.cue_ids_a or [])])

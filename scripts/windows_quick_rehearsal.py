@@ -28,10 +28,28 @@ def _rehearsal_process(args, *positional, **options):
 
 subprocess.Popen = _rehearsal_process
 
-from PySide6.QtCore import QObject, Qt, QTimer
+from PySide6.QtCore import QObject, QPointF, Qt, QTimer
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtTest import QTest
 from quick_controller import run_quick
+
+
+def visual_items(item):
+    """Include QML delegates, which need not be in the QObject child tree."""
+    yield item
+    for child in item.childItems():
+        yield from visual_items(child)
+
+
+def click_item(window, item, *, fraction=None):
+    assert item.isVisible() and item.isEnabled(), item.objectName()
+    x = item.width() / 2
+    if fraction is not None:
+        handle = item.property("handle")
+        x = item.property("leftPadding") + handle.width() / 2 + fraction * (item.property("availableWidth") - handle.width())
+    point = item.mapToScene(QPointF(x, item.height() / 2)).toPoint()
+    assert 0 <= point.x() < window.width() and 0 <= point.y() < window.height(), point
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
 
 
 def rehearse(folder):
@@ -68,6 +86,7 @@ def rehearse(folder):
     preset = folder / "show_preset.json"
     preset.write_text(json.dumps(model), encoding="utf-8")
     result = []
+    observers = []
 
     def test(qt_app, window, bridge):
         import win32api
@@ -84,6 +103,11 @@ def rehearse(folder):
         saved_rows = None
         event_ticks = []
         meter_evidence = {}
+        routing_evidence = {"input": "real QTest clicks on Qt controls; engine clocks and RMS/peak snapshots",
+                            "audio_output": "real bundled mpv with test-only ao=null", "actions": [],
+                            "transport_states": {}}
+        checkpoint = {}
+        seek_check = {}
         presenter = {"sent": False, "shortcut_activated": False}
         shortcut = next((item for item in window.findChildren(QObject)
                          if item.metaObject().className() == "QQuickShortcut" and
@@ -99,6 +123,71 @@ def rehearse(folder):
         resize_timer.setTimerType(Qt.TimerType.PreciseTimer)
         resize_timer.setInterval(16)
 
+        def click_control(*, name=None, command=None, row=None, fraction=None):
+            hwnd = int(window.winId())
+            if win32gui.GetForegroundWindow() != hwnd or not window.isActive():
+                win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
+                win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
+                win32gui.SetForegroundWindow(hwnd)
+                window.requestActivate()
+                return False  # Wait for native AND Qt activation before injecting input.
+            items = visual_items(window.contentItem())
+            if row is not None:
+                listing = next(item for item in items if item.objectName() == "cueList_b")
+                item = next(item for item in visual_items(listing) if item.property("index") == row)
+            else:
+                matches = [item for item in items if item.isVisible() and
+                           ((name is not None and item.objectName() == name) or
+                            (command is not None and item.property("command") == command))]
+                assert len(matches) == 1, (name, command, len(matches))
+                item = matches[0]
+            click_item(window, item, fraction=fraction)
+            routing_evidence["actions"].append({"phase": phase, "control": name or command or f"B row {row}",
+                                                "foreground": hwnd, "qt_active": window.isActive(),
+                                                "fraction": fraction})
+            return True
+
+        def has_signal(value):
+            return value.get("active") and value.get("available") and any(
+                channel["level"] > .01 for channel in value.get("channels", []))
+
+        def is_silent(value):
+            return not value.get("active") and all(channel["level"] == 0 for channel in value.get("channels", []))
+
+        def check_transport(state, audio, projection, stage):
+            assert state.get("audioPlaying") is audio and state.get("projectionPlaying") is projection, (
+                stage, state.get("audioPlaying"), state.get("projectionPlaying"))
+            buttons = {item.objectName(): item for item in visual_items(window.contentItem())
+                       if item.objectName() in ("playA", "showB")}
+            assert set(buttons) == {"playA", "showB"}, buttons
+            routing_evidence["transport_states"][stage] = {
+                "audioPlaying": audio, "projectionPlaying": projection,
+                "button_colors": {name: item.property("base").name() for name, item in buttons.items()}}
+
+        def mark_clock(state):
+            timeline = state["projectionTimeline"]
+            assert timeline["available"] and state["projectionPlaying"]
+            checkpoint.update(at=time.monotonic(), a=state["cursor"],
+                              b=timeline["fraction"], b_position=timeline["position"],
+                              b_start=timeline["start"], b_end=timeline["end"],
+                              b_cue=timeline["cueId"], b_path=timeline["path"])
+
+        def clocks_advanced(state, *, audio):
+            timeline = state["projectionTimeline"]
+            assert timeline["available"] and state["projectionPlaying"], timeline
+            assert timeline["cueId"] == checkpoint["b_cue"] and timeline["path"] == checkpoint["b_path"]
+            assert timeline["start"] == checkpoint["b_start"] and timeline["end"] == checkpoint["b_end"]
+            current = timeline["fraction"]
+            # The existing four-second fixture repeats. Accept crossing its end.
+            assert 0 <= checkpoint["b"] < 1 and 0 <= current < 1, (checkpoint, current)
+            duration = timeline["end"] - timeline["start"]
+            advanced = (timeline["position"] - checkpoint["b_position"]) % duration
+            assert duration * .02 < advanced < duration * .8, (checkpoint, timeline)
+            if audio:
+                assert state["cursor"] > checkpoint["a"] + .005, (checkpoint, state["cursor"])
+            else:
+                assert abs(state["cursor"] - checkpoint["a"]) < .002, (checkpoint, state["cursor"])
+
         def poll():
             nonlocal phase, modal_verified, saved_rows
             try:
@@ -111,6 +200,7 @@ def rehearse(folder):
                 audible_a = meter.get("source") == "audio" and meter.get("available") and any(
                     channel["level"] > .01 for channel in meter.get("channels", []))
                 if phase == 0 and bridge.bars and len(bridge.rows.get("audio", [])) == 2:
+                    check_transport(state, False, False, "idle")
                     assert state.get("audioMix") is False, "A fresh show must use exclusive audio routing"
                     assert bridge.rows["audio"][1]["armed"] and bridge.rows["scenes"][1]["role"] == "next"
                     bridge.press("a_play", None)
@@ -118,6 +208,7 @@ def rehearse(folder):
                     bridge.press("b_play", None)
                     phase = 1
                 if phase == 1 and audible_a and bridge.revisions.get("live") and bridge.revisions.get("next") and state.get("cursor", -1) > 0:
+                    check_transport(state, True, True, "audio_and_shown_slide")
                     if not modal_verified:
                         saved_rows = {key: list(rows) for key, rows in bridge.rows.items()}
                         bridge.press("new", None)
@@ -245,13 +336,142 @@ def rehearse(folder):
                         phase = 20
                 if phase == 20 and not meter.get("active"):
                     assert all(channel["level"] == 0 for channel in meter.get("channels", []))
+                    check_transport(state, False, True, "audio_paused_projection_running")
                     meter_evidence["paused_audio"] = meter
                     bridge.press("a_play", None)
                     phase = 21
                 elif phase == 21 and audible_a and meter.get("active"):
+                    check_transport(state, True, True, "audio_resumed_projection_running")
                     meter_evidence["resumed_audio"] = meter
                     (root / "dist/windows-qt-vu-verification.json").write_text(json.dumps(meter_evidence, indent=2))
                     print("PASS: one active Audio VU with silent video, pause zero and manual resume signal", flush=True)
+                    assert state.get("projectionSound") is False
+                    phase = 22
+                direct_timeline = state.get("projectionTimeline", {})
+                direct_fraction = direct_timeline.get("fraction", -1) if direct_timeline.get("available") else -1
+                if phase == 22 and click_control(row=1):
+                    phase = 23
+                elif phase == 23 and bridge.rows["projection"][1]["selected"]:
+                    if click_control(command="b_play"):
+                        phase = 24
+                elif phase == 24 and not state.get("slides") and bridge.rows["projection"][1]["role"] == "playing" and 0 < direct_fraction < 1:
+                    check_transport(state, True, True, "direct_show_with_muted_video")
+                    assert state.get("projectionSound") is False and audible_a
+                    assert not state.get("repeatB")
+                    if click_control(command="b_repeat"):
+                        phase = 25
+                elif phase == 25 and state.get("repeatB"):
+                    if click_control(name="projectionSoundButton"):
+                        phase = 26
+                elif phase == 26 and state.get("projectionSound") and meter.get("source") == "presentation" and has_signal(meter) and state.get("play") == "Play" and 0 <= direct_fraction < 1:
+                    check_transport(state, False, True, "single_video_takeover")
+                    mark_clock(state)
+                    routing_evidence["single_b_takeover"] = {"meter": meter, **checkpoint}
+                    phase = 27
+                elif phase == 27 and time.monotonic() - checkpoint["at"] >= .5 and 0 <= direct_fraction < 1:
+                    clocks_advanced(state, audio=False)
+                    assert state.get("play") == "Play" and has_signal(meter)
+                    if click_control(name="mixAudioButton"):
+                        phase = 28
+                elif phase == 28 and state.get("audioMix") and meter.get("mixed") and 0 <= direct_fraction < 1:
+                    a, b = meter["decks"]
+                    assert a["name"] == "A" and b["name"] == "B"
+                    assert is_silent(a) and has_signal(b) and state.get("play") == "Play"
+                    mark_clock(state)
+                    phase = 29
+                elif phase == 29 and time.monotonic() - checkpoint["at"] >= .5 and 0 <= direct_fraction < 1:
+                    a, b = meter["decks"]
+                    assert is_silent(a) and has_signal(b) and state.get("play") == "Play"
+                    clocks_advanced(state, audio=False)
+                    routing_evidence["mix_on_did_not_resume_audio"] = {"meter": meter, "cursor": state["cursor"]}
+                    if click_control(command="a_play"):
+                        phase = 30
+                elif phase == 30 and meter.get("mixed") and all(has_signal(value) for value in meter["decks"]) and 0 <= direct_fraction < 1:
+                    check_transport(state, True, True, "mix_both_playing")
+                    assert state.get("play") == "Pause" and state.get("projectionSound")
+                    mark_clock(state)
+                    routing_evidence["mix_both_real_signals"] = {"meter": meter, **checkpoint}
+                    phase = 31
+                elif phase == 31 and time.monotonic() - checkpoint["at"] >= .5 and 0 <= direct_fraction < 1:
+                    assert all(has_signal(value) for value in meter["decks"])
+                    clocks_advanced(state, audio=True)
+                    routing_evidence["mix_both_clocks_advanced"] = {"a": state["cursor"], "b": direct_fraction}
+                    assert window.grabWindow().save(str(root / "dist/windows-qt-direct-video-mix.png"))
+                    from mpv_ipc import MpvIpcSession
+                    observer = MpvIpcSession(str(tools / "mpv/mpv.exe"), name="OUTPUT",
+                                             second_screen_left=0, second_screen_top=0, fullscreen=False)
+                    observers.append(observer)
+                    observer._connect_ipc()  # Read-only; the real QML gesture must issue the seek.
+                    seek_check["observer"] = observer
+                    phase = 37
+                elif phase == 37 and state.get("projectionTimeline", {}).get("available"):
+                    observer = seek_check["observer"]
+                    before = {key: observer.get_property(key) for key in ("path", "duration", "time-pos", "mute", "volume", "pause")}
+                    assert Path(before["path"]).resolve() == film.resolve(), before
+                    assert before["mute"] is False and before["pause"] is False
+                    assert isinstance(before["volume"], (int, float)) and before["volume"] > 0
+                    target = .75 if before["time-pos"] / before["duration"] < .5 else .25
+                    if click_control(name="projectionSeek", fraction=target):
+                        seek_check.update(before=before, target=target, clicked=time.monotonic(), a=state["cursor"],
+                                          timeline_before=state["projectionTimeline"])
+                        phase = 38
+                elif phase == 38:
+                    elapsed = time.monotonic() - seek_check["clicked"]
+                    assert elapsed < 1, ("Qt seek did not reach the real engine within one second", seek_check["before"], state.get("projectionTimeline"))
+                    observer = seek_check["observer"]
+                    position = observer.get_property("time-pos")
+                    duration = seek_check["before"]["duration"]
+                    expected = (seek_check["target"] * duration + elapsed) % duration
+                    unseeked = (seek_check["before"]["time-pos"] + elapsed) % duration
+                    distance = lambda a, b: min(abs(a - b), duration - abs(a - b))
+                    timeline = state.get("projectionTimeline", {})
+                    if (elapsed >= .2 and isinstance(position, (int, float)) and
+                            distance(position, expected) < .45 and distance(position, unseeked) > .65 and
+                            timeline.get("available") and distance(timeline["position"], position) < .3 and
+                            state["cursor"] > seek_check["a"] + .002):
+                        after = {key: observer.get_property(key) for key in ("path", "mute", "volume", "pause")}
+                        assert after == {key: seek_check["before"][key] for key in after}, (seek_check["before"], after)
+                        assert state["audioMix"] and state["projectionSound"] and state["play"] == "Pause"
+                        check_transport(state, True, True, "mix_after_video_seek")
+                        assert timeline["cueId"] == seek_check["timeline_before"]["cueId"] and timeline["path"] == seek_check["timeline_before"]["path"]
+                        routing_evidence["real_projection_seek"] = {
+                            "target_fraction": seek_check["target"], "before": seek_check["before"],
+                            "after": dict(after, position=position), "response_seconds": elapsed,
+                            "position_without_seek": unseeked, "timeline": timeline,
+                            "audio_cursor_before": seek_check["a"], "audio_cursor_after": state["cursor"],
+                            "audio_mix_unchanged": True, "projection_sound_unchanged": True}
+                        assert window.grabWindow().save(str(root / "dist/windows-qt-projection-seek.png"))
+                        phase = 39
+                elif phase == 39 and meter.get("mixed") and all(has_signal(value) for value in meter["decks"]):
+                    if click_control(name="projectionSoundButton"):
+                        phase = 32
+                elif phase == 32 and state.get("projectionSound") is False and meter.get("mixed") and is_silent(meter["decks"][1]) and 0 <= direct_fraction < 1:
+                    check_transport(state, True, True, "muted_video_still_playing")
+                    assert has_signal(meter["decks"][0])
+                    mark_clock(state)
+                    phase = 33
+                elif phase == 33 and time.monotonic() - checkpoint["at"] >= .5 and 0 <= direct_fraction < 1:
+                    assert has_signal(meter["decks"][0]) and is_silent(meter["decks"][1])
+                    assert bridge.rows["projection"][1]["role"] == "playing"
+                    clocks_advanced(state, audio=True)
+                    routing_evidence["sound_off_video_kept_running"] = {"meter": meter, "a": state["cursor"], "b": direct_fraction}
+                    if click_control(name="projectionSoundButton"):
+                        phase = 34
+                elif phase == 34 and state.get("projectionSound") and meter.get("mixed") and all(has_signal(value) for value in meter["decks"]):
+                    # This explicit Sound on makes B the last requested source.
+                    if click_control(name="mixAudioButton"):
+                        phase = 35
+                elif phase == 35 and state.get("audioMix") is False and meter.get("source") == "presentation" and has_signal(meter) and state.get("play") == "Play" and 0 <= direct_fraction < 1:
+                    check_transport(state, False, True, "mix_off_video_remains_playing")
+                    mark_clock(state)
+                    phase = 36
+                elif phase == 36 and time.monotonic() - checkpoint["at"] >= .5 and 0 <= direct_fraction < 1:
+                    assert state.get("projectionSound") and has_signal(meter) and state.get("play") == "Play"
+                    clocks_advanced(state, audio=False)
+                    routing_evidence["mix_off_kept_last_explicit_b"] = {"meter": meter, "a": state["cursor"], "b": direct_fraction}
+                    assert window.grabWindow().save(str(root / "dist/windows-qt-direct-video-single.png"))
+                    (root / "dist/windows-qt-direct-video-audio.json").write_text(json.dumps(routing_evidence, indent=2))
+                    print("PASS: direct video Sound on/off, exclusive handoff, explicit Mix clocks/meters and last-source Mix off", flush=True)
                     bridge.connection.close()
                     phase = 3
                 if phase == 3 and state.get("controllerError"):
@@ -272,6 +492,8 @@ def rehearse(folder):
                         qt_app.quit()
                         return
             except Exception as exc:
+                routing_evidence.update(failed_phase=phase, error=repr(exc), state=bridge.current)
+                (root / "dist/windows-qt-direct-video-audio.json").write_text(json.dumps(routing_evidence, indent=2))
                 result.append(exc)
                 qt_app.quit()
                 return
@@ -279,7 +501,11 @@ def rehearse(folder):
 
         poll()
 
-    run_quick(test)
+    try:
+        run_quick(test)
+    finally:
+        for observer in observers:
+            observer.shutdown()
     assert result == [True], result
     print("PASS: Qt Quick drives real audio, slide cues, frequency waveform, countdown and the header projection timer")
 

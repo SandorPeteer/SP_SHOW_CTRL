@@ -254,6 +254,135 @@ class AudioMeterTests(unittest.TestCase):
             self.assertFalse(runner.is_playing(), "B EOF must not restart A")
             self.assertEqual(app._paused_a, retained)
 
+    def test_direct_projection_video_sound_toggle_and_mix(self):
+        from types import MethodType
+        from unittest.mock import patch
+        from scripts.test_audio_routing import AudioRoutingTests
+        from player import App, Cue, MediaRunner, OutputRunner, Settings
+        ffmpeg = (str(root / "dist/SP Show Control/_internal/tools/ffmpeg/ffmpeg.exe")
+                  if sys.platform == "win32" else shutil.which("ffmpeg"))
+        clip = self.folder / "direct-projection.mp4"
+        subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i",
+                        "color=c=blue:size=160x90:rate=10:duration=12", "-f", "lavfi", "-i",
+                        "sine=frequency=440:duration=12", "-c:v", "mpeg4", "-c:a", "aac",
+                        "-shortest", str(clip)], check=True, timeout=10, **process_options)
+        fixture = AudioRoutingTests()
+        fixture.setUp()
+        app = fixture.app
+        app._ppt_running, app._ppt_slides = False, []
+        fixture.cue.path = str(self.source)
+        app.var_ppt_sound.set(False)
+        app._ppt_sound_preference = False
+        for name in ("_toggle_projection_sound", "_apply_projection_sound", "_ppt_apply_sound", "_transport_is_active"):
+            setattr(app, name, MethodType(getattr(App, name), app))
+        app._vu_snapshot = lambda deck: App._vu_snapshot(app, deck)
+        with ExitStack() as stack:
+            a = stack.enter_context(self.player())
+            b = stack.enter_context(self.player(source=clip, muted=True))
+            runner = app.audio_runner = MediaRunner(Settings())
+            output = app.video_runner = OutputRunner(Settings())
+            output._sess = b
+            direct_cue = Cue(id="projection", path=str(clip), kind="video", volume_percent=65)
+            with patch.object(output, "ensure_window", return_value=True):
+                output.play_for_deck("B", direct_cue)
+            wait_for(lambda: b.get_property("path"), lambda value: value == str(clip))
+            self.assertTrue(b.get_property("mute"), "Low-level B load must remain silent")
+            self.assertFalse(output.is_paused())
+            def attach(session):
+                runner._proc = session._proc
+                runner._media_clock = session
+                runner._playing_cue = fixture.cue
+                runner._backend = "mpv"
+            attach(a)
+            before_takeover = wait_for(lambda: a.get_property("time-pos"),
+                                       lambda value: value is not None and value > .15)
+            wait_for(lambda: b.observed("time-pos", "core-idle"),
+                     lambda value: isinstance(value[0], (int, float)) and value[1] is False)
+            self.assertEqual((app._transport_is_active("A"), app._transport_is_active("B")), (True, True))
+            self.assertTrue(app._toggle_projection_sound())
+            self.assertTrue(app.var_ppt_sound.get())
+            self.assertFalse(b.get_property("mute"), "A direct B video must unmute without a PPT running")
+            self.assertEqual(b.get_property("volume"), 65)
+            paused = app._paused_a
+            self.assertEqual(paused[0], fixture.cue.id)
+            self.assertGreaterEqual(paused[1], before_takeover)
+            self.assertIsNotNone(a._proc.poll(), "Normal mode must silence A before B sounds")
+            wait_for(lambda: app._vu_snapshot("B"), lambda value: value["active"] and
+                     any(channel["level"] > .01 for channel in value["channels"]))
+            self.assertEqual((app._transport_is_active("A"), app._transport_is_active("B")), (False, True))
+
+            before_mute = b.get_property("time-pos")
+            self.assertTrue(app._toggle_projection_sound())
+            self.assertFalse(app.var_ppt_sound.get())
+            self.assertTrue(b.get_property("mute"))
+            wait_for(b.audio_levels, lambda value: value["muted"] and not value["active"])
+            wait_for(lambda: b.get_property("time-pos"), lambda value: value > before_mute + .1)
+            self.assertFalse(runner.is_playing(), "Muting B must not automatically resume A")
+            self.assertEqual(app._paused_a, paused)
+
+            def resume(cue, pos, **_):
+                nonlocal a
+                self.assertTrue(b.get_property("mute"))
+                a = stack.enter_context(self.player(start=pos))
+                attach(a)
+            with patch.object(runner, "play_at", side_effect=resume):
+                App._transport_play_pause(app, "A")
+            self.assertTrue(a.audio_levels()["active"])
+            self.assertTrue(app._toggle_audio_mix())
+            self.assertTrue(b.get_property("mute"), "Mix ON alone must not enable projection sound")
+            active_process = runner._proc
+            self.assertTrue(app._toggle_projection_sound())
+            wait_for(b.audio_levels, lambda value: value["active"] and value["channels"][0]["level"] > .01)
+            self.assertTrue(a.audio_levels()["active"])
+            clocks = (a.get_property("time-pos"), b.get_property("time-pos"))
+            wait_for(lambda: (a.get_property("time-pos"), b.get_property("time-pos")),
+                     lambda values: values[0] > clocks[0] + .1 and values[1] > clocks[1] + .1)
+            self.assertEqual((app._transport_is_active("A"), app._transport_is_active("B")), (True, True))
+            self.assertIs(runner._proc, active_process)
+            self.assertEqual(app._last_audio_source, "B")
+            self.assertTrue(app._toggle_projection_sound())
+            self.assertTrue(b.get_property("mute"))
+            self.assertIs(runner._proc, active_process, "Muting B in Mix must leave the existing A player alone")
+            self.assertTrue(a.audio_levels()["active"])
+            self.assertEqual((app._transport_is_active("A"), app._transport_is_active("B")), (True, True))
+
+    def test_real_media_runner_attached_clock_drives_play_highlight(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from player import App, Cue, MediaRunner, Settings
+        runner = MediaRunner(Settings())
+        runner.observe_clock = True
+        def clock_session(*args, **kwargs):
+            session = MpvIpcSession(*args, **kwargs)
+            if os.name != "nt":
+                session.ipc_server = str(self.folder / "attach.sock")
+            return session
+        clock = process = None
+        try:
+            # Exercise the real MediaRunner attach path on both CI Windows and
+            # the local Unix IPC adapter; all audio/video outputs remain null.
+            with patch("player.sys.platform", "win32"), patch("player.MpvIpcSession", side_effect=clock_session), \
+                    patch("player._no_console_subprocess_kwargs", return_value=process_options):
+                process = runner._proc = runner._spawn_player("mpv", [mpv, "--no-config", "--no-terminal",
+                    "--ao=null", "--vo=null", "--keep-open=yes", str(self.source)])
+                runner._playing_cue = Cue(id="attached-a", path=str(self.source), kind="audio")
+                runner._backend = "mpv"
+                clock = runner._media_clock
+                wait_for(lambda: clock.observed("time-pos")[0],
+                         lambda value: isinstance(value, (int, float)) and value > .1)
+                app = SimpleNamespace(audio_runner=runner, video_runner=SimpleNamespace(owner_deck=None))
+                self.assertTrue(App._transport_is_active(app, "A"),
+                                "The attached observer must use its MediaRunner's actual process state")
+                self.assertTrue(clock.set_property("pause", True))
+                wait_for(lambda: clock.observed("pause")[0], lambda value: value is True)
+                self.assertFalse(App._transport_is_active(app, "A"))
+        finally:
+            runner.stop()
+            if clock is not None:
+                clock.shutdown()
+            if process is not None and process.stderr is not None:
+                process.stderr.close()
+
     def test_real_decoder_rms_peak_gain_pause_mute_and_silence(self):
         with self.player() as session:
             measured = session.audio_levels()

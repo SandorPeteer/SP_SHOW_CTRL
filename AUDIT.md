@@ -31,6 +31,15 @@ A VU kitöltése közvetlenül követi az aktuális mérést. A telemetria álta
 
 Az ismert PCM-jellel végzett helyi próba a valódi mpv-kimenethez hasonlítja a szinteket. A 5.1→sztereó átalakítás normalizálás nélkül mintánként azonos; normalizálással float32 kimeneten szintén azonos, s16 kimeneten a megengedett és mért legnagyobb eltérés 1 LSB (1/32768, körülbelül −90,3 dBFS).
 
+## Projection kezelési kiegészítések — 2026.11.18
+
+- A Projection sor jobb gombos „Use as Still” menüje képet, videót vagy PPT-t jelölhet ki műsoronkénti visszatérő médiának. A megjelölés nem indít lejátszást; az aktív elemre ismételt Show, a Stop és a következő automatikus elem nélküli videóvég visszatér erre. A készre választott sor és a görgetés megmarad. A Still a jelenlegi Repeat és Sound kapcsolót követi, nem folytatja A-t; Repeat OFF mellett a videó végképe megmarad, újraindulási hurok nélkül. Új műsor, betöltés és bezárás nem indít Stillt. A hivatkozás a hordozható műsorral együtt mentődik.
+- A Projection fejlécének Sound on/off kapcsolója a közvetlen videófájlokra és az előkészített PPT videóira egyaránt érvényes. Alapmódban visszaigazolt hangátadás, Mixben egyidejű lejátszás működik. A némítás nem indítja újra a képet és nem folytatja A-t. Az automatikus videóváltás megtartja a hangengedélyt, és nem írja felül a kézi hangátvételt.
+- A Projection lejátszási sávja a dekóder valódi pozícióját, az eltelt és hátralévő időt mutatja. A tekerés az aktuális IN/OUT tartományon belül, ugyanabban a lejátszóban történik. A kattintás/húzás rögzíti a cue és fájl azonosítóját, ezért egy időközben indult másik videót nem tekerhet el. A hang-, Mix- és szünetállapot megmarad.
+- A Play/Show színe a lejátszó által igazolt futást követi; kijelölés vagy gombnyomás nem kapcsolja be előre. A néma videó és a szándékosan kitartott állókép is aktív lehet. A folyamatos A-óra megfigyelője nem tulajdonosa a folyamatnak: annak életét a MediaRunner ellenőrzi, a megjelenítést a tényleges IPC-telemetria vezérli.
+- A két Hozzáadás ablak közös utolsó médiamappát jegyez meg a meglévő felhasználói settings.json-ban. A Mégse és a műsorfájl megnyitása/mentése nem írja át; a mappa nem kerül bele a hordozható show beállításaiba. Nem elérhető mappánál az alapértelmezett hely nyílik meg.
+- A fekete videónyitás előnézete legfeljebb az első öt másodpercben, másodpercenként két mintaképből keresi az első látható képet. A keresés megszakítható, a meglévő időkorlátot használja; a lejátszási kezdőpontot és a kifejezetten megadott diaposztert nem módosítja.
+
 ## Az üzemi próba határai
 
 - A Tk kezelőszálon maradt néhány közvetlen kezelői művelet, például a fullscreen mód váltása és az mpv parancsok kiadása. Egy válaszkésés ezeknél továbbra is okozhat rövid megtorpanást.

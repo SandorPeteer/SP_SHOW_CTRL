@@ -19,7 +19,9 @@ def controller():
                           audio_runner=Mock(), video_runner=Mock(), _load_cue_into_editor=Mock(),
                           _log=Mock(), _play_deck_a=Mock(), _play_deck_b=Mock(), _next_scene=Mock(),
                           _scenes=[], _selected_scene_idx=-1, _suppress_finish={}, _ppt_running=False,
-                          _playback_origin={},
+                          _playback_origin={}, _audio_auto_start=False, _ppt_sound_preference=False,
+                          var_ppt_sound=Mock(get=Mock(return_value=False)), audio_mix=False,
+                          _apply_projection_sound=Mock(return_value=True),
                           _prepare_audio_source=Mock(return_value=True), _audio_source_started=Mock(),
                           _inhibit_auto_advance=False, _restore_last_visual_if_any=Mock(),
                           _resume_visuals_if_any=Mock(), _play_visuals_by_index=Mock())

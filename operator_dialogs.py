@@ -84,13 +84,33 @@ class OperatorDialogs:
 
     def files(self, kind, **options):
         folder = Path(options.get("initialdir") or Path.home()).resolve()
+        media_picker = kind == "open" and options.get("title") in ("Add Media", "Add Visuals (Deck B)")
+        if media_picker:
+            remembered = getattr(self.app, "_last_media_folder", "")
+            if remembered:
+                try:
+                    candidate = Path(remembered)
+                    if candidate.is_dir():
+                        folder = candidate.resolve()
+                except (OSError, ValueError, RuntimeError):
+                    pass  # A disconnected/removable media folder is optional.
         initial = folder / options.get("initialfile", "")
         filters = [f"{label} ({' '.join(pattern) if isinstance(pattern, (tuple, list)) else pattern})"
                    for label, pattern in options.get("filetypes", [("All files", "*")])]
-        return self.request(dict(kind=kind, title=options.get("title", "Select file"),
+        selected = self.request(dict(kind=kind, title=options.get("title", "Select file"),
                                  filters=filters, folder=folder.as_uri(), initial=initial.as_uri(),
                                  suffix=options.get("defaultextension", "").lstrip("."),
                                  multiple=bool(options.get("multiple")), cancel=""))
+        if media_picker and selected:
+            first = selected[0] if isinstance(selected, (list, tuple)) else selected
+            try:
+                selected_folder = Path(first).resolve().parent
+                if selected_folder.is_dir():
+                    self.app._last_media_folder = str(selected_folder)
+                    self.app._save_persistent_settings()
+            except (OSError, ValueError, RuntimeError):
+                pass  # A vanished source must not prevent adding other files.
+        return selected
 
     def color(self, color=None, **options):
         from PIL import ImageColor
