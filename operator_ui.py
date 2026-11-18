@@ -343,7 +343,8 @@ def tool_window(root, title):
     window = tk.Toplevel(root)
     window.withdraw()
     window.title(title)
-    window.transient(root)
+    if not getattr(root, "_operator_worker", False):
+        window.transient(root)
     window.resizable(True, False)
     window.minsize(440, 1)
     window.protocol("WM_DELETE_WINDOW", window.withdraw)

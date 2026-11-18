@@ -317,59 +317,6 @@ def rehearse(folder):
         assert "playing" in app.tree_a.item("0", "tags")
         assert "playing" in app.tree_b.item("2", "tags")
         assert "next" in app.tree_b.item("3", "tags")
-        bars = tuple(app.canvas_a.find_withtag("waveform"))
-        audio_before_resize = audio.get_property("time-pos")
-        timings = []
-        start_tick = time.perf_counter()
-        last_resize = None
-
-        def run_resize(frame):
-            if frame == 75 or errors:
-                app.quit()
-                return
-            phase = frame if frame < 38 else 75 - frame
-            size = (920 + phase * 4, 560 + phase * 3)
-            tick = time.perf_counter()
-            resize_client(*size)
-
-            def rendered():
-                nonlocal last_resize
-                window_size = (app.winfo_width(), app.winfo_height())
-                workspace = app.wave_a_frame.master.master
-                expected = round(workspace.winfo_width() * 0.40) - 6
-                actual = app.wave_a_frame.winfo_width()
-                last_resize = (frame, size, window_size, expected, actual)
-                if window_size != size or abs(actual - expected) > 1:
-                    app.after(1, rendered)
-                    return
-                timings.append((time.perf_counter() - tick) * 1000)
-                delay = start_tick + (frame + 1) / 60 - time.perf_counter()
-                app.after(max(1, round(1000 * delay)), run_resize, frame + 1)
-
-            app.after_idle(rendered)
-
-        abort_resize = app.after(6500, app.quit)
-        app.after(0, run_resize, 0)
-        app.mainloop()
-        app.after_cancel(abort_resize)
-        if errors:
-            value, tb = errors.pop(0)
-            raise value.with_traceback(tb)
-        assert len(timings) == 75, (
-            f"Completed {len(timings)} resizing passes, last request {last_resize}, "
-            f"first timings {[round(value, 1) for value in timings[:20]]}"
-        )
-        assert tuple(app.canvas_a.find_withtag("waveform")) == bars
-        assert audio.get_property("time-pos") > audio_before_resize
-        ordered = sorted(timings)
-        p95 = ordered[(len(ordered) * 95 + 99) // 100 - 1]
-        print(f"Resize with both previews and live audio (75 frames at 60Hz): "
-              f"p95 {p95:.2f} ms, max {max(timings):.2f} ms", flush=True)
-        assert p95 < 16.667 and max(timings) < 66.667, (p95, max(timings))
-        resize_client(980, 620)
-        wait_for(lambda: pump(lambda: (app.winfo_width(), app.winfo_height())), lambda size: size == (980, 620))
-        wait_for(lambda: pump(lambda: not app.output_monitor.resize_jobs), bool)
-        print("PASS: kept the waveform items and media clock running during a 60Hz resize")
         # Scroll only overflows. The indicator overlays the edge and leaves row geometry alone.
         tree = app.tree_b
         assert tuple(map(str, tree["show"])) == ("tree",)

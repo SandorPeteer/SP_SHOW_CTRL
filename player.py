@@ -2050,6 +2050,8 @@ class MediaRunner:
         self.last_args: list[str] | None = None
         self.last_exit_code: int | None = None
         self.last_stderr_tail: list[str] = []
+        self.observe_clock = False
+        self._media_clock: MpvIpcSession | None = None
 
     def shutdown(self) -> None:
         self.stop()
@@ -2070,6 +2072,7 @@ class MediaRunner:
         return self._playing_cue
 
     def stop(self) -> None:
+        self._media_clock = None
         proc = self._proc
         backend = self._backend
         self._proc = None
@@ -2112,6 +2115,11 @@ class MediaRunner:
                 _swallow_exc(e2, note="MediaRunner.stop kill")
 
     def _spawn_player(self, backend: str, args: list[str]) -> subprocess.Popen:
+        clock = None
+        if self.observe_clock and backend == "mpv" and sys.platform == "win32":
+            clock = MpvIpcSession(args[0], name=f"A_{os.getpid()}_{uuid.uuid4().hex[:8]}",
+                                  second_screen_left=0, second_screen_top=0, fullscreen=False)
+            args = [*args, f"--input-ipc-server={clock.ipc_server}"]
         self.last_args = args
         self.last_exit_code = None
         self.last_stderr_tail = []
@@ -2130,6 +2138,25 @@ class MediaRunner:
             bufsize=1,
             **_no_console_subprocess_kwargs(),
         )
+
+        if clock is not None:
+            self._media_clock = clock
+
+            def watch_clock():
+                try:
+                    clock._connect_ipc()
+                    response = clock.command(["observe_property", 1, "time-pos"], timeout=1)
+                    if response.get("error") != "success":
+                        raise RuntimeError(response.get("error", "Unable to observe mpv time"))
+                    proc.wait()
+                except Exception as exc:
+                    _swallow_exc(exc, note="media clock")
+                finally:
+                    if self._media_clock is clock:
+                        self._media_clock = None
+                    clock.shutdown()
+
+            threading.Thread(target=watch_clock, name="media-clock", daemon=True).start()
 
         def _read_stderr():
             if proc.stderr is None:
@@ -2282,6 +2309,9 @@ class MediaRunner:
             return None
         if self._started_at_monotonic is None or self._playing_seek_sec is None:
             return None
+        if self._media_clock is not None:
+            pos, = self._media_clock.observed("time-pos")
+            return float(pos) if isinstance(pos, (int, float)) else self._playing_seek_sec
         elapsed = max(0.0, time.monotonic() - self._started_at_monotonic)
         return max(0.0, float(self._playing_seek_sec) + elapsed)
 
@@ -2997,9 +3027,12 @@ class BlackScreenWindow:
 
 
 class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
-    def __init__(self):
+    def __init__(self, operator_worker=False):
+        self._operator_worker = operator_worker
         palette.configure_source_dpi()
         super().__init__()
+        if operator_worker:
+            self.withdraw()
         try:
             _install_global_exception_logging()
         except Exception as e:
@@ -3040,6 +3073,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         except Exception as e:
             _swallow_exc(e, note="apply_logging_settings")
         self.audio_runner = MediaRunner(self.settings, name="A")
+        self.audio_runner.observe_clock = operator_worker
         self.title("S.P. Show Control")
         self.video_runner = OutputRunner(self.settings)
         self._active_runner = self.audio_runner
@@ -3160,7 +3194,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self._sync_presentation_button()
         except Exception as e:
             _swallow_exc(e, note="sync_presentation_button (startup)")
-        self.after(0, self._bring_to_front)
+        if not self._operator_worker:
+            self.after(0, self._bring_to_front)
         self._poll_playback()
         self.after(0, self._startup_sequence)
 
@@ -3171,7 +3206,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         if sys.platform == "win32":
             import win32api
             try:
-                handle = int(win32api.MonitorFromWindow(self.winfo_id(), 2))  # MONITOR_DEFAULTTONEAREST
+                handle = int(win32api.MonitorFromWindow(getattr(self, "_operator_hwnd", self.winfo_id()), 2))  # MONITOR_DEFAULTTONEAREST
                 return next((m for m in monitors if m.handle == handle), _pick_primary_monitor(monitors))
             except Exception as e:
                 _swallow_exc(e, note="controller_monitor Windows")
@@ -3738,6 +3773,15 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             self.var_ppt_status.set(f"Projection error: {exc}")
             self._log(self.var_ppt_status.get())
 
+    def _ppt_still_duration(self):
+        seconds = self._ppt_seconds[self._ppt_index]
+        if seconds is None:
+            try:
+                seconds = float(self.var_ppt_interval.get().replace(",", "."))
+            except ValueError:
+                seconds = 5.0
+        return seconds if math.isfinite(seconds) and seconds > 0 else 5.0
+
     def _advance_ppt_loop(self):
         if not (sys.platform == "win32" and self._ppt_running and self._loop_b_enabled):
             return
@@ -3754,15 +3798,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             if not eof or not path or Path(path) != slide:
                 return
         else:
-            seconds = self._ppt_seconds[self._ppt_index]
-            if seconds is None:
-                try:
-                    seconds = float(self.var_ppt_interval.get().replace(",", "."))
-                    if not math.isfinite(seconds) or seconds <= 0:
-                        seconds = 5.0
-                except ValueError:
-                    seconds = 5.0
-            if elapsed < seconds:
+            if elapsed < self._ppt_still_duration():
                 return
         self._show_mpv_slide(self._ppt_cue, self._ppt_slides, (self._ppt_index + 1) % len(self._ppt_slides))
 
@@ -4503,6 +4539,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self._ytdlp_thread.start()
 
     def _bring_to_front(self) -> None:
+        if self._operator_worker:
+            return
         try:
             self.deiconify()
         except Exception:
@@ -5306,7 +5344,7 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         self.lbl_showfile = ttk.Label(filebar, textvariable=self.var_showfile, anchor="w", width=1,
                                       style="ShowTitle.TLabel")
         self.lbl_showfile.pack(side="left", fill="x", expand=True, padx=12)
-        if sys.platform == "win32":
+        if sys.platform == "win32" and not self._operator_worker:
             caption = ttk.Frame(filebar, style="Shell.TFrame")
             caption.pack(side="right", padx=(6, 0))
             self.btn_minimize_window = icons.button(caption, "minimize", "Minimize", self.iconify,
@@ -6054,6 +6092,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
             return
 
     def _request_waveform_generate(self, deck: str, cue: Cue) -> None:
+        if self._operator_worker:
+            return
         if cue.kind not in ("audio", "video"):
             return
         canvas = self.canvas_a if deck == "A" else self.canvas_b
@@ -9504,8 +9544,9 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
                 return
             self._advance_ppt_loop()
             self._update_now_playing()
-            self._update_vu_meters()
-            self._update_waveform_playback_visuals()
+            if not self._operator_worker:
+                self._update_vu_meters()
+                self._update_waveform_playback_visuals()
             self._update_transport_button_visuals()
             self._update_tree_playing_highlight()
             # MEDIA (A) playback is either audio_runner (audio) OR video_runner (when owner=A and cue=video).
@@ -11208,7 +11249,8 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         dialog = tk.Toplevel(self)
         dialog.title(f"Edit Scene: {scene.name}")
         dialog.geometry("500x450")
-        dialog.transient(self)
+        if not self._operator_worker:
+            dialog.transient(self)
         dialog.grab_set()
 
         # Scene name
@@ -11273,7 +11315,11 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
 
 def main() -> None:
     if sys.platform != "win32":
-        App().mainloop()
+        if "--quick" in sys.argv:
+            from quick_controller import run_quick
+            run_quick()
+        else:
+            App().mainloop()
         return
 
     import win32api
@@ -11293,10 +11339,16 @@ def main() -> None:
                 except win32gui.error:
                     pass  # Windows may refuse focus, but the first instance is still running.
             return
-        App().mainloop()
+        if (_is_frozen() or "--quick" in sys.argv) and "--legacy-ui" not in sys.argv:
+            from quick_controller import run_quick
+            run_quick()
+        else:
+            App().mainloop()
     finally:
         mutex.Close()
 
 
 if __name__ == "__main__":
+    from multiprocessing import freeze_support
+    freeze_support()
     main()

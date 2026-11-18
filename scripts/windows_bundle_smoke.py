@@ -51,10 +51,10 @@ def smoke():
     resources = win32api.LoadLibraryEx(str(exe), 0, 2)  # LOAD_LIBRARY_AS_DATAFILE
     try:
         manifest = ElementTree.fromstring(win32api.LoadResource(resources, 24, 1))  # RT_MANIFEST
-        assert manifest.findtext(".//{*}dpiAwareness") == "System"
+        assert manifest.findtext(".//{*}dpiAwareness") == "PerMonitorV2"
     finally:
         win32api.FreeLibrary(resources)
-    print("PASS: packaged controller requests system-DPI rendering at startup")
+    print("PASS: packaged controller requests per-monitor DPI rendering at startup")
 
     with tempfile.TemporaryDirectory(prefix="Show Control próba ") as test:
         env = {k: v for k, v in os.environ.items() if not k.startswith("SP_SHOW_CTRL_")}
@@ -98,7 +98,7 @@ def smoke():
             awareness = windll.user32.GetAwarenessFromDpiAwarenessContext
             awareness.argtypes = (c_void_p,)
             awareness.restype = c_int
-            assert awareness(hwnd_context(hwnd)) == 1
+            assert awareness(hwnd_context(hwnd)) == 2
             import win32con
             deadline = time.monotonic() + 8
             while time.monotonic() < deadline:
@@ -108,12 +108,11 @@ def smoke():
                 time.sleep(0.1)
             else:
                 raise AssertionError(f"Integrated toolbar did not replace the caption: {window_style:#x}")
-            assert window_style & win32con.WS_THICKFRAME
             import win32api
             work = win32api.GetMonitorInfo(win32api.MonitorFromWindow(hwnd, 2))["Work"]
             bounds = win32gui.GetWindowRect(hwnd)
             assert bounds[1] >= work[1] and bounds[3] <= work[3], (bounds, work)
-            print("PASS: frozen EXE has integrated chrome and a native resize frame")
+            print("PASS: frozen EXE has the integrated Qt Quick titlebar")
             # A second click must reuse the controller, even during initial loading.
             duplicate = subprocess.Popen([exe], env=env, cwd=test)
             try:
@@ -136,15 +135,15 @@ def smoke():
                 # Restrict detection to the upper-left waveform lane. The
                 # Fullscreen button uses the same neon color elsewhere.
                 lane = frame.convert("RGB").crop((20, 67, round(frame.width * 0.38), round(frame.height * 0.31)))
-                blue = sum(count for count, rgb in (lane.getcolors(lane.width * lane.height) or [])
-                           if abs(rgb[0] - 89) < 5 and abs(rgb[1] - 216) < 5 and abs(rgb[2] - 255) < 5)
-                if blue > 700:
+                wave_pixels = sum(count for count, (red, green, blue) in lane.getcolors(lane.width * lane.height)
+                                  if red > 170 and green > 136 and 60 < blue < 175)
+                if wave_pixels > 400:
                     break
                 time.sleep(0.2)
             else:
                 frame.save(APP.parent / "windows-waveform-failure.png")
-                raise AssertionError(f"Packaged waveform not painted, matching pixels {blue}")
-            print(f"PASS: frozen EXE rendered waveform ({blue} blue pixels), with no external tools on PATH")
+                raise AssertionError(f"Packaged waveform not painted, matching pixels {wave_pixels}")
+            print(f"PASS: frozen EXE rendered waveform ({wave_pixels} frequency-colored pixels), with no external tools on PATH")
             frame.save(APP.parent / "windows-controller-preview.png")
             if output_hwnd:
                 win32gui.ShowWindow(output_hwnd, 9)
@@ -160,6 +159,10 @@ def smoke():
         finally:
             subprocess.run(["taskkill", "/PID", str(app.pid), "/T", "/F"], capture_output=True)
             app.wait(timeout=10)
+        subprocess.run([sys.executable, Path(__file__).with_name("test_spectral_waveform.py"), media / "ffmpeg.exe"],
+                       env=env, cwd=test, check=True, timeout=20)
+        subprocess.run([sys.executable, Path(__file__).with_name("windows_quick_rehearsal.py"), test],
+                       env=env, cwd=test, check=True, timeout=100)
         for test_script in ("test_ppt_media.py", "test_media_previews.py", "test_download_tools.py",
                             "test_show_storage.py", "test_mpv_ipc.py"):
             subprocess.run([sys.executable, Path(__file__).with_name(test_script)], env=env, check=True)
