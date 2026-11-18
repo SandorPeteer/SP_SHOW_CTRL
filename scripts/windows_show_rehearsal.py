@@ -321,6 +321,7 @@ def rehearse(folder):
         audio_before_resize = audio.get_property("time-pos")
         timings = []
         start_tick = time.perf_counter()
+        last_resize = None
 
         def run_resize(frame):
             if frame == 75 or errors:
@@ -332,10 +333,13 @@ def rehearse(folder):
             resize_client(*size)
 
             def rendered():
+                nonlocal last_resize
+                window_size = (app.winfo_width(), app.winfo_height())
                 workspace = app.wave_a_frame.master.master
-                expected = round((workspace.winfo_width() - 16) * 0.40)
-                if ((app.winfo_width(), app.winfo_height()) != size
-                        or app.wave_a_frame.winfo_width() != expected):
+                expected = round(workspace.winfo_width() * 0.40) - 6
+                actual = app.wave_a_frame.winfo_width()
+                last_resize = (frame, size, window_size, expected, actual)
+                if window_size != size or abs(actual - expected) > 1:
                     app.after(1, rendered)
                     return
                 timings.append((time.perf_counter() - tick) * 1000)
@@ -351,7 +355,7 @@ def rehearse(folder):
         if errors:
             value, tb = errors.pop(0)
             raise value.with_traceback(tb)
-        assert len(timings) == 75, f"Completed {len(timings)} resizing passes"
+        assert len(timings) == 75, f"Completed {len(timings)} resizing passes, last request {last_resize}"
         assert tuple(app.canvas_a.find_withtag("waveform")) == bars
         assert audio.get_property("time-pos") > audio_before_resize
         ordered = sorted(timings)

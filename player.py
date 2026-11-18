@@ -5577,39 +5577,16 @@ class App(TkinterDnD.Tk if HAS_DND else tk.Tk):
         # VISUALS (right column): images/PPT
         deck_b = ttk.Frame(decks_container, padding=8, style="WorkspaceCard.TFrame")
 
-        layout_job = None
+        # Let Tk's native geometry manager place the panels during a resize.
+        # The offsets leave an eight-pixel gutter; only the available area is divided.
+        signal_row.place(relwidth=1, relheight=1 / 3, height=-3)
+        self.wave_a_frame.place(relwidth=0.40, width=-6, relheight=1)
+        self.output_monitor.place(relx=0.40, x=2, relwidth=0.60, width=-2, relheight=1)
+        decks_container.place(rely=1 / 3, y=5, relwidth=1, relheight=2 / 3, height=-5)
+        scene_panel.place(relwidth=0.24, width=-4, relheight=1)
+        deck_a.place(relx=0.24, x=4, relwidth=0.34, width=-5, relheight=1)
+        deck_b.place(relx=0.58, x=7, relwidth=0.42, width=-7, relheight=1)
 
-        def queue_workspace_layout(_event):
-            nonlocal layout_job
-            if layout_job is None:
-                layout_job = workspace.after_idle(layout_workspace)
-
-        def layout_workspace():
-            nonlocal layout_job
-            layout_job = None
-            width, height = workspace.winfo_width(), workspace.winfo_height()
-            if width < 680 or height < 240:
-                return
-            gap = 8
-            signal_height = (height - gap) // 3
-            signal_row.place(x=0, y=0, width=width, height=signal_height)
-            waveform_width = round((width - 2 * gap) * 0.40)
-            self.wave_a_frame.place(x=0, y=0, width=waveform_width, relheight=1)
-            self.output_monitor.place(x=waveform_width + gap, y=0, width=width - waveform_width - gap,
-                                      relheight=1)
-            decks_container.place(x=0, y=signal_height + gap, width=width,
-                                  height=height - signal_height - gap)
-            usable_width = width - 2 * gap
-            scene_minimum = scene_head.winfo_reqwidth() + 17
-            scene_width = max(scene_minimum, round(usable_width * 0.24))
-            deck_width = usable_width - scene_width
-            audio_width = round(deck_width * 34 / 76)
-            scene_panel.place(x=0, y=0, width=scene_width, relheight=1)
-            deck_a.place(x=scene_width + gap, y=0, width=audio_width, relheight=1)
-            deck_b.place(x=scene_width + audio_width + 2 * gap, y=0,
-                         width=deck_width - audio_width, relheight=1)
-
-        workspace.bind("<Configure>", queue_workspace_layout)
         projection_head = ttk.Frame(deck_b)
         projection_head.pack(fill="x", pady=(0, 8))
         ttk.Label(projection_head, text="Projection", style="CardTitle.TLabel").pack(side="left")
